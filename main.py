@@ -724,24 +724,32 @@ def execute_trade(symbol, side):
                 entry + ((entry - sl) * 2),
                 4
             )
+            
+            order = exchange.create_order(
+                    symbol,
+                    'limit',
+                    'buy',
+                    amount,
+                    entry,
+                    params={
+                        'positionSide': 'LONG',
+                        'marginMode': 'isolated'
+                    }
+                )
 
         else:
 
-            order = exchange.create_limit_sell_order(
-                symbol,
-                amount,
-                entry
-            )
-
-            sl = round(
-                entry + atr * 1.5,
-                4
-            )
-
-            tp = round(
-                entry - ((sl - entry) * 2),
-                4
-            )
+            order = exchange.create_order(
+                    symbol,
+                    'limit',
+                    'sell',
+                    amount,
+                    entry,
+                    params={
+                        'positionSide': 'SHORT',
+                        'marginMode': 'isolated'
+                    }
+                )
 
         message = f"""
         ✅ ORDER EXECUTED
