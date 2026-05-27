@@ -7,6 +7,7 @@ import os
 import traceback
 import csv
 import threading
+import telebot
 
 # =========================
 # CONFIG
@@ -14,6 +15,9 @@ import threading
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+bot = telebot.TeleBot(
+    TELEGRAM_TOKEN
+)
 
 SCAN_INTERVAL = 300
 COOLDOWN = 3600
@@ -158,6 +162,117 @@ def update_signal_result(
         writer = csv.writer(file)
 
         writer.writerows(rows)
+# =========================
+# TELEGRAM COMMANDS
+# =========================
+
+@bot.message_handler(commands=['ping'])
+
+def ping(message):
+
+    bot.reply_to(
+        message,
+        "✅ Bot Online"
+    )
+    
+    @bot.message_handler(commands=['status'])
+
+def status(message):
+
+    text = f"""
+🤖 BOT STATUS
+
+Coins:
+{len(symbols)}
+
+Active Trades:
+{len(active_trades)}
+
+Cooldown:
+{COOLDOWN}s
+
+Scan Interval:
+{SCAN_INTERVAL}s
+"""
+
+    bot.reply_to(
+        message,
+        text
+    )
+    
+    @bot.message_handler(commands=['trades'])
+
+def trades(message):
+
+    if not active_trades:
+
+        bot.reply_to(
+            message,
+            "No active trades"
+        )
+
+        return
+
+    text = "📊 ACTIVE TRADES\n\n"
+
+    for trade_id in active_trades:
+
+        trade = active_trades[trade_id]
+
+        text += f"""
+{trade['symbol']}
+{trade['side']}
+
+Entry:
+{trade['entry']}
+
+SL:
+{trade['sl']}
+
+TP2:
+{trade['tp2']}
+
+----------------
+"""
+
+    bot.reply_to(
+        message,
+        text
+    )
+    
+    @bot.message_handler(commands=['coins'])
+
+def coins(message):
+
+    text = "🪙 COINS\n\n"
+
+    for coin in symbols:
+
+        text += f"{coin}\n"
+
+    bot.reply_to(
+        message,
+        text
+    )
+    
+    @bot.message_handler(commands=['forcecheck'])
+
+def forcecheck(message):
+
+    bot.reply_to(
+        message,
+        "🔍 Force scanning..."
+    )
+
+    for symbol in symbols:
+
+        analyze(symbol)
+
+    bot.reply_to(
+        message,
+        "✅ Scan complete"
+    )
+
 # =========================
 # BINGX
 # =========================
@@ -1034,6 +1149,11 @@ def check_trades():
             )
 
             time.sleep(30)
+
+threading.Thread(
+    target=bot.infinity_polling,
+    daemon=True
+).start()
 
 # =========================
 # STARTUP
