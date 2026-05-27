@@ -950,8 +950,6 @@ Plan:
 
             send_telegram(message)
             
-                        send_telegram(message)
-
             save_signal(
                 signal_id,
                 symbol,
@@ -1068,8 +1066,6 @@ Plan:
             )
 
             send_telegram(message)
-            
-                        send_telegram(message)
 
             save_signal(
                 signal_id,
