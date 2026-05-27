@@ -350,6 +350,41 @@ def forcecheck(message):
         message,
         "✅ Scan complete"
     )
+# =========================
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+
+    text = """
+🤖 AVAILABLE COMMANDS
+
+/ping
+เช็คว่าบอทยังออนไลน์ไหม
+
+/status
+ดูสถานะบอท
+
+/stats
+ดู winrate
+
+/trades
+ดู active trades
+
+/coins
+ดูเหรียญที่สแกน
+
+/forcecheck
+บังคับสแกนทันที
+
+/help
+ดูคำสั่งทั้งหมด
+"""
+
+    bot.reply_to(
+        message,
+        text
+    )
+    
 
 # =========================
 # BINGX
@@ -1230,8 +1265,33 @@ def check_trades():
 
             time.sleep(30)
 
+def telegram_polling():
+
+    while True:
+
+        try:
+
+            bot.infinity_polling(
+                timeout=60,
+                long_polling_timeout=60
+            )
+
+        except Exception as e:
+
+            print(
+                "Telegram polling error",
+                flush=True
+            )
+
+            print(
+                traceback.format_exc(),
+                flush=True
+            )
+
+            time.sleep(10)
+
 threading.Thread(
-    target=bot.infinity_polling,
+    target=telegram_polling,
     daemon=True
 ).start()
 
