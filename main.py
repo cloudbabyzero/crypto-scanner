@@ -119,63 +119,7 @@ def save_signal(
             tp2,
             'OPEN'
         ])
-# =========================
-# SAVE SIGNAL
-# =========================
 
-def save_signal(
-    signal_id,
-    symbol,
-    side,
-    grade,
-    score,
-    entry,
-    sl,
-    tp1,
-    tp2
-):
-
-    file_exists = os.path.isfile(
-        'signals.csv'
-    )
-
-    with open(
-        'signals.csv',
-        'a',
-        newline=''
-    ) as file:
-
-        writer = csv.writer(file)
-
-        if not file_exists:
-
-            writer.writerow([
-                'signal_id',
-                'time',
-                'symbol',
-                'side',
-                'grade',
-                'score',
-                'entry',
-                'sl',
-                'tp1',
-                'tp2',
-                'result'
-            ])
-
-        writer.writerow([
-            signal_id,
-            int(time.time()),
-            symbol,
-            side,
-            grade,
-            score,
-            entry,
-            sl,
-            tp1,
-            tp2,
-            'OPEN'
-        ])
 # =========================
 # UPDATE RESULT
 # =========================
