@@ -768,7 +768,7 @@ Plan:
     tp1,
     tp2
 )
-active_trades[signal_id] = {
+            active_trades[signal_id] = {
     "symbol": symbol,
     "side": "LONG",
     "entry": entry,
@@ -884,7 +884,7 @@ Plan:
     tp1,
     tp2
 )
-active_trades[signal_id] = {
+            active_trades[signal_id] = {
     "symbol": symbol,
     "side": "SHORT",
     "entry": entry,
