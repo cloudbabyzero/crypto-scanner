@@ -8,6 +8,7 @@ import traceback
 import csv
 import threading
 import telebot
+import uuid
 
 # =========================
 # CONFIG
@@ -21,6 +22,10 @@ bot = telebot.TeleBot(
 
 SCAN_INTERVAL = 300
 COOLDOWN = 3600
+
+ADX_FILTER = 20
+MIN_SCORE = 85
+ATR_FILTER = 0.4
 
 symbols = [
     'BTC/USDT',
@@ -342,15 +347,14 @@ def forcecheck(message):
         "🔍 Force scanning..."
     )
 
-    for symbol in symbols:
-
-        analyze(symbol)
-
-    bot.reply_to(
-        message,
-        "✅ Scan complete"
-    )
-
+    threading.Thread(
+        target=lambda: [
+            analyze(symbol)
+            for symbol in symbols
+        ],
+        daemon=True
+    ).start()
+    
 # =========================
 
 @bot.message_handler(commands=['csv'])
@@ -376,6 +380,116 @@ def csv_file(message):
             message.chat.id,
             file
         )
+
+# =========================
+
+@bot.message_handler(commands=['adx'])
+def set_adx(message):
+
+    global ADX_FILTER
+
+    try:
+
+        value = int(
+            message.text.split()[1]
+        )
+
+        ADX_FILTER = value
+
+        bot.reply_to(
+            message,
+            f"✅ ADX Filter updated to {value}"
+        )
+
+    except:
+
+        bot.reply_to(
+            message,
+            "Usage: /adx 18"
+        )
+
+# =========================
+
+@bot.message_handler(commands=['score'])
+def set_score(message):
+
+    global MIN_SCORE
+
+    try:
+
+        value = int(
+            message.text.split()[1]
+        )
+
+        MIN_SCORE = value
+
+        bot.reply_to(
+            message,
+            f"✅ MIN_SCORE updated to {value}"
+        )
+
+    except:
+
+        bot.reply_to(
+            message,
+            "Usage: /score 85"
+        )
+
+# =========================
+
+@bot.message_handler(commands=['atr'])
+def set_atr(message):
+
+    global ATR_FILTER
+
+    try:
+
+        value = float(
+            message.text.split()[1]
+        )
+
+        ATR_FILTER = value
+
+        bot.reply_to(
+            message,
+            f"✅ ATR Filter updated to {value}"
+        )
+
+    except:
+
+        bot.reply_to(
+            message,
+            "Usage: /atr 0.4"
+        )
+
+# =========================
+
+@bot.message_handler(commands=['config'])
+def config(message):
+
+    text = f"""
+⚙️ CURRENT CONFIG
+
+ADX FILTER:
+{ADX_FILTER}
+
+MIN SCORE:
+{MIN_SCORE}
+
+ATR FILTER:
+{ATR_FILTER}
+
+COOLDOWN:
+{COOLDOWN}
+
+SCAN INTERVAL:
+{SCAN_INTERVAL}
+"""
+
+    bot.reply_to(
+        message,
+        text
+    )
 
 # =========================
 
@@ -405,6 +519,18 @@ def help_command(message):
 
 /csv
 ดาวน์โหลด signals.csv
+
+/adx 18
+เปลี่ยน ADX filter
+
+/score 85
+เปลี่ยน minimum score
+
+/atr 0.4
+เปลี่ยน ATR filter
+
+/config
+ดู config ปัจจุบัน
 
 /help
 ดูคำสั่งทั้งหมด
@@ -660,7 +786,7 @@ def analyze(symbol):
         short_score = 0
 
         btc_trend = get_btc_trend()
-        signal_id = int(time.time())
+        signal_id = str(uuid.uuid4())[:8]
 
         # =========================
         # DAILY TREND
@@ -732,8 +858,8 @@ def analyze(symbol):
         # ADX FILTER
         # =========================
 
-        if m15['adx'] > 20:
-
+        if m15['adx'] > ADX_FILTER:
+            
             if h1['ema7'] > h1['ema25']:
 
                 long_score += 10
@@ -752,12 +878,16 @@ def analyze(symbol):
             m15['close']
         ) * 100
 
-        if atr_percent > 0.4:
+        if atr_percent > ATR_FILTER:
 
-            long_score += 10
+            if h1['ema7'] > h1['ema25']:
 
-            short_score += 10
+                long_score += 10
 
+            else:
+
+                short_score += 10
+        
         # =========================
         # VOLUME
         # =========================
@@ -926,7 +1056,7 @@ def analyze(symbol):
         # =========================
 
         if (
-            long_score >= 85
+            long_score >= MIN_SCORE
             and btc_trend == "bullish"
         ):
 
@@ -1043,7 +1173,7 @@ Plan:
         # =========================
 
         elif (
-            short_score >= 85
+            short_score >= MIN_SCORE
             and btc_trend == "bearish"
         ):
 
