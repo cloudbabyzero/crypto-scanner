@@ -714,7 +714,7 @@ def execute_trade(symbol, side):
             LEVERAGE,
             symbol,
             params={
-                "side": side.upper()
+                "positionSide": side.upper()
             }
         )
 
@@ -757,6 +757,7 @@ def execute_trade(symbol, side):
                 price=entry,
                 params={
                     'positionSide': 'LONG',
+                    'tradeSide': 'OPEN',
                     'marginMode': 'isolated'
                 }
             )
@@ -785,6 +786,7 @@ def execute_trade(symbol, side):
                 price=entry,
                 params={
                     'positionSide': 'SHORT',
+                    'tradeSide': 'OPEN',
                     'marginMode': 'isolated'
                 }
             )
@@ -869,15 +871,20 @@ exchange = ccxt.bingx({
 
         'defaultSubType': 'linear',
 
-        'broker': 'swap'
+        'adjustForTimeDifference': True
 
     }
 
 })
 
+exchange.set_sandbox_mode(False)
+
 exchange.options['defaultType'] = 'swap'
 exchange.options['defaultSubType'] = 'linear'
 
+markets = exchange.load_markets()
+
+print("✅ FUTURES MARKETS LOADED")
 
 # =========================
 # DATAFRAME
