@@ -694,10 +694,11 @@ def execute_trade(symbol, side):
 
         if side == "long":
 
-            order = exchange.create_market_buy_order(
+            order = exchange.create_limit_buy_order(
                 symbol,
-                amount
-            )
+                amount,
+                entry
+           )
 
             sl = round(
                 entry - atr * 1.5,
@@ -711,9 +712,10 @@ def execute_trade(symbol, side):
 
         else:
 
-            order = exchange.create_market_sell_order(
+            order = exchange.create_limit_sell_order(
                 symbol,
-                amount
+                amount,
+                entry
             )
 
             sl = round(
@@ -761,7 +763,9 @@ def execute_trade(symbol, side):
             "sl": sl,
             "tp1": tp,
             "tp2": tp,
-            "tp1_hit": False
+            "tp1_hit": False,
+            "status": "PENDING",
+            "order_id": order['id']
         }
 
     except Exception as e:
@@ -1388,6 +1392,7 @@ Plan:
 
             active_trades[signal_id] = {
                 "symbol": symbol,
+                "status": "OPEN",
                 "side": "LONG",
                 "entry": entry,
                 "sl": sl,
@@ -1505,6 +1510,7 @@ Plan:
 
             active_trades[signal_id] = {
                 "symbol": symbol,
+                "status": "OPEN",
                 "side": "SHORT",
                 "entry": entry,
                 "sl": sl,
@@ -1540,13 +1546,39 @@ def check_trades():
 
                 trade = active_trades[signal_id]
 
+                # =========================
+                # WAIT FOR LIMIT FILL
+                # =========================
+
+                if trade.get('status') == "PENDING":
+
+                    order_info = exchange.fetch_order(
+                        trade['order_id'],
+                        trade['symbol']
+                    )
+
+                    if order_info['status'] == "closed":
+
+                        trade['status'] = "OPEN"
+
+                        send_telegram(
+                            f"✅ ORDER FILLED\n\n{trade['symbol']}"
+                        )
+
+                    else:
+
+                        continue
+
                 ticker = exchange.fetch_ticker(
                     trade['symbol']
                 )
 
                 price = ticker['last']
 
+                # =========================
                 # LONG
+                # =========================
+
                 if trade['side'] == "LONG":
 
                     if (
@@ -1592,7 +1624,10 @@ def check_trades():
 
                         del active_trades[signal_id]
 
+                # =========================
                 # SHORT
+                # =========================
+
                 elif trade['side'] == "SHORT":
 
                     if (
