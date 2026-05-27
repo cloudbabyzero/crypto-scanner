@@ -780,13 +780,21 @@ def execute_trade(symbol, side):
 
         if side == "long":
 
+
             sl = round(
                 entry - atr * 1.5,
                 4
             )
 
-            tp = round(
-                entry + ((entry - sl) * 2),
+            risk = entry - sl
+
+            tp1 = round(
+                entry + risk,
+                4
+            )
+
+            tp2 = round(
+                entry + (risk * 2),
                 4
             )
 
@@ -814,8 +822,15 @@ def execute_trade(symbol, side):
                 4
             )
 
-            tp = round(
-                entry - ((sl - entry) * 2),
+            risk = sl - entry
+
+            tp1 = round(
+                entry - risk,
+                4
+            )
+
+            tp2 = round(
+                entry - (risk * 2),
                 4
             )
 
@@ -847,8 +862,8 @@ def execute_trade(symbol, side):
 
             "sl": sl,
 
-            "tp1": tp,
-            "tp2": tp,
+            "tp1": tp1,
+            "tp2": tp2,
 
             "tp1_hit": False,
 
@@ -876,8 +891,11 @@ Entry:
 SL:
 {sl}
 
-TP:
-{tp}
+TP1:
+{tp1}
+
+TP2:
+{tp2}
 
 Leverage:
 x{LEVERAGE}
@@ -1506,7 +1524,7 @@ BTC Trend:
 {btc_trend}
 
 Plan:
-- TP1 = ปิด 50%
+- TP1 = ปิด 70%
 - Move SL -> BE
 - TP2 = ปล่อยรัน
 """
@@ -1624,7 +1642,7 @@ BTC Trend:
 {btc_trend}
 
 Plan:
-- TP1 = ปิด 50%
+- TP1 = ปิด 70%
 - Move SL -> BE
 - TP2 = ปล่อยรัน
 """
@@ -1685,12 +1703,11 @@ def check_trades():
             for signal_id in list(active_trades.keys()):
 
                 trade = active_trades[signal_id]
-                amount = trade.get('amount')
 
                 # =========================
                 # WAIT FOR LIMIT FILL
                 # =========================
-                
+
                 if trade.get('status') == "PENDING":
 
                     order_info = exchange.fetch_order(
@@ -1702,32 +1719,21 @@ def check_trades():
 
                         trade['status'] = "OPEN"
 
+                        amount = trade['amount']
+
                         # =========================
-                        # CREATE STOP LOSS / TP
+                        # CREATE INITIAL SL
                         # =========================
 
                         if trade['side'] == "LONG":
 
-                            exchange.create_order(
+                            sl_order = exchange.create_order(
                                 symbol=trade['symbol'],
                                 type='STOP_MARKET',
                                 side='sell',
                                 amount=amount,
                                 params={
                                     'stopPrice': trade['sl'],
-                                    'positionSide': 'LONG',
-                                    'reduceOnly': True,
-                                    'closePosition': True
-                                }
-                            )
-
-                            exchange.create_order(
-                                symbol=trade['symbol'],
-                                type='TAKE_PROFIT_MARKET',
-                                side='sell',
-                                amount=amount,
-                                params={
-                                    'stopPrice': trade['tp2'],
                                     'positionSide': 'LONG',
                                     'reduceOnly': True,
                                     'closePosition': True
@@ -1736,7 +1742,7 @@ def check_trades():
 
                         else:
 
-                            exchange.create_order(
+                            sl_order = exchange.create_order(
                                 symbol=trade['symbol'],
                                 type='STOP_MARKET',
                                 side='buy',
@@ -1749,30 +1755,29 @@ def check_trades():
                                 }
                             )
 
-                            exchange.create_order(
-                                symbol=trade['symbol'],
-                                type='TAKE_PROFIT_MARKET',
-                                side='buy',
-                                amount=amount,
-                                params={
-                                    'stopPrice': trade['tp2'],
-                                    'positionSide': 'SHORT',
-                                    'reduceOnly': True,
-                                    'closePosition': True
-                                }
-                            )
+                        trade['sl_order_id'] = sl_order['id']
 
                         send_telegram(
-                            f"✅ ORDER FILLED\n\n{trade['symbol']}"
+                            f"✅ ORDER FILLED\n\n"
+                            f"{trade['symbol']}"
                         )
 
                     else:
 
                         continue
 
+                # =========================
+                # SKIP SIGNAL
+                # =========================
+
                 if trade.get('status') == "SIGNAL":
+
                     continue
-                    
+
+                # =========================
+                # GET PRICE
+                # =========================
+
                 ticker = exchange.fetch_ticker(
                     trade['symbol']
                 )
@@ -1780,26 +1785,110 @@ def check_trades():
                 price = ticker['last']
 
                 # =========================
+                # CHECK REAL POSITION
+                # =========================
+
+                try:
+
+                    positions = exchange.fetch_positions(
+                        [trade['symbol']]
+                    )
+
+                    contracts = 0
+
+                    if len(positions) > 0:
+
+                        contracts = float(
+                            positions[0]['contracts']
+                        )
+
+                except:
+
+                    contracts = 0
+
+                # =========================
                 # LONG
                 # =========================
 
                 if trade['side'] == "LONG":
+
+                    # =========================
+                    # TP1 HIT
+                    # =========================
 
                     if (
                         not trade['tp1_hit']
                         and price >= trade['tp1']
                     ):
 
-                        trade['tp1_hit'] = True
+                        # CLOSE 70%
 
-                        send_telegram(
-                            f"✅ TP1 HIT\n\n{trade['symbol']}\n\nMove SL -> BE"
+                        exchange.create_market_sell_order(
+                            trade['symbol'],
+                            trade['amount'] * 0.7,
+                            params={
+                                'reduceOnly': True,
+                                'positionSide': 'LONG'
+                            }
                         )
 
-                    if price >= trade['tp2']:
+                        # REMAIN 30%
+
+                        trade['amount'] *= 0.3
+
+                        trade['tp1_hit'] = True
+
+                        # CANCEL OLD SL
+
+                        try:
+
+                            exchange.cancel_order(
+                                trade['sl_order_id'],
+                                trade['symbol']
+                            )
+
+                        except:
+                            pass
+
+                        # MOVE SL -> BE
+
+                        be_sl = exchange.create_order(
+                            symbol=trade['symbol'],
+                            type='STOP_MARKET',
+                            side='sell',
+                            amount=trade['amount'],
+                            params={
+                                'stopPrice': trade['entry'],
+                                'positionSide': 'LONG',
+                                'reduceOnly': True,
+                                'closePosition': True
+                            }
+                        )
+
+                        trade['sl_order_id'] = be_sl['id']
 
                         send_telegram(
-                            f"🏆 WIN\n\n{trade['symbol']}"
+                            f"🎯 TP1 HIT\n\n"
+                            f"{trade['symbol']}\n\n"
+                            f"✅ Closed 70%\n"
+                            f"🔒 SL moved to BE\n"
+                            f"🚀 Remaining 30% running"
+                        )
+    
+                    # =========================
+                    # TP2
+                    # =========================
+
+                    if (
+                        contracts > 0
+                        and price >= trade['tp2']
+                    ):
+
+                        trade['closed'] = True
+
+                        send_telegram(
+                            f"🏆 WIN\n\n"
+                            f"{trade['symbol']}"
                         )
 
                         update_signal_result(
@@ -1809,7 +1898,16 @@ def check_trades():
 
                         del active_trades[signal_id]
 
-                    elif price <= trade['sl']:
+                        continue
+                        
+                    # =========================
+                    # SL / BE
+                    # =========================
+
+                    if (
+                        contracts <= 0
+                        and not trade.get('closed')
+                    ):
 
                         result = (
                             "BE"
@@ -1818,7 +1916,8 @@ def check_trades():
                         )
 
                         send_telegram(
-                            f"❌ {result}\n\n{trade['symbol']}"
+                            f"❌ {result}\n\n"
+                            f"{trade['symbol']}"
                         )
 
                         update_signal_result(
@@ -1827,6 +1926,8 @@ def check_trades():
                         )
 
                         del active_trades[signal_id]
+
+                        continue
 
                 # =========================
                 # SHORT
@@ -1834,21 +1935,83 @@ def check_trades():
 
                 elif trade['side'] == "SHORT":
 
+                    # =========================
+                    # TP1 HIT
+                    # =========================
+
                     if (
                         not trade['tp1_hit']
                         and price <= trade['tp1']
                     ):
 
-                        trade['tp1_hit'] = True
+                        # CLOSE 70%
 
-                        send_telegram(
-                            f"✅ TP1 HIT\n\n{trade['symbol']}\n\nMove SL -> BE"
+                        exchange.create_market_buy_order(
+                            trade['symbol'],
+                            trade['amount'] * 0.7,
+                            params={
+                                'reduceOnly': True,
+                                'positionSide': 'SHORT'
+                            }
                         )
 
-                    if price <= trade['tp2']:
+                        # REMAIN 30%
+
+                        trade['amount'] *= 0.3
+
+                        trade['tp1_hit'] = True
+
+                        # CANCEL OLD SL
+
+                        try:
+
+                            exchange.cancel_order(
+                                trade['sl_order_id'],
+                                trade['symbol']
+                            )
+
+                        except:
+                            pass
+
+                        # MOVE SL -> BE
+
+                        be_sl = exchange.create_order(
+                            symbol=trade['symbol'],
+                            type='STOP_MARKET',
+                            side='buy',
+                            amount=trade['amount'],
+                            params={
+                                'stopPrice': trade['entry'],
+                                'positionSide': 'SHORT',
+                                'reduceOnly': True,
+                                'closePosition': True
+                            }
+                        )
+
+                        trade['sl_order_id'] = be_sl['id']
 
                         send_telegram(
-                            f"🏆 WIN\n\n{trade['symbol']}"
+                            f"🎯 TP1 HIT\n\n"
+                            f"{trade['symbol']}\n\n"
+                            f"✅ Closed 70%\n"
+                            f"🔒 SL moved to BE\n"
+                            f"🚀 Remaining 30% running"
+                        )
+
+                    # =========================
+                    # TP2
+                    # =========================
+
+                    if (
+                         contracts > 0
+                         and price <= trade['tp2']
+                    ):
+
+                        trade['closed'] = True
+
+                        send_telegram(
+                            f"🏆 WIN\n\n"
+                            f"{trade['symbol']}"
                         )
 
                         update_signal_result(
@@ -1858,7 +2021,16 @@ def check_trades():
 
                         del active_trades[signal_id]
 
-                    elif price >= trade['sl']:
+                        continue
+
+                    # =========================
+                    # SL / BE
+                    # =========================
+
+                    if (
+                        contracts <= 0
+                        and not trade.get('closed')
+                    ):
 
                         result = (
                             "BE"
@@ -1867,7 +2039,8 @@ def check_trades():
                         )
 
                         send_telegram(
-                            f"❌ {result}\n\n{trade['symbol']}"
+                            f"❌ {result}\n\n"
+                            f"{trade['symbol']}"
                         )
 
                         update_signal_result(
@@ -1876,6 +2049,8 @@ def check_trades():
                         )
 
                         del active_trades[signal_id]
+
+                        continue
 
             time.sleep(60)
 
