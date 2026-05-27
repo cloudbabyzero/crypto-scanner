@@ -856,13 +856,28 @@ Margin:
 # =========================
 
 exchange = ccxt.bingx({
+
     'apiKey': os.getenv("BINGX_API_KEY"),
+
     'secret': os.getenv("BINGX_SECRET_KEY"),
+
     'enableRateLimit': True,
+
     'options': {
-        'defaultType': 'swap'
+
+        'defaultType': 'swap',
+
+        'defaultSubType': 'linear',
+
+        'broker': 'swap'
+
     }
+
 })
+
+exchange.options['defaultType'] = 'swap'
+exchange.options['defaultSubType'] = 'linear'
+
 
 # =========================
 # DATAFRAME
