@@ -274,21 +274,21 @@ def analyze(symbol):
 
         # กันไล่แท่งแรงเกิน
 
-         upper_distance = (
-         df_15m['close'].iloc[-2]
+        upper_distance = (
+            df_15m['close'].iloc[-2]
          /
-         df_15m['bb_upper'].iloc[-2]
+            df_15m['bb_upper'].iloc[-2]
          )
 
          lower_distance = (
-         df_15m['close'].iloc[-2]
+            df_15m['close'].iloc[-2]
          /
-         df_15m['bb_lower'].iloc[-2]
+            df_15m['bb_lower'].iloc[-2]
          )
 
 # LONG
-         if (
-            m15['close'] > m15['bb_mid']
+        if (
+             m15['close'] > m15['bb_mid']
             and upper_distance < 0.998
             ):
 
@@ -296,7 +296,7 @@ def analyze(symbol):
 
 # SHORT
           elif (
-             m15['close'] < m15['bb_mid']
+              m15['close'] < m15['bb_mid']
              and lower_distance > 1.002
              ):
 
