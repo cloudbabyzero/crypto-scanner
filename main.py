@@ -662,13 +662,16 @@ def execute_trade(symbol, side):
 
             trade = active_trades[trade_id]
 
-            if trade['symbol'] == symbol:
+            if (
+               trade['symbol'] == symbol
+               and trade.get('status') in ["PENDING", "OPEN"]
+           ):
 
-                send_telegram(
-                    f"⚠️ {symbol} already active"
-                )
+               send_telegram(
+                   f"⚠️ {symbol} already active"
+               )
 
-                return
+               return
 
         
         signal = get_latest_signal(symbol)
@@ -1392,7 +1395,7 @@ Plan:
 
             active_trades[signal_id] = {
                 "symbol": symbol,
-                "status": "OPEN",
+                "status": "SIGNAL",
                 "side": "LONG",
                 "entry": entry,
                 "sl": sl,
@@ -1510,7 +1513,7 @@ Plan:
 
             active_trades[signal_id] = {
                 "symbol": symbol,
-                "status": "OPEN",
+                "status": "SIGNAL",
                 "side": "SHORT",
                 "entry": entry,
                 "sl": sl,
