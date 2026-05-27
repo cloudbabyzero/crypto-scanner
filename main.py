@@ -6,6 +6,7 @@ import time
 import os
 import traceback
 import csv
+import threading
 
 # =========================
 # CONFIG
@@ -29,6 +30,8 @@ symbols = [
 ]
 
 last_alert = {}
+
+active_trades = {}
 
 # =========================
 # TELEGRAM
@@ -116,7 +119,101 @@ def save_signal(
             tp2,
             'OPEN'
         ])
+# =========================
+# SAVE SIGNAL
+# =========================
 
+def save_signal(
+    signal_id,
+    symbol,
+    side,
+    grade,
+    score,
+    entry,
+    sl,
+    tp1,
+    tp2
+):
+
+    file_exists = os.path.isfile(
+        'signals.csv'
+    )
+
+    with open(
+        'signals.csv',
+        'a',
+        newline=''
+    ) as file:
+
+        writer = csv.writer(file)
+
+        if not file_exists:
+
+            writer.writerow([
+                'signal_id',
+                'time',
+                'symbol',
+                'side',
+                'grade',
+                'score',
+                'entry',
+                'sl',
+                'tp1',
+                'tp2',
+                'result'
+            ])
+
+        writer.writerow([
+            signal_id,
+            int(time.time()),
+            symbol,
+            side,
+            grade,
+            score,
+            entry,
+            sl,
+            tp1,
+            tp2,
+            'OPEN'
+        ])
+# =========================
+# UPDATE RESULT
+# =========================
+
+def update_signal_result(
+    signal_id,
+    result
+):
+
+    rows = []
+
+    with open(
+        'signals.csv',
+        'r'
+    ) as file:
+
+        reader = csv.reader(file)
+
+        for row in reader:
+
+            if (
+                len(row) > 0
+                and row[0] == str(signal_id)
+            ):
+
+                row[-1] = result
+
+            rows.append(row)
+
+    with open(
+        'signals.csv',
+        'w',
+        newline=''
+    ) as file:
+
+        writer = csv.writer(file)
+
+        writer.writerows(rows)
 # =========================
 # BINGX
 # =========================
@@ -851,8 +948,141 @@ Plan:
         )
 
 # =========================
+# TRADE CHECKER
+# =========================
+
+def check_trades():
+
+    while True:
+
+        try:
+
+            for signal_id in list(active_trades.keys()):
+
+                trade = active_trades[signal_id]
+
+                ticker = exchange.fetch_ticker(
+                    trade['symbol']
+                )
+
+                price = ticker['last']
+
+                # LONG
+                if trade['side'] == "LONG":
+
+                    if (
+                        not trade['tp1_hit']
+                        and price >= trade['tp1']
+                    ):
+
+                        trade['tp1_hit'] = True
+
+                        send_telegram(
+                            f"✅ TP1 HIT\n\n{trade['symbol']}\n\nMove SL -> BE"
+                        )
+
+                    if price >= trade['tp2']:
+
+                        send_telegram(
+                            f"🏆 WIN\n\n{trade['symbol']}"
+                        )
+
+                        update_signal_result(
+                            signal_id,
+                            "WIN"
+                        )
+
+                        del active_trades[signal_id]
+
+                    elif price <= trade['sl']:
+
+                        result = (
+                            "BE"
+                            if trade['tp1_hit']
+                            else "LOSS"
+                        )
+
+                        send_telegram(
+                            f"❌ {result}\n\n{trade['symbol']}"
+                        )
+
+                        update_signal_result(
+                            signal_id,
+                            result
+                        )
+
+                        del active_trades[signal_id]
+
+                # SHORT
+                elif trade['side'] == "SHORT":
+
+                    if (
+                        not trade['tp1_hit']
+                        and price <= trade['tp1']
+                    ):
+
+                        trade['tp1_hit'] = True
+
+                        send_telegram(
+                            f"✅ TP1 HIT\n\n{trade['symbol']}\n\nMove SL -> BE"
+                        )
+
+                    if price <= trade['tp2']:
+
+                        send_telegram(
+                            f"🏆 WIN\n\n{trade['symbol']}"
+                        )
+
+                        update_signal_result(
+                            signal_id,
+                            "WIN"
+                        )
+
+                        del active_trades[signal_id]
+
+                    elif price >= trade['sl']:
+
+                        result = (
+                            "BE"
+                            if trade['tp1_hit']
+                            else "LOSS"
+                        )
+
+                        send_telegram(
+                            f"❌ {result}\n\n{trade['symbol']}"
+                        )
+
+                        update_signal_result(
+                            signal_id,
+                            result
+                        )
+
+                        del active_trades[signal_id]
+
+            time.sleep(60)
+
+        except Exception as e:
+
+            print(
+                "Trade checker error",
+                flush=True
+            )
+
+            print(
+                traceback.format_exc(),
+                flush=True
+            )
+
+            time.sleep(30)
+
+# =========================
 # STARTUP
 # =========================
+
+threading.Thread(
+    target=check_trades,
+    daemon=True
+).start()
 
 send_telegram(
     "🚀 Railway Scanner Bot Online"
