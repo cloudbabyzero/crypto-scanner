@@ -278,6 +278,22 @@ def analyze(symbol):
             return
 
         # =========================
+        # NO TRADE ZONE
+        # =========================
+
+        if (
+            45 < m15['rsi'] < 55
+            and m15['adx'] < 18
+        ):
+
+            print(
+                f"{symbol} skipped - sideways market",
+                flush=True
+            )
+
+            return
+
+        # =========================
         # SCORE
         # =========================
 
@@ -324,14 +340,20 @@ def analyze(symbol):
             short_score += 20
 
         # =========================
-        # MACD
+        # MACD MOMENTUM
         # =========================
 
-        if h1['macd'] > h1['macd_signal']:
+        if (
+            h1['macd'] > h1['macd_signal']
+            and h1['macd'] > 0
+        ):
 
             long_score += 15
 
-        else:
+        elif (
+            h1['macd'] < h1['macd_signal']
+            and h1['macd'] < 0
+        ):
 
             short_score += 15
 
@@ -353,9 +375,13 @@ def analyze(symbol):
 
         if m15['adx'] > 20:
 
-            long_score += 10
+            if h1['ema7'] > h1['ema25']:
 
-            short_score += 10
+                long_score += 10
+
+            else:
+
+                short_score += 10
 
         # =========================
         # ATR VOLATILITY FILTER
@@ -422,6 +448,36 @@ def analyze(symbol):
             short_score += 10
 
         # =========================
+        # SUPPORT / RESISTANCE FILTER
+        # =========================
+
+        recent_low = min(
+            df_15m['low'].tail(20)
+        )
+
+        recent_high = max(
+            df_15m['high'].tail(20)
+        )
+
+        distance_to_low = (
+            m15['close'] - recent_low
+        ) / m15['close']
+
+        distance_to_high = (
+            recent_high - m15['close']
+        ) / m15['close']
+
+        # SHORT ใกล้ low มากไป
+        if distance_to_low < 0.003:
+
+            short_score -= 15
+
+        # LONG ใกล้ high มากไป
+        if distance_to_high < 0.003:
+
+            long_score -= 15
+
+        # =========================
         # EMA99 FILTER
         # =========================
 
@@ -450,6 +506,20 @@ def analyze(symbol):
             long_score -= 20
 
         # =========================
+        # LIMIT SCORE
+        # =========================
+
+        long_score = min(
+            long_score,
+            100
+        )
+
+        short_score = min(
+            short_score,
+            100
+        )
+
+        # =========================
         # LONG SIGNAL
         # =========================
 
@@ -458,6 +528,18 @@ def analyze(symbol):
             and btc_trend == "bullish"
         ):
 
+            if long_score >= 90:
+
+                grade = "A+"
+
+            elif long_score >= 85:
+
+                grade = "A"
+
+            else:
+
+                grade = "B"
+
             entry = round(
                 m15['close'],
                 4
@@ -465,7 +547,6 @@ def analyze(symbol):
 
             atr = m15['atr']
 
-            # กัน wick
             sl = round(
                 entry - atr * 1.5,
                 4
@@ -489,6 +570,9 @@ def analyze(symbol):
 🚀 LONG SIGNAL
 
 {symbol}
+
+Grade:
+{grade}
 
 Score:
 {long_score}/100
@@ -539,6 +623,18 @@ BTC Trend:
             and btc_trend == "bearish"
         ):
 
+            if short_score >= 90:
+
+                grade = "A+"
+
+            elif short_score >= 85:
+
+                grade = "A"
+
+            else:
+
+                grade = "B"
+
             entry = round(
                 m15['close'],
                 4
@@ -546,7 +642,6 @@ BTC Trend:
 
             atr = m15['atr']
 
-            # กัน wick
             sl = round(
                 entry + atr * 1.5,
                 4
@@ -570,6 +665,9 @@ BTC Trend:
 🔻 SHORT SIGNAL
 
 {symbol}
+
+Grade:
+{grade}
 
 Score:
 {short_score}/100
