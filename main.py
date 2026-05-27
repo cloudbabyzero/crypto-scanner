@@ -5,6 +5,7 @@ import requests
 import time
 import os
 import traceback
+import csv
 
 # =========================
 # CONFIG
@@ -57,6 +58,64 @@ def send_telegram(message):
             e,
             flush=True
         )
+
+# =========================
+# SAVE SIGNAL
+# =========================
+
+def save_signal(
+    signal_id,
+    symbol,
+    side,
+    grade,
+    score,
+    entry,
+    sl,
+    tp1,
+    tp2
+):
+
+    file_exists = os.path.isfile(
+        'signals.csv'
+    )
+
+    with open(
+        'signals.csv',
+        'a',
+        newline=''
+    ) as file:
+
+        writer = csv.writer(file)
+
+        if not file_exists:
+
+            writer.writerow([
+                'signal_id',
+                'time',
+                'symbol',
+                'side',
+                'grade',
+                'score',
+                'entry',
+                'sl',
+                'tp1',
+                'tp2',
+                'result'
+            ])
+
+        writer.writerow([
+            signal_id,
+            int(time.time()),
+            symbol,
+            side,
+            grade,
+            score,
+            entry,
+            sl,
+            tp1,
+            tp2,
+            'OPEN'
+        ])
 
 # =========================
 # BINGX
@@ -302,6 +361,7 @@ def analyze(symbol):
         short_score = 0
 
         btc_trend = get_btc_trend()
+        signal_id = int(time.time())
 
         # =========================
         # DAILY TREND
@@ -655,6 +715,18 @@ Plan:
             )
 
             send_telegram(message)
+            
+            save_signal(
+    signal_id,
+    symbol,
+    "LONG",
+    grade,
+    long_score,
+    entry,
+    sl,
+    tp1,
+    tp2
+)
 
             last_alert[symbol] = now
 
@@ -751,6 +823,18 @@ Plan:
             )
 
             send_telegram(message)
+            
+            save_signal(
+    signal_id,
+    symbol,
+    "SHORT",
+    grade,
+    short_score,
+    entry,
+    sl,
+    tp1,
+    tp2
+)
 
             last_alert[symbol] = now
 
