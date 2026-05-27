@@ -854,7 +854,8 @@ def execute_trade(symbol, side):
 
             "status": "PENDING",
 
-            "order_id": order['id']
+            "order_id": order['id'],
+            "amount": amount
         }
 
         # =========================
@@ -1684,11 +1685,12 @@ def check_trades():
             for signal_id in list(active_trades.keys()):
 
                 trade = active_trades[signal_id]
+                amount = trade.get('amount')
 
                 # =========================
                 # WAIT FOR LIMIT FILL
                 # =========================
-
+                
                 if trade.get('status') == "PENDING":
 
                     order_info = exchange.fetch_order(
@@ -1700,6 +1702,66 @@ def check_trades():
 
                         trade['status'] = "OPEN"
 
+                        # =========================
+                        # CREATE STOP LOSS / TP
+                        # =========================
+
+                        if trade['side'] == "LONG":
+
+                            exchange.create_order(
+                                symbol=trade['symbol'],
+                                type='STOP_MARKET',
+                                side='sell',
+                                amount=amount,
+                                params={
+                                    'stopPrice': trade['sl'],
+                                    'positionSide': 'LONG',
+                                    'reduceOnly': True,
+                                    'closePosition': True
+                                }
+                            )
+
+                            exchange.create_order(
+                                symbol=trade['symbol'],
+                                type='TAKE_PROFIT_MARKET',
+                                side='sell',
+                                amount=amount,
+                                params={
+                                    'stopPrice': trade['tp2'],
+                                    'positionSide': 'LONG',
+                                    'reduceOnly': True,
+                                    'closePosition': True
+                                }
+                            )
+
+                        else:
+
+                            exchange.create_order(
+                                symbol=trade['symbol'],
+                                type='STOP_MARKET',
+                                side='buy',
+                                amount=amount,
+                                params={
+                                    'stopPrice': trade['sl'],
+                                    'positionSide': 'SHORT',
+                                    'reduceOnly': True,
+                                    'closePosition': True
+                                }
+                            )
+
+                            exchange.create_order(
+                                symbol=trade['symbol'],
+                                type='TAKE_PROFIT_MARKET',
+                                side='buy',
+                                amount=amount,
+                                params={
+                                    'stopPrice': trade['tp2'],
+                                    'positionSide': 'SHORT',
+                                    'reduceOnly': True,
+                                    'closePosition': True
+                                }
+                            )
+
                         send_telegram(
                             f"✅ ORDER FILLED\n\n{trade['symbol']}"
                         )
@@ -1708,6 +1770,9 @@ def check_trades():
 
                         continue
 
+                if trade.get('status') == "SIGNAL":
+                    continue
+                    
                 ticker = exchange.fetch_ticker(
                     trade['symbol']
                 )
