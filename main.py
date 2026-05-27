@@ -849,8 +849,6 @@ Margin:
         send_telegram(
             f"❌ ORDER ERROR\n\n{str(e)}"
         )
-```
-
 
 
 # =========================
