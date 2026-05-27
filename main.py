@@ -350,6 +350,33 @@ def forcecheck(message):
         message,
         "✅ Scan complete"
     )
+
+# =========================
+
+@bot.message_handler(commands=['csv'])
+def csv_file(message):
+
+    if not os.path.exists(
+        'signals.csv'
+    ):
+
+        bot.reply_to(
+            message,
+            "No CSV file yet"
+        )
+
+        return
+
+    with open(
+        'signals.csv',
+        'rb'
+    ) as file:
+
+        bot.send_document(
+            message.chat.id,
+            file
+        )
+
 # =========================
 
 @bot.message_handler(commands=['help'])
@@ -375,6 +402,9 @@ def help_command(message):
 
 /forcecheck
 บังคับสแกนทันที
+
+/csv
+ดาวน์โหลด signals.csv
 
 /help
 ดูคำสั่งทั้งหมด
