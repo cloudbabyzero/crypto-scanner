@@ -137,6 +137,8 @@ def get_dataframe(symbol, timeframe):
     )
 
     df['bb_mid'] = bb.bollinger_mavg()
+    df['bb_upper'] = bb.bollinger_hband()
+    df['bb_lower'] = bb.bollinger_lband()
 
     # =========================
     # ATR
@@ -267,13 +269,36 @@ def analyze(symbol):
         # BOLLINGER
         # =========================
 
-        if m15['close'] > m15['bb_mid']:
+        # กันไล่แท่งแรงเกิน
 
-            long_score += 10
+upper_distance = (
+    df_15m['close'].iloc[-2]
+    /
+    df_15m['bb_upper'].iloc[-2]
+)
 
-        else:
+lower_distance = (
+    df_15m['close'].iloc[-2]
+    /
+    df_15m['bb_lower'].iloc[-2]
+)
 
-            short_score += 10
+# LONG
+if (
+    m15['close'] > m15['bb_mid']
+    and upper_distance < 0.995
+):
+
+    long_score += 10
+
+# SHORT
+elif (
+    m15['close'] < m15['bb_mid']
+    and lower_distance > 1.005
+):
+
+    short_score += 10
+          
 
         # =========================
         # LONG
@@ -286,24 +311,25 @@ def analyze(symbol):
                 4
             )
 
-            atr = m15['atr']
+# ATR
+atr = m15['atr']
 
-            sl = round(
-                entry - atr * 1.2,
-                4
-            )
+# หา low ต่ำสุด 5 แท่งล่าสุด
+recent_low = df_15m['low'].tail(5).min()
 
-            tp = round(
-                entry + atr * 2.4,
-                4
-            )
+# SL กัน wick
+sl = round(
+    recent_low - (atr * 0.25),
+    4
+)
 
-            rr = round(
-                (tp - entry)
-                /
-                (entry - sl),
-                2
-            )
+# TP RR 1:2
+risk = entry - sl
+
+tp = round(
+    entry + (risk * 2),
+    4
+)
 
             message = f"""
 🚀 LONG SIGNAL
@@ -349,24 +375,25 @@ HIGH
                 4
             )
 
-            atr = m15['atr']
+# ATR
+atr = m15['atr']
 
-            sl = round(
-                entry + atr * 1.2,
-                4
-            )
+# หา high สูงสุด 5 แท่งล่าสุด
+recent_high = df_15m['high'].tail(5).max()
 
-            tp = round(
-                entry - atr * 2.4,
-                4
-            )
+# SL กัน wick
+sl = round(
+    recent_high + (atr * 0.25),
+    4
+)
 
-            rr = round(
-                (entry - tp)
-                /
-                (sl - entry),
-                2
-            )
+# TP RR 1:2
+risk = sl - entry
+
+tp = round(
+    entry - (risk * 2),
+    4
+)
 
             message = f"""
 🔻 SHORT SIGNAL
