@@ -714,7 +714,7 @@ def execute_trade(symbol, side):
             LEVERAGE,
             symbol,
             params={
-                "positionSide": side.upper()
+                "ide": side.upper()
             }
         )
 
