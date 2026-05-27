@@ -81,6 +81,7 @@ def send_telegram(message):
 def save_signal(
     signal_id,
     symbol,
+    side,
     grade,
     score,
     entry,
@@ -107,7 +108,7 @@ def save_signal(
                 'signal_id',
                 'time',
                 'symbol',
-                '',
+                'side',
                 'grade',
                 'score',
                 'entry',
@@ -624,18 +625,27 @@ def help_command(message):
 
 def get_latest_signal(symbol):
 
-    df_15m = get_dataframe(symbol, '15m')
+    for trade_id in active_trades:
 
-    m15 = df_15m.iloc[-2]
+        trade = active_trades[trade_id]
 
-    entry = float(m15['close'])
+        if (
+            trade['symbol'] == symbol
+            and trade['status'] == "SIGNAL"
+        ):
 
-    atr = float(m15['atr'])
+            return {
+                "signal": trade['side'],
+                "entry": trade['entry'],
+                "sl": trade['sl'],
+                "tp": trade['tp2'],
+                "atr": abs(
+                    trade['entry'] - trade['sl']
+                ) / 1.5
+            }
 
-    return {
-        "entry": entry,
-        "atr": atr
-    }
+    return None
+
 
 def execute_trade(symbol, side):
 
@@ -687,10 +697,30 @@ def execute_trade(symbol, side):
 
         signal = get_latest_signal(symbol)
 
-        entry = signal['entry']
+        # =========================
+        # CHECK SIGNAL BEFORE ENTRY
+        # =========================
 
-        atr = signal['atr']
+        if not signal:
+            send_telegram(
+                f"❌ No signal found for {symbol}"
+            )
+            return
 
+        signal_type = signal.get("signal", "").upper()
+
+        if signal_type != side.upper():
+            send_telegram(
+                f"❌ No {side.upper()} signal for {symbol}\n\n"
+                f"Current Signal: {signal_type}"
+            )
+            return
+
+        entry = signal["entry"]
+        sl = signal["sl"]
+        tp = signal["tp"]
+        atr = signal["atr"]
+        
         # =========================
         # MARGIN MODE
         # =========================
@@ -711,23 +741,23 @@ def execute_trade(symbol, side):
 
         if side == "long":
 
-                exchange.set_leverage(
-                    LEVERAGE,
-                    symbol,
-                    {
-                        "side": "LONG"
-                    }
-                )
+            exchange.set_leverage(
+                LEVERAGE,
+                symbol,
+                {
+                     "side": "LONG"
+                }
+            )
 
         else:
 
-                exchange.set_leverage(
-                    LEVERAGE,
-                    symbol,
-                    {
-                        "side": "SHORT"
-                    }
-                )
+            exchange.set_leverage(
+                LEVERAGE,
+                symbol,
+                {
+                    "side": "SHORT"
+                }
+            )
 
         # =========================
         # AMOUNT
