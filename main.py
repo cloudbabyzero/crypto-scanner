@@ -274,13 +274,13 @@ def analyze(symbol):
 
         # กันไล่แท่งแรงเกิน
 
-upper_distance = (
+         upper_distance = (
          df_15m['close'].iloc[-2]
          /
          df_15m['bb_upper'].iloc[-2]
          )
 
-lower_distance = (
+         lower_distance = (
          df_15m['close'].iloc[-2]
          /
          df_15m['bb_lower'].iloc[-2]
@@ -315,24 +315,24 @@ lower_distance = (
             )
 
 # ATR
-atr = m15['atr']
+           atr = m15['atr']
 
 # หา low ต่ำสุด 5 แท่งล่าสุด
-recent_low = df_15m['low'].tail(5).min()
+        recent_low =df_15m['low'].tail(5).min()
 
 # SL กัน wick
-sl = round(
-    recent_low - (atr * 0.25),
-    4
-)
+          sl = round(
+          recent_low - (atr * 0.25),
+                 4
+            )
 
 # TP RR 1:2
-risk = entry - sl
+          risk = entry - sl
 
-tp = round(
-    entry + (risk * 2),
-    4
-)
+           tp = round(
+           entry + (risk * 2),
+               4
+                )
 
             message = f"""
 🚀 LONG SIGNAL
