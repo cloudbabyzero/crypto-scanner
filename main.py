@@ -81,7 +81,6 @@ def send_telegram(message):
 def save_signal(
     signal_id,
     symbol,
-    ,
     grade,
     score,
     entry,
