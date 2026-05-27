@@ -167,16 +167,16 @@ def update_signal_result(
 # =========================
 
 @bot.message_handler(commands=['ping'])
-
 def ping(message):
 
     bot.reply_to(
         message,
         "✅ Bot Online"
     )
-    
-    @bot.message_handler(commands=['status'])
 
+# =========================
+
+@bot.message_handler(commands=['status'])
 def status(message):
 
     text = f"""
@@ -199,9 +199,10 @@ Scan Interval:
         message,
         text
     )
-    
-    @bot.message_handler(commands=['trades'])
 
+# =========================
+
+@bot.message_handler(commands=['trades'])
 def trades(message):
 
     if not active_trades:
@@ -239,9 +240,10 @@ TP2:
         message,
         text
     )
-    
-    @bot.message_handler(commands=['coins'])
 
+# =========================
+
+@bot.message_handler(commands=['coins'])
 def coins(message):
 
     text = "🪙 COINS\n\n"
@@ -254,9 +256,85 @@ def coins(message):
         message,
         text
     )
-    
-    @bot.message_handler(commands=['forcecheck'])
 
+# =========================
+
+@bot.message_handler(commands=['stats'])
+def stats(message):
+
+    wins = 0
+    losses = 0
+    be = 0
+
+    if not os.path.exists(
+        'signals.csv'
+    ):
+
+        bot.reply_to(
+            message,
+            "No stats yet"
+        )
+
+        return
+
+    with open(
+        'signals.csv',
+        'r'
+    ) as file:
+
+        reader = csv.DictReader(file)
+
+        for row in reader:
+
+            result = row['result']
+
+            if result == "WIN":
+
+                wins += 1
+
+            elif result == "LOSS":
+
+                losses += 1
+
+            elif result == "BE":
+
+                be += 1
+
+    total = wins + losses
+
+    winrate = 0
+
+    if total > 0:
+
+        winrate = round(
+            (wins / total) * 100,
+            2
+        )
+
+    text = f"""
+📈 STATS
+
+WIN:
+{wins}
+
+LOSS:
+{losses}
+
+BE:
+{be}
+
+WINRATE:
+{winrate}%
+"""
+
+    bot.reply_to(
+        message,
+        text
+    )
+
+# =========================
+
+@bot.message_handler(commands=['forcecheck'])
 def forcecheck(message):
 
     bot.reply_to(
