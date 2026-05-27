@@ -81,7 +81,7 @@ def send_telegram(message):
 def save_signal(
     signal_id,
     symbol,
-    side,
+    ,
     grade,
     score,
     entry,
@@ -108,7 +108,7 @@ def save_signal(
                 'signal_id',
                 'time',
                 'symbol',
-                'side',
+                '',
                 'grade',
                 'score',
                 'entry',
@@ -710,13 +710,25 @@ def execute_trade(symbol, side):
         # LEVERAGE
         # =========================
 
-        exchange.set_leverage(
-            LEVERAGE,
-            symbol,
-            params={
-                "ide": side.upper()
-            }
-        )
+        if side == "long":
+
+    exchange.set_leverage(
+        LEVERAGE,
+        symbol,
+        params={
+            "side": "LONG"
+        }
+    )
+
+else:
+
+    exchange.set_leverage(
+        LEVERAGE,
+        symbol,
+        params={
+            "side": "SHORT"
+        }
+    )
 
         # =========================
         # AMOUNT
