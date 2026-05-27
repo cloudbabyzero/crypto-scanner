@@ -31,14 +31,14 @@ MIN_SCORE = 85
 ATR_FILTER = 0.4
 
 symbols = [
-    'BTC/USDT',
-    'ETH/USDT',
-    'DOGE/USDT',
-    'SOL/USDT',
-    'XRP/USDT',
-    'HYPE/USDT',
-    'ZEC/USDT',
-    'INJ/USDT'
+    'BTC/USDT:USDT',
+    'ETH/USDT:USDT',
+    'DOGE/USDT:USDT',
+    'SOL/USDT:USDT',
+    'XRP/USDT:USDT',
+    'HYPE/USDT:USDT',
+    'ZEC/USDT:USDT',
+    'INJ/USDT:USDT'
 ]
 
 last_alert = {}
@@ -513,8 +513,8 @@ def long_order(message):
 
         coin = parts[1].upper()
 
-        symbol = f"{coin}/USDT"
-
+        symbol = f"{coin}/USDT:USDT"
+        
         execute_trade(
             symbol,
             "long"
@@ -547,7 +547,7 @@ def short_order(message):
 
         coin = parts[1].upper()
 
-        symbol = f"{coin}/USDT"
+        symbol = f"{coin}/USDT:USDT"
 
         execute_trade(
             symbol,
@@ -647,8 +647,8 @@ def execute_trade(symbol, side):
 
         symbol = symbol.upper()
 
-        if "/" not in symbol:
-            symbol = f"{symbol}/USDT"
+        if ":USDT" not in symbol:
+            symbol = f"{symbol}/USDT:USDT"
 
         # =========================
         # CHECK SYMBOL
@@ -1018,7 +1018,7 @@ def get_dataframe(symbol, timeframe):
 def get_btc_trend():
 
     btc_df = get_dataframe(
-        'BTC/USDT',
+        'BTC/USDT:USDT',
         '4h'
     )
 
@@ -1330,7 +1330,7 @@ def analyze(symbol):
         # =========================
 
         if (
-            symbol != 'BTC/USDT'
+            symbol != 'BTC/USDT:USDT'
             and btc_trend == "bearish"
         ):
 
