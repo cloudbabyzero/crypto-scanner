@@ -289,7 +289,7 @@ lower_distance = (
 # LONG
 if (
     m15['close'] > m15['bb_mid']
-    and upper_distance < 0.995
+    and upper_distance < 0.998
 ):
 
     long_score += 10
@@ -297,7 +297,7 @@ if (
 # SHORT
 elif (
     m15['close'] < m15['bb_mid']
-    and lower_distance > 1.005
+    and lower_distance > 1.002
 ):
 
     short_score += 10
