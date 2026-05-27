@@ -520,28 +520,59 @@ def analyze(symbol):
         )
 
         # =========================
+        # GRADE
+        # =========================
+
+        grade = "C"
+
+        if (
+            long_score >= 95
+            or short_score >= 95
+        ):
+
+            grade = "A+"
+
+        elif (
+            long_score >= 85
+            or short_score >= 85
+        ):
+
+            grade = "A"
+
+        elif (
+            long_score >= 75
+            or short_score >= 75
+        ):
+
+            grade = "B"
+
+        # =========================
+        # PULLBACK ENTRY
+        # =========================
+
+        long_pullback = (
+            m15['ema7']
+            +
+            (m15['atr'] * 0.2)
+        )
+
+        short_pullback = (
+            m15['ema7']
+            -
+            (m15['atr'] * 0.2)
+        )
+
+        # =========================
         # LONG SIGNAL
         # =========================
 
         if (
-            long_score >= 75
+            long_score >= 85
             and btc_trend == "bullish"
         ):
 
-            if long_score >= 90:
-
-                grade = "A+"
-
-            elif long_score >= 85:
-
-                grade = "A"
-
-            else:
-
-                grade = "B"
-
             entry = round(
-                m15['close'],
+                long_pullback,
                 4
             )
 
@@ -554,13 +585,18 @@ def analyze(symbol):
 
             risk = entry - sl
 
-            tp = round(
+            tp1 = round(
+                entry + risk,
+                4
+            )
+
+            tp2 = round(
                 entry + (risk * 2),
                 4
             )
 
             rr = round(
-                (tp - entry)
+                (tp2 - entry)
                 /
                 (entry - sl),
                 2
@@ -577,14 +613,17 @@ Grade:
 Score:
 {long_score}/100
 
-Entry:
+Pullback Entry:
 {entry}
 
 SL:
 {sl}
 
-TP:
-{tp}
+TP1:
+{tp1}
+
+TP2:
+{tp2}
 
 RR:
 1:{rr}
@@ -603,6 +642,11 @@ Volume:
 
 BTC Trend:
 {btc_trend}
+
+Plan:
+- TP1 = ปิด 50%
+- Move SL -> BE
+- TP2 = ปล่อยรัน
 """
 
             print(
@@ -619,24 +663,12 @@ BTC Trend:
         # =========================
 
         elif (
-            short_score >= 75
+            short_score >= 85
             and btc_trend == "bearish"
         ):
 
-            if short_score >= 90:
-
-                grade = "A+"
-
-            elif short_score >= 85:
-
-                grade = "A"
-
-            else:
-
-                grade = "B"
-
             entry = round(
-                m15['close'],
+                short_pullback,
                 4
             )
 
@@ -649,13 +681,18 @@ BTC Trend:
 
             risk = sl - entry
 
-            tp = round(
+            tp1 = round(
+                entry - risk,
+                4
+            )
+
+            tp2 = round(
                 entry - (risk * 2),
                 4
             )
 
             rr = round(
-                (entry - tp)
+                (entry - tp2)
                 /
                 (sl - entry),
                 2
@@ -672,14 +709,17 @@ Grade:
 Score:
 {short_score}/100
 
-Entry:
+Pullback Entry:
 {entry}
 
 SL:
 {sl}
 
-TP:
-{tp}
+TP1:
+{tp1}
+
+TP2:
+{tp2}
 
 RR:
 1:{rr}
@@ -698,6 +738,11 @@ Volume:
 
 BTC Trend:
 {btc_trend}
+
+Plan:
+- TP1 = ปิด 50%
+- Move SL -> BE
+- TP2 = ปล่อยรัน
 """
 
             print(
