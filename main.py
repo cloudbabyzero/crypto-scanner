@@ -21,10 +21,10 @@ symbols = [
     'ETH/USDT',
     'DOGE/USDT',
     'SOL/USDT',
-    'XRP/USDT'
-    'HYPE/USDT'
-    'ZEC/USDT'
-    'INJ/USDT'
+    'XRP/USDT',
+    'HYPE/USDT',
+    'ZEC/USDT',
+    'INJ/USDT',
 ]
 
 last_alert = {}
