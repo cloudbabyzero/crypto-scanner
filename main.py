@@ -950,26 +950,29 @@ Plan:
 
             send_telegram(message)
             
+                        send_telegram(message)
+
             save_signal(
-    signal_id,
-    symbol,
-    "LONG",
-    grade,
-    long_score,
-    entry,
-    sl,
-    tp1,
-    tp2
-)
+                signal_id,
+                symbol,
+                "LONG",
+                grade,
+                long_score,
+                entry,
+                sl,
+                tp1,
+                tp2
+            )
+
             active_trades[signal_id] = {
-    "symbol": symbol,
-    "side": "LONG",
-    "entry": entry,
-    "sl": sl,
-    "tp1": tp1,
-    "tp2": tp2,
-    "tp1_hit": False
-}
+                "symbol": symbol,
+                "side": "LONG",
+                "entry": entry,
+                "sl": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "tp1_hit": False
+            }
             last_alert[symbol] = now
 
         # =========================
@@ -1066,26 +1069,29 @@ Plan:
 
             send_telegram(message)
             
+                        send_telegram(message)
+
             save_signal(
-    signal_id,
-    symbol,
-    "SHORT",
-    grade,
-    short_score,
-    entry,
-    sl,
-    tp1,
-    tp2
-)
+                signal_id,
+                symbol,
+                "SHORT",
+                grade,
+                short_score,
+                entry,
+                sl,
+                tp1,
+                tp2
+            )
+
             active_trades[signal_id] = {
-    "symbol": symbol,
-    "side": "SHORT",
-    "entry": entry,
-    "sl": sl,
-    "tp1": tp1,
-    "tp2": tp2,
-    "tp1_hit": False
-}
+                "symbol": symbol,
+                "side": "SHORT",
+                "entry": entry,
+                "sl": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "tp1_hit": False
+            }
             last_alert[symbol] = now
 
     except Exception as e:
