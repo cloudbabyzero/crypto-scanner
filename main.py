@@ -24,7 +24,7 @@ symbols = [
     'XRP/USDT',
     'HYPE/USDT',
     'ZEC/USDT',
-    'INJ/USDT',
+    'INJ/USDT'
 ]
 
 last_alert = {}
