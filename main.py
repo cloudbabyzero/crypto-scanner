@@ -52,7 +52,11 @@ def send_telegram(message):
 
     except Exception as e:
 
-        print("Telegram Error:", e, flush=True)
+        print(
+            "Telegram Error:",
+            e,
+            flush=True
+        )
 
 # =========================
 # BINGX
@@ -90,18 +94,6 @@ def get_dataframe(symbol, timeframe):
             'volume'
         ]
     )
-    
-    def get_btc_trend():
-
-        btc_df = get_dataframe('BTC/USDT', '4h')
-
-        btc = btc_df.iloc[-2]
-
-    if btc['ema25'] > btc['ema99']:
-
-        return "bullish"
-
-    return "bearish"
 
     # =========================
     # EMA
@@ -140,11 +132,11 @@ def get_dataframe(symbol, timeframe):
     df['macd'] = macd.macd()
 
     df['macd_signal'] = macd.macd_signal()
-    
+
     # =========================
     # ADX
     # =========================
-    
+
     adx = ta.trend.ADXIndicator(
         df['high'],
         df['low'],
@@ -194,6 +186,25 @@ def get_dataframe(symbol, timeframe):
     return df
 
 # =========================
+# BTC TREND
+# =========================
+
+def get_btc_trend():
+
+    btc_df = get_dataframe(
+        'BTC/USDT',
+        '4h'
+    )
+
+    btc = btc_df.iloc[-2]
+
+    if btc['ema25'] > btc['ema99']:
+
+        return "bullish"
+
+    return "bearish"
+
+# =========================
 # ANALYZE
 # =========================
 
@@ -210,31 +221,61 @@ def analyze(symbol):
         if symbol in last_alert:
 
             if now - last_alert[symbol] < COOLDOWN:
+
                 return
 
         # =========================
         # GET DATA
         # =========================
 
-        df_15m = get_dataframe(symbol, '1d')
-        
-        df_4h = get_dataframe(symbol, '4h')
+        df_1d = get_dataframe(
+            symbol,
+            '1d'
+        )
 
-        df_1h = get_dataframe(symbol, '1h')
+        df_4h = get_dataframe(
+            symbol,
+            '4h'
+        )
 
-        df_15m = get_dataframe(symbol, '15m')
+        df_1h = get_dataframe(
+            symbol,
+            '1h'
+        )
+
+        df_15m = get_dataframe(
+            symbol,
+            '15m'
+        )
 
         # =========================
         # CLOSED CANDLES
         # =========================
 
         d1 = df_1d.iloc[-2]
-        
+
         h4 = df_4h.iloc[-2]
 
         h1 = df_1h.iloc[-2]
 
         m15 = df_15m.iloc[-2]
+
+        # =========================
+        # FOMO FILTER
+        # =========================
+
+        candle_size = abs(
+            m15['close'] - m15['open']
+        )
+
+        if candle_size > m15['atr'] * 1.5:
+
+            print(
+                f"{symbol} skipped - candle too big",
+                flush=True
+            )
+
+            return
 
         # =========================
         # SCORE
@@ -245,11 +286,11 @@ def analyze(symbol):
         short_score = 0
 
         btc_trend = get_btc_trend()
-        
+
         # =========================
         # DAILY TREND
         # =========================
-        
+
         if d1['ema25'] > d1['ema99']:
 
             long_score += 10
@@ -257,7 +298,6 @@ def analyze(symbol):
         else:
 
             short_score += 10
-
 
         # =========================
         # 4H TREND
@@ -299,25 +339,39 @@ def analyze(symbol):
         # RSI
         # =========================
 
-        if m15['rsi'] > 55:
+        if 55 < m15['rsi'] < 70:
 
             long_score += 15
 
-        elif m15['rsi'] < 45:
+        elif 30 < m15['rsi'] < 45:
 
             short_score += 15
-        
-        # =========================
-        # ADX Trend Strength
-        # =========================
 
+        # =========================
+        # ADX FILTER
+        # =========================
 
         if m15['adx'] > 20:
 
             long_score += 10
 
             short_score += 10
-            
+
+        # =========================
+        # ATR VOLATILITY FILTER
+        # =========================
+
+        atr_percent = (
+            m15['atr']
+            /
+            m15['close']
+        ) * 100
+
+        if atr_percent > 0.4:
+
+            long_score += 10
+
+            short_score += 10
 
         # =========================
         # VOLUME
@@ -368,10 +422,41 @@ def analyze(symbol):
             short_score += 10
 
         # =========================
+        # EMA99 FILTER
+        # =========================
+
+        distance_ema99 = abs(
+            m15['close'] - m15['ema99']
+        )
+
+        if distance_ema99 < m15['atr'] * 0.3:
+
+            print(
+                f"{symbol} skipped - too close EMA99",
+                flush=True
+            )
+
+            return
+
+        # =========================
+        # BTC FILTER
+        # =========================
+
+        if (
+            symbol != 'BTC/USDT'
+            and btc_trend == "bearish"
+        ):
+
+            long_score -= 20
+
+        # =========================
         # LONG SIGNAL
         # =========================
 
-        if long_score >= 70 and btc_trend == "bullish":
+        if (
+            long_score >= 75
+            and btc_trend == "bullish"
+        ):
 
             entry = round(
                 m15['close'],
@@ -382,12 +467,14 @@ def analyze(symbol):
 
             # กัน wick
             sl = round(
-                entry - atr * 1.8,
+                entry - atr * 1.5,
                 4
             )
 
+            risk = entry - sl
+
             tp = round(
-                entry + atr * 3.6,
+                entry + (risk * 2),
                 4
             )
 
@@ -421,11 +508,23 @@ RR:
 RSI:
 {round(m15['rsi'],2)}
 
+ADX:
+{round(m15['adx'],2)}
+
+ATR %:
+{round(atr_percent,2)}
+
 Volume:
 {"HIGH" if volume_high else "NORMAL"}
+
+BTC Trend:
+{btc_trend}
 """
 
-            print(message, flush=True)
+            print(
+                message,
+                flush=True
+            )
 
             send_telegram(message)
 
@@ -435,7 +534,10 @@ Volume:
         # SHORT SIGNAL
         # =========================
 
-        elif short_score >= 70 and btc_trend == "bearish":
+        elif (
+            short_score >= 75
+            and btc_trend == "bearish"
+        ):
 
             entry = round(
                 m15['close'],
@@ -446,12 +548,14 @@ Volume:
 
             # กัน wick
             sl = round(
-                entry + atr * 1.8,
+                entry + atr * 1.5,
                 4
             )
 
+            risk = sl - entry
+
             tp = round(
-                entry - atr * 3.6,
+                entry - (risk * 2),
                 4
             )
 
@@ -485,11 +589,23 @@ RR:
 RSI:
 {round(m15['rsi'],2)}
 
+ADX:
+{round(m15['adx'],2)}
+
+ATR %:
+{round(atr_percent,2)}
+
 Volume:
 {"HIGH" if volume_high else "NORMAL"}
+
+BTC Trend:
+{btc_trend}
 """
 
-            print(message, flush=True)
+            print(
+                message,
+                flush=True
+            )
 
             send_telegram(message)
 
@@ -497,15 +613,23 @@ Volume:
 
     except Exception as e:
 
-        print(f"{symbol} ERROR", flush=True)
+        print(
+            f"{symbol} ERROR",
+            flush=True
+        )
 
-        print(traceback.format_exc(), flush=True)
+        print(
+            traceback.format_exc(),
+            flush=True
+        )
 
 # =========================
 # STARTUP
 # =========================
 
-send_telegram("🚀 Railway Scanner Bot Online")
+send_telegram(
+    "🚀 Railway Scanner Bot Online"
+)
 
 # =========================
 # MAIN LOOP
@@ -531,7 +655,9 @@ while True:
             flush=True
         )
 
-        time.sleep(SCAN_INTERVAL)
+        time.sleep(
+            SCAN_INTERVAL
+        )
 
     except Exception as e:
 
