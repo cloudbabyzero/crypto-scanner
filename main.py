@@ -638,7 +638,6 @@ def get_latest_signal(symbol):
         "atr": atr
     }
 
-```python
 def execute_trade(symbol, side):
 
     try:
