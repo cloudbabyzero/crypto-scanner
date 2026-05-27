@@ -93,9 +93,9 @@ def get_dataframe(symbol, timeframe):
     
     def get_btc_trend():
 
-    btc_df = get_dataframe('BTC/USDT', '4h')
+        btc_df = get_dataframe('BTC/USDT', '4h')
 
-    btc = btc_df.iloc[-2]
+        btc = btc_df.iloc[-2]
 
     if btc['ema25'] > btc['ema99']:
 
