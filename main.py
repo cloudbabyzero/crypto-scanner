@@ -638,9 +638,19 @@ def get_latest_signal(symbol):
         "atr": atr
     }
 
+```python
 def execute_trade(symbol, side):
 
     try:
+
+        # =========================
+        # FORMAT SYMBOL
+        # =========================
+
+        symbol = symbol.upper()
+
+        if "/" not in symbol:
+            symbol = f"{symbol}/USDT"
 
         # =========================
         # CHECK SYMBOL
@@ -655,7 +665,7 @@ def execute_trade(symbol, side):
             return
 
         # =========================
-        # PREVENT DUPLICATE TRADE
+        # PREVENT DUPLICATE
         # =========================
 
         for trade_id in active_trades:
@@ -663,31 +673,43 @@ def execute_trade(symbol, side):
             trade = active_trades[trade_id]
 
             if (
-               trade['symbol'] == symbol
-               and trade.get('status') in ["PENDING", "OPEN"]
-           ):
+                trade['symbol'] == symbol
+                and trade.get('status') in ["PENDING", "OPEN"]
+            ):
 
-               send_telegram(
-                   f"⚠️ {symbol} already active"
-               )
+                send_telegram(
+                    f"⚠️ {symbol} already active"
+                )
 
-               return
+                return
 
-        
+        # =========================
+        # GET SIGNAL
+        # =========================
+
         signal = get_latest_signal(symbol)
 
         entry = signal['entry']
 
         atr = signal['atr']
 
+        # =========================
+        # MARGIN MODE
+        # =========================
+
         try:
+
             exchange.set_margin_mode(
                 "isolated",
                 symbol
             )
-        except:
 
+        except:
             pass
+
+        # =========================
+        # LEVERAGE
+        # =========================
 
         exchange.set_leverage(
             LEVERAGE,
@@ -697,23 +719,26 @@ def execute_trade(symbol, side):
             }
         )
 
-        amount = round(
-            (MARGIN_PER_TRADE * LEVERAGE)
-            / entry,
-            3
+        # =========================
+        # AMOUNT
+        # =========================
+
+        raw_amount = (
+            MARGIN_PER_TRADE * LEVERAGE
+        ) / entry
+
+        amount = exchange.amount_to_precision(
+            symbol,
+            raw_amount
         )
 
+        amount = float(amount)
+
         # =========================
-        # MARKET ORDER
+        # LONG
         # =========================
 
         if side == "long":
-
-            order = exchange.create_limit_buy_order(
-                symbol,
-                amount,
-                entry
-           )
 
             sl = round(
                 entry - atr * 1.5,
@@ -724,78 +749,109 @@ def execute_trade(symbol, side):
                 entry + ((entry - sl) * 2),
                 4
             )
-            
+
             order = exchange.create_order(
-                    symbol,
-                    'limit',
-                    'buy',
-                    amount,
-                    entry,
-                    params={
-                        'positionSide': 'LONG',
-                        'marginMode': 'isolated'
-                    }
-                )
+                symbol=symbol,
+                type='limit',
+                side='buy',
+                amount=amount,
+                price=entry,
+                params={
+                    'positionSide': 'LONG',
+                    'marginMode': 'isolated'
+                }
+            )
+
+        # =========================
+        # SHORT
+        # =========================
 
         else:
 
+            sl = round(
+                entry + atr * 1.5,
+                4
+            )
+
+            tp = round(
+                entry - ((sl - entry) * 2),
+                4
+            )
+
             order = exchange.create_order(
-                    symbol,
-                    'limit',
-                    'sell',
-                    amount,
-                    entry,
-                    params={
-                        'positionSide': 'SHORT',
-                        'marginMode': 'isolated'
-                    }
-                )
+                symbol=symbol,
+                type='limit',
+                side='sell',
+                amount=amount,
+                price=entry,
+                params={
+                    'positionSide': 'SHORT',
+                    'marginMode': 'isolated'
+                }
+            )
 
-        message = f"""
-        ✅ ORDER EXECUTED
-
-        {symbol}
-
-        Side:
-        {side.upper()}
-
-        Entry:
-        {entry}
-
-        SL:
-        {sl}
-
-        TP:
-        {tp}
-
-        Leverage:
-        x{LEVERAGE}
-
-        Margin:
-        {MARGIN_PER_TRADE} USDT
-        """
-
-        send_telegram(message)
+        # =========================
+        # SAVE TRADE
+        # =========================
 
         trade_id = str(uuid.uuid4())[:8]
 
         active_trades[trade_id] = {
+
             "symbol": symbol,
             "side": side.upper(),
+
             "entry": entry,
+
             "sl": sl,
+
             "tp1": tp,
             "tp2": tp,
+
             "tp1_hit": False,
+
             "status": "PENDING",
+
             "order_id": order['id']
         }
+
+        # =========================
+        # TELEGRAM
+        # =========================
+
+        message = f"""
+✅ ORDER EXECUTED
+
+{symbol}
+
+Side:
+{side.upper()}
+
+Entry:
+{entry}
+
+SL:
+{sl}
+
+TP:
+{tp}
+
+Leverage:
+x{LEVERAGE}
+
+Margin:
+{MARGIN_PER_TRADE} USDT
+"""
+
+        send_telegram(message)
 
     except Exception as e:
 
         send_telegram(
             f"❌ ORDER ERROR\n\n{str(e)}"
         )
+```
+
 
 
 # =========================
