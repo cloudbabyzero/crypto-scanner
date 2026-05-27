@@ -711,23 +711,23 @@ def execute_trade(symbol, side):
 
         if side == "long":
 
-    exchange.set_leverage(
-        LEVERAGE,
-        symbol,
-        params={
-            "side": "LONG"
-        }
-    )
+                exchange.set_leverage(
+                    LEVERAGE,
+                    symbol,
+                    params={
+                        "side": "LONG"
+                    }
+                )
 
-else:
+        else:
 
-    exchange.set_leverage(
-        LEVERAGE,
-        symbol,
-        params={
-            "side": "SHORT"
-        }
-    )
+                exchange.set_leverage(
+                    LEVERAGE,
+                    symbol,
+                    params={
+                        "side": "SHORT"
+                    }
+                )
 
         # =========================
         # AMOUNT
