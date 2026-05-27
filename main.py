@@ -23,6 +23,9 @@ bot = telebot.TeleBot(
 SCAN_INTERVAL = 300
 COOLDOWN = 3600
 
+LEVERAGE = 20
+MARGIN_PER_TRADE = 2
+
 ADX_FILTER = 20
 MIN_SCORE = 85
 ATR_FILTER = 0.4
@@ -493,6 +496,74 @@ SCAN INTERVAL:
 
 # =========================
 
+@bot.message_handler(commands=['long'])
+def long_order(message):
+
+    try:
+
+        parts = message.text.split()
+
+        if len(parts) < 2:
+
+            bot.reply_to(
+                message,
+                "Usage: /long xrp"
+            )
+
+            return
+
+        coin = parts[1].upper()
+
+        symbol = f"{coin}/USDT"
+
+        execute_trade(
+            symbol,
+            "long"
+        )
+
+    except Exception as e:
+
+        bot.reply_to(
+            message,
+            f"ERROR: {str(e)}"
+        )
+
+# =========================
+
+@bot.message_handler(commands=['short'])
+def short_order(message):
+
+    try:
+
+        parts = message.text.split()
+
+        if len(parts) < 2:
+
+            bot.reply_to(
+                message,
+                "Usage: /short xrp"
+            )
+
+            return
+
+        coin = parts[1].upper()
+
+        symbol = f"{coin}/USDT"
+
+        execute_trade(
+            symbol,
+            "short"
+        )
+
+    except Exception as e:
+
+        bot.reply_to(
+            message,
+            f"ERROR: {str(e)}"
+        )
+
+# =========================
+
 @bot.message_handler(commands=['help'])
 def help_command(message):
 
@@ -532,6 +603,12 @@ def help_command(message):
 /config
 ดู config ปัจจุบัน
 
+/long xrp
+เปิด LONG
+
+/short xrp
+เปิด SHORT
+
 /help
 ดูคำสั่งทั้งหมด
 """
@@ -541,6 +618,158 @@ def help_command(message):
         text
     )
     
+
+# =========================
+# TELEGRAM COMMANDS
+# =========================
+
+def get_latest_signal(symbol):
+
+    df_15m = get_dataframe(symbol, '15m')
+
+    m15 = df_15m.iloc[-2]
+
+    entry = float(m15['close'])
+
+    atr = float(m15['atr'])
+
+    return {
+        "entry": entry,
+        "atr": atr
+    }
+
+def execute_trade(symbol, side):
+
+    try:
+
+        # =========================
+        # CHECK SYMBOL
+        # =========================
+
+        if symbol not in symbols:
+
+            send_telegram(
+                f"❌ {symbol} not supported"
+            )
+
+            return
+
+        # =========================
+        # PREVENT DUPLICATE TRADE
+        # =========================
+
+        for trade_id in active_trades:
+
+            trade = active_trades[trade_id]
+
+            if trade['symbol'] == symbol:
+
+                send_telegram(
+                    f"⚠️ {symbol} already active"
+                )
+
+                return
+
+        
+        signal = get_latest_signal(symbol)
+
+        entry = signal['entry']
+
+        atr = signal['atr']
+
+        exchange.set_leverage(
+            LEVERAGE,
+            symbol
+        )
+
+        amount = round(
+            (MARGIN_PER_TRADE * LEVERAGE)
+            / entry,
+            3
+        )
+
+        # =========================
+        # MARKET ORDER
+        # =========================
+
+        if side == "long":
+
+            order = exchange.create_market_buy_order(
+                symbol,
+                amount
+            )
+
+            sl = round(
+                entry - atr * 1.5,
+                4
+            )
+
+            tp = round(
+                entry + ((entry - sl) * 2),
+                4
+            )
+
+        else:
+
+            order = exchange.create_market_sell_order(
+                symbol,
+                amount
+            )
+
+            sl = round(
+                entry + atr * 1.5,
+                4
+            )
+
+            tp = round(
+                entry - ((sl - entry) * 2),
+                4
+            )
+
+        message = f"""
+        ✅ ORDER EXECUTED
+
+        {symbol}
+
+        Side:
+        {side.upper()}
+
+        Entry:
+        {entry}
+
+        SL:
+        {sl}
+
+        TP:
+        {tp}
+
+        Leverage:
+        x{LEVERAGE}
+
+        Margin:
+        {MARGIN_PER_TRADE} USDT
+        """
+
+        send_telegram(message)
+
+        trade_id = str(uuid.uuid4())[:8]
+
+        active_trades[trade_id] = {
+            "symbol": symbol,
+            "side": side.upper(),
+            "entry": entry,
+            "sl": sl,
+            "tp1": tp,
+            "tp2": tp,
+            "tp1_hit": False
+        }
+
+    except Exception as e:
+
+        send_telegram(
+            f"❌ ORDER ERROR\n\n{str(e)}"
+        )
+
 
 # =========================
 # BINGX
@@ -1467,6 +1696,8 @@ threading.Thread(
 send_telegram(
     "🚀 Railway Scanner Bot Online"
 )
+
+
 
 # =========================
 # MAIN LOOP
