@@ -152,7 +152,7 @@ def get_dataframe(symbol, timeframe):
         window=14
     )
 
-        df['adx'] = adx.adx()
+    df['adx'] = adx.adx()
 
     # =========================
     # BOLLINGER
