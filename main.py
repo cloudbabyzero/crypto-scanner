@@ -714,7 +714,7 @@ def execute_trade(symbol, side):
                 exchange.set_leverage(
                     LEVERAGE,
                     symbol,
-                    params={
+                    {
                         "side": "LONG"
                     }
                 )
@@ -724,7 +724,7 @@ def execute_trade(symbol, side):
                 exchange.set_leverage(
                     LEVERAGE,
                     symbol,
-                    params={
+                    {
                         "side": "SHORT"
                     }
                 )
