@@ -90,6 +90,18 @@ def get_dataframe(symbol, timeframe):
             'volume'
         ]
     )
+    
+    def get_btc_trend():
+
+    btc_df = get_dataframe('BTC/USDT', '4h')
+
+    btc = btc_df.iloc[-2]
+
+    if btc['ema25'] > btc['ema99']:
+
+        return "bullish"
+
+    return "bearish"
 
     # =========================
     # EMA
@@ -128,6 +140,19 @@ def get_dataframe(symbol, timeframe):
     df['macd'] = macd.macd()
 
     df['macd_signal'] = macd.macd_signal()
+    
+    # =========================
+    # ADX
+    # =========================
+    
+    adx = ta.trend.ADXIndicator(
+        df['high'],
+        df['low'],
+        df['close'],
+        window=14
+    )
+
+        df['adx'] = adx.adx()
 
     # =========================
     # BOLLINGER
@@ -191,6 +216,8 @@ def analyze(symbol):
         # GET DATA
         # =========================
 
+        df_15m = get_dataframe(symbol, '1d')
+        
         df_4h = get_dataframe(symbol, '4h')
 
         df_1h = get_dataframe(symbol, '1h')
@@ -201,6 +228,8 @@ def analyze(symbol):
         # CLOSED CANDLES
         # =========================
 
+        d1 = df_1d.iloc[-2]
+        
         h4 = df_4h.iloc[-2]
 
         h1 = df_1h.iloc[-2]
@@ -214,6 +243,21 @@ def analyze(symbol):
         long_score = 0
 
         short_score = 0
+
+        btc_trend = get_btc_trend()
+        
+        # =========================
+        # DAILY TREND
+        # =========================
+        
+        if d1['ema25'] > d1['ema99']:
+
+            long_score += 10
+
+        else:
+
+            short_score += 10
+
 
         # =========================
         # 4H TREND
@@ -262,6 +306,18 @@ def analyze(symbol):
         elif m15['rsi'] < 45:
 
             short_score += 15
+        
+        # =========================
+        # ADX Trend Strength
+        # =========================
+
+
+        if m15['adx'] > 20:
+
+            long_score += 10
+
+            short_score += 10
+            
 
         # =========================
         # VOLUME
@@ -315,7 +371,7 @@ def analyze(symbol):
         # LONG SIGNAL
         # =========================
 
-        if long_score >= 70:
+        if long_score >= 70 and btc_trend == "bullish":
 
             entry = round(
                 m15['close'],
@@ -379,7 +435,7 @@ Volume:
         # SHORT SIGNAL
         # =========================
 
-        elif short_score >= 70:
+        elif short_score >= 70 and btc_trend == "bearish":
 
             entry = round(
                 m15['close'],
