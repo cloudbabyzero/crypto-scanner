@@ -824,7 +824,15 @@ Plan:
     tp1,
     tp2
 )
-
+active_trades[signal_id] = {
+    "symbol": symbol,
+    "side": "LONG",
+    "entry": entry,
+    "sl": sl,
+    "tp1": tp1,
+    "tp2": tp2,
+    "tp1_hit": False
+}
             last_alert[symbol] = now
 
         # =========================
@@ -932,7 +940,15 @@ Plan:
     tp1,
     tp2
 )
-
+active_trades[signal_id] = {
+    "symbol": symbol,
+    "side": "SHORT",
+    "entry": entry,
+    "sl": sl,
+    "tp1": tp1,
+    "tp2": tp2,
+    "tp1_hit": False
+}
             last_alert[symbol] = now
 
     except Exception as e:
