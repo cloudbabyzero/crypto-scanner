@@ -140,7 +140,9 @@ def get_dataframe(symbol, timeframe):
     )
 
     df['bb_mid'] = bb.bollinger_mavg()
+
     df['bb_upper'] = bb.bollinger_hband()
+
     df['bb_lower'] = bb.bollinger_lband()
 
     # =========================
@@ -195,7 +197,10 @@ def analyze(symbol):
 
         df_15m = get_dataframe(symbol, '15m')
 
-        # ใช้แท่งปิดแล้ว
+        # =========================
+        # CLOSED CANDLES
+        # =========================
+
         h4 = df_4h.iloc[-2]
 
         h1 = df_1h.iloc[-2]
@@ -250,11 +255,11 @@ def analyze(symbol):
         # RSI
         # =========================
 
-        if m15['rsi'] > 50:
+        if m15['rsi'] > 55:
 
             long_score += 15
 
-        else:
+        elif m15['rsi'] < 45:
 
             short_score += 15
 
@@ -262,49 +267,52 @@ def analyze(symbol):
         # VOLUME
         # =========================
 
-        if m15['volume'] > m15['vol_avg'] * 1.3:
+        volume_high = (
+            m15['volume']
+            >
+            m15['vol_avg'] * 1.3
+        )
+
+        if volume_high:
 
             long_score += 15
 
             short_score += 15
 
         # =========================
-        # BOLLINGER
+        # BOLLINGER FILTER
         # =========================
-
-        # กันไล่แท่งแรงเกิน
 
         upper_distance = (
-            df_15m['close'].iloc[-2]
-         /
-            df_15m['bb_upper'].iloc[-2]
-         )
+            m15['close']
+            /
+            m15['bb_upper']
+        )
 
-         lower_distance = (
-            df_15m['close'].iloc[-2]
-         /
-            df_15m['bb_lower'].iloc[-2]
-         )
+        lower_distance = (
+            m15['close']
+            /
+            m15['bb_lower']
+        )
 
-# LONG
+        # LONG FILTER
         if (
-             m15['close'] > m15['bb_mid']
+            m15['close'] > m15['bb_mid']
             and upper_distance < 0.998
-            ):
+        ):
 
-              long_score += 10
+            long_score += 10
 
-# SHORT
-          elif (
-              m15['close'] < m15['bb_mid']
-             and lower_distance > 1.002
-             ):
+        # SHORT FILTER
+        elif (
+            m15['close'] < m15['bb_mid']
+            and lower_distance > 1.002
+        ):
 
             short_score += 10
-          
 
         # =========================
-        # LONG
+        # LONG SIGNAL
         # =========================
 
         if long_score >= 70:
@@ -314,25 +322,25 @@ def analyze(symbol):
                 4
             )
 
-# ATR
-           atr = m15['atr']
+            atr = m15['atr']
 
-# หา low ต่ำสุด 5 แท่งล่าสุด
-        recent_low =df_15m['low'].tail(5).min()
-
-# SL กัน wick
-          sl = round(
-          recent_low - (atr * 0.25),
-                 4
+            # กัน wick
+            sl = round(
+                entry - atr * 1.8,
+                4
             )
 
-# TP RR 1:2
-          risk = entry - sl
+            tp = round(
+                entry + atr * 3.6,
+                4
+            )
 
-           tp = round(
-           entry + (risk * 2),
-               4
-                )
+            rr = round(
+                (tp - entry)
+                /
+                (entry - sl),
+                2
+            )
 
             message = f"""
 🚀 LONG SIGNAL
@@ -358,7 +366,7 @@ RSI:
 {round(m15['rsi'],2)}
 
 Volume:
-HIGH
+{"HIGH" if volume_high else "NORMAL"}
 """
 
             print(message, flush=True)
@@ -368,7 +376,7 @@ HIGH
             last_alert[symbol] = now
 
         # =========================
-        # SHORT
+        # SHORT SIGNAL
         # =========================
 
         elif short_score >= 70:
@@ -378,25 +386,25 @@ HIGH
                 4
             )
 
-# ATR
-atr = m15['atr']
+            atr = m15['atr']
 
-# หา high สูงสุด 5 แท่งล่าสุด
-recent_high = df_15m['high'].tail(5).max()
+            # กัน wick
+            sl = round(
+                entry + atr * 1.8,
+                4
+            )
 
-# SL กัน wick
-sl = round(
-    recent_high + (atr * 0.25),
-    4
-)
+            tp = round(
+                entry - atr * 3.6,
+                4
+            )
 
-# TP RR 1:2
-risk = sl - entry
-
-tp = round(
-    entry - (risk * 2),
-    4
-)
+            rr = round(
+                (entry - tp)
+                /
+                (sl - entry),
+                2
+            )
 
             message = f"""
 🔻 SHORT SIGNAL
@@ -422,7 +430,7 @@ RSI:
 {round(m15['rsi'],2)}
 
 Volume:
-HIGH
+{"HIGH" if volume_high else "NORMAL"}
 """
 
             print(message, flush=True)
