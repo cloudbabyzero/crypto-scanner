@@ -680,9 +680,21 @@ def execute_trade(symbol, side):
 
         atr = signal['atr']
 
+        try:
+            exchange.set_margin_mode(
+                "isolated",
+                symbol
+            )
+        except:
+
+            pass
+
         exchange.set_leverage(
             LEVERAGE,
-            symbol
+            symbol,
+            params={
+                "side": side.upper()
+            }
         )
 
         amount = round(
