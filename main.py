@@ -520,17 +520,11 @@ Plan:
 def get_side_config(side):
     if side == "LONG":
         return {
-            "tp1_hit_op": lambda price, tp1: price >= tp1,
-            "tp2_hit_op": lambda price, tp2: price >= tp2,
-            "close_market_fn": exchange.create_market_sell_order,
             "stop_side": "sell",
             "position_side": "LONG"
         }
 
     return {
-        "tp1_hit_op": lambda price, tp1: price <= tp1,
-        "tp2_hit_op": lambda price, tp2: price <= tp2,
-        "close_market_fn": exchange.create_market_buy_order,
         "stop_side": "buy",
         "position_side": "SHORT"
     }
@@ -1063,9 +1057,7 @@ def execute_trade(symbol, side):
                 "side": side.upper(),
                 "entry": entry,
                 "sl": sl,
-                "tp1": tp1,
                 "tp2": tp2,
-                "tp1_hit": False,
                 "status": "PENDING",
                 "order_id": order['id'],
                 "amount": amount,
@@ -1090,9 +1082,6 @@ Entry:
 
 SL:
 {sl}
-
-TP1:
-{tp1}
 
 TP2:
 {tp2}
@@ -1707,8 +1696,7 @@ def analyze(symbol):
                     "entry": entry,
                     "sl": sl,
                     "tp1": tp1,
-                    "tp2": tp2,
-                    "tp1_hit": False
+                    "tp2": tp2
                 }
                 last_alert[symbol] = now
 
@@ -1777,8 +1765,7 @@ def analyze(symbol):
                     "entry": entry,
                     "sl": sl,
                     "tp1": tp1,
-                    "tp2": tp2,
-                    "tp1_hit": False
+                    "tp2": tp2
                 }
                 last_alert[symbol] = now
 
@@ -1842,6 +1829,10 @@ def cleanup_closed_trades():
 
         for trade_id, trade in active_trades.items():
 
+            if trade.get("status") == "SIGNAL":
+
+                continue
+
             symbol = trade['symbol']
 
             if symbol not in open_symbols or symbol in seen_symbols:
@@ -1884,18 +1875,18 @@ def check_trades():
 
                     if order_info['status'] == "closed":
 
-                        trade['status'] = "OPEN"
-
                         amount = trade['amount']
                         side_cfg = get_side_config(trade['side'])
 
                         # =========================
                         # ENSURE PROTECTION
                         # =========================
-                        if (
-                            not trade.get('sl_order_id')
-                            or not trade.get('tp2_order_id')
-                        ):
+
+                        sl_order_id = trade.get('sl_order_id')
+                        tp2_order_id = trade.get('tp2_order_id')
+
+                        if not sl_order_id or not tp2_order_id:
+
                             sl_order_id, tp2_order_id = place_protection_orders(
                                 symbol=trade['symbol'],
                                 side_cfg=side_cfg,
@@ -1903,6 +1894,10 @@ def check_trades():
                                 tp2_price=trade['tp2'],
                                 amount=amount
                             )
+
+                        with state_lock:
+
+                            trade['status'] = "OPEN"
                             trade['sl_order_id'] = sl_order_id
                             trade['tp2_order_id'] = tp2_order_id
 
@@ -1924,16 +1919,6 @@ def check_trades():
                     continue
 
                 # =========================
-                # GET PRICE
-                # =========================
-
-                ticker = exchange.fetch_ticker(
-                    trade['symbol']
-                )
-
-                price = ticker['last']
-
-                # =========================
                 # CHECK REAL POSITION
                 # =========================
 
@@ -1945,130 +1930,51 @@ def check_trades():
 
                     contracts = 0
 
-                    if len(positions) > 0:
+                    for pos in positions:
 
-                        contracts = float(
-                            positions[0]['contracts']
-                        )
+                        try:
+
+                            contracts += float(
+                                pos.get('contracts') or 0
+                            )
+
+                        except (TypeError, ValueError):
+
+                            pass
 
                 except Exception:
 
                     contracts = 0
 
-                side_cfg = get_side_config(trade['side'])
-
                 # =========================
-                # TP1 HIT
+                # POSITION CLOSED
                 # =========================
-                if (
-                    not trade['tp1_hit']
-                    and side_cfg['tp1_hit_op'](
-                        price,
-                        trade['tp1']
-                    )
-                ):
 
-                    # CLOSE 70%
-                    side_cfg['close_market_fn'](
-                        trade['symbol'],
-                        trade['amount'] * 0.7,
-                        params={
-                            'reduceOnly': True,
-                            'positionSide': side_cfg['position_side']
-                        }
-                    )
-
-                    # REMAIN 30%
-                    trade['amount'] *= 0.3
-                    trade['tp1_hit'] = True
-
-                    # CANCEL OLD SL
-                    try:
-                        exchange.cancel_order(
-                            trade['sl_order_id'],
-                            trade['symbol']
-                        )
-                    except Exception:
-                        pass
-
-                    try:
-                        if trade.get('tp2_order_id'):
-                            exchange.cancel_order(
-                                trade['tp2_order_id'],
-                                trade['symbol']
-                            )
-                    except Exception:
-                        pass
-
-                    # MOVE SL -> BE
-                    be_sl_id, new_tp2_id = place_protection_orders(
-                        symbol=trade['symbol'],
-                        side_cfg=side_cfg,
-                        sl_price=trade['entry'],
-                        tp2_price=trade['tp2'],
-                        amount=trade['amount']
-                    )
-
-                    trade['sl_order_id'] = be_sl_id
-                    trade['tp2_order_id'] = new_tp2_id
-
-                    send_telegram(
-                        f"🎯 TP1 HIT\n\n"
-                        f"{trade['symbol']}\n\n"
-                        f"✅ Closed 70%\n"
-                        f"🔒 SL moved to BE\n"
-                        f"🚀 Remaining 30% running"
-                    )
-
-                # =========================
-                # TP2
-                # =========================
-                if (
-                    contracts > 0
-                    and side_cfg['tp2_hit_op'](
-                        price,
-                        trade['tp2']
-                    )
-                ):
-
-                    trade['closed'] = True
-
-                    send_telegram(
-                        f"🏆 WIN\n\n"
-                        f"{trade['symbol']}"
-                    )
-
-                    update_signal_result(
-                        signal_id,
-                        "WIN"
-                    )
-
-                    with state_lock:
-                        active_trades.pop(signal_id, None)
-
-                    continue
-
-                # =========================
-                # SL / BE
-                # =========================
                 if (
                     contracts <= 0
                     and not trade.get('closed')
                 ):
+
                     tp2_filled = False
 
                     if trade.get('tp2_order_id'):
+
                         try:
+
                             tp2_info = exchange.fetch_order(
                                 trade['tp2_order_id'],
                                 trade['symbol']
                             )
-                            tp2_filled = tp2_info.get('status') == "closed"
+
+                            tp2_filled = (
+                                tp2_info.get('status') == "closed"
+                            )
+
                         except Exception:
+
                             tp2_filled = False
 
                     if tp2_filled:
-                        trade['closed'] = True
 
                         send_telegram(
                             f"🏆 WIN\n\n"
@@ -2080,28 +1986,22 @@ def check_trades():
                             "WIN"
                         )
 
-                        with state_lock:
-                            active_trades.pop(signal_id, None)
+                    else:
 
-                        continue
+                        send_telegram(
+                            f"❌ LOSS\n\n"
+                            f"{trade['symbol']}"
+                        )
 
-                    result = (
-                        "BE"
-                        if trade['tp1_hit']
-                        else "LOSS"
-                    )
-
-                    send_telegram(
-                        f"❌ {result}\n\n"
-                        f"{trade['symbol']}"
-                    )
-
-                    update_signal_result(
-                        signal_id,
-                        result
-                    )
+                        update_signal_result(
+                            signal_id,
+                            "LOSS"
+                        )
 
                     with state_lock:
+
+                        trade['closed'] = True
+
                         active_trades.pop(signal_id, None)
 
                     continue
