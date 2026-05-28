@@ -2082,6 +2082,35 @@ def analyze(symbol):
                 flush=True
             )
 
+            # Store signal for manual trading (or if auto trade skipped)
+            send_telegram(message)
+            
+            save_signal(
+                signal_id,
+                symbol,
+                "LONG",
+                grade,
+                long_score,
+                entry,
+                sl,
+                tp1,
+                tp2
+            )
+
+            with state_lock:
+                active_trades[signal_id] = {
+                    "symbol": symbol,
+                    "status": "SIGNAL",
+                    "side": "LONG",
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "created_at": time.time()
+                }
+                # Update last_alert after storing the signal
+                last_alert[symbol] = now
+
             # =========================
             # AUTO TRADE LOGIC
             # =========================
@@ -2123,13 +2152,6 @@ def analyze(symbol):
                         target=lambda: execute_trade(symbol, "long"),
                         daemon=True
                     ).start()
-
-                    with state_lock:
-                        last_alert[symbol] = now
-
-                    # Skip signal storage since execute_trade will create entry
-                    return {"symbol": symbol, "result": "signal"}
-                
                 else:
                     # Send skip reason
                     send_telegram(
@@ -2139,33 +2161,6 @@ def analyze(symbol):
                         f"Reason: {skip_reason}"
                     )
 
-            # Store signal for manual trading (or if auto trade skipped)
-            send_telegram(message)
-            
-            save_signal(
-                signal_id,
-                symbol,
-                "LONG",
-                grade,
-                long_score,
-                entry,
-                sl,
-                tp1,
-                tp2
-            )
-
-            with state_lock:
-                active_trades[signal_id] = {
-                    "symbol": symbol,
-                    "status": "SIGNAL",
-                    "side": "LONG",
-                    "entry": entry,
-                    "sl": sl,
-                    "tp1": tp1,
-                    "tp2": tp2,
-                    "created_at": time.time()
-                }
-                last_alert[symbol] = now
             return {"symbol": symbol, "result": "signal"}
         # =========================
         # SHORT SIGNAL
@@ -2210,6 +2205,35 @@ def analyze(symbol):
                 flush=True
             )
 
+            # Store signal for manual trading (or if auto trade skipped)
+            send_telegram(message)
+            
+            save_signal(
+                signal_id,
+                symbol,
+                "SHORT",
+                grade,
+                short_score,
+                entry,
+                sl,
+                tp1,
+                tp2
+            )
+
+            with state_lock:
+                active_trades[signal_id] = {
+                    "symbol": symbol,
+                    "status": "SIGNAL",
+                    "side": "SHORT",
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "created_at": time.time()
+                }
+                # Update last_alert after storing the signal
+                last_alert[symbol] = now
+
             # =========================
             # AUTO TRADE LOGIC
             # =========================
@@ -2251,13 +2275,6 @@ def analyze(symbol):
                         target=lambda: execute_trade(symbol, "short"),
                         daemon=True
                     ).start()
-
-                    with state_lock:
-                        last_alert[symbol] = now
-
-                    # Skip signal storage since execute_trade will create entry
-                    return {"symbol": symbol, "result": "signal"}
-                
                 else:
                     # Send skip reason
                     send_telegram(
@@ -2266,37 +2283,8 @@ def analyze(symbol):
                         f"SHORT\n\n"
                         f"Reason: {skip_reason}"
                     )
-                               
-            # Store signal for manual trading (or if auto trade skipped)
-            send_telegram(message)
 
-            save_signal(
-                signal_id,
-                symbol,
-                "SHORT",
-                grade,
-                short_score,
-                entry,
-                sl,
-                tp1,
-                tp2
-            )
-
-            with state_lock:
-                active_trades[signal_id] = {
-                    "symbol": symbol,
-                    "status": "SIGNAL",
-                    "side": "SHORT",
-                    "entry": entry,
-                    "sl": sl,
-                    "tp1": tp1,
-                    "tp2": tp2,
-                    "created_at": time.time()
-            }
-
-            last_alert[symbol] = now
-
-        return {"symbol": symbol, "result": "signal"}
+            return {"symbol": symbol, "result": "signal"}
     
     except Exception:
         print(
