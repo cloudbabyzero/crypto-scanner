@@ -217,7 +217,10 @@ def trades(message):
     cleanup_closed_trades()
 
     with state_lock:
-        trade_items = list(active_trades.values())
+        trade_items = [
+            t for t in active_trades.values()
+            if t.get("status") in ["PENDING", "OPEN"]
+        ]
 
     if not trade_items:
 
@@ -232,6 +235,9 @@ def trades(message):
 
     for trade in trade_items:
 
+        sl_val = trade.get('sl', 'N/A')
+        tp2_val = trade.get('tp2', 'N/A')
+
         text += f"""
 {trade['symbol']}
 {trade['side']}
@@ -240,10 +246,10 @@ Entry:
 {trade['entry']}
 
 SL:
-{trade['sl']}
+{sl_val}
 
 TP2:
-{trade['tp2']}
+{tp2_val}
 
 ----------------
 """
@@ -2075,6 +2081,112 @@ def telegram_polling():
 
             time.sleep(10)
 
+def restore_open_positions():
+
+    try:
+
+        positions = exchange.fetch_positions()
+
+    except Exception:
+
+        print(
+            "restore_open_positions: fetch_positions failed",
+            flush=True
+        )
+
+        print(
+            traceback.format_exc(),
+            flush=True
+        )
+
+        return
+
+    restored_count = 0
+
+    for pos in positions:
+
+        try:
+
+            contracts = abs(float(pos.get('contracts') or 0))
+
+        except (TypeError, ValueError):
+
+            continue
+
+        if contracts <= 0:
+
+            continue
+
+        symbol = pos.get('symbol')
+
+        if not symbol:
+
+            continue
+
+        position_side = (
+            pos.get('side') or
+            pos.get('positionSide') or
+            ''
+        ).upper()
+
+        if position_side in ['LONG', 'BUY']:
+
+            side = 'LONG'
+
+        elif position_side in ['SHORT', 'SELL']:
+
+            side = 'SHORT'
+
+        else:
+
+            side = 'LONG'
+
+        entry_price = pos.get('entryPrice') or pos.get('markPrice') or 0
+
+        trade_id = f"restored_{str(uuid.uuid4())[:8]}"
+
+        with state_lock:
+
+            already_tracked = any(
+                t['symbol'] == symbol
+                and t.get('status') in ['PENDING', 'OPEN']
+                for t in active_trades.values()
+            )
+
+            if already_tracked:
+
+                continue
+
+            active_trades[trade_id] = {
+                "symbol": symbol,
+                "status": "OPEN",
+                "side": side,
+                "entry": entry_price,
+                "amount": contracts,
+                "restored": True
+            }
+
+        restored_count += 1
+
+        print(
+            f"Restored: {symbol} {side} {contracts}",
+            flush=True
+        )
+
+    if restored_count > 0:
+
+        send_telegram(
+            f"🔄 Restored {restored_count} open position(s) from BingX"
+        )
+
+    else:
+
+        print(
+            "restore_open_positions: no open positions found",
+            flush=True
+        )
+
+
 def main():
     threading.Thread(
         target=telegram_polling,
@@ -2084,6 +2196,9 @@ def main():
     # =========================
     # STARTUP
     # =========================
+
+    restore_open_positions()
+
     threading.Thread(
         target=check_trades,
         daemon=True
