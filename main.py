@@ -378,17 +378,81 @@ WINRATE:
 
 @bot.message_handler(commands=['forcecheck'])
 def forcecheck(message):
-
     bot.reply_to(
         message,
         "🔍 Force scanning..."
     )
 
+    def _forcecheck_runner(chat_id):
+        scanned = 0
+        signals = 0
+        skipped = 0
+        errors = 0
+
+        for symbol in symbols:
+            scanned += 1
+
+            try:
+                res = analyze(symbol)
+            except Exception:
+                # In case analyze raises unexpectedly
+                res = {"symbol": symbol, "result": "error"}
+
+            if not isinstance(res, dict):
+                # Normalize older non-dict returns as skipped
+                res = {"symbol": symbol, "result": "skipped"}
+
+            r = res.get("result")
+
+            if r == "signal":
+                signals += 1
+            elif r == "error":
+                errors += 1
+            else:
+                # treat cooldown/no-signal/explicit skips as skipped
+                skipped += 1
+
+        # Build summary message
+        if signals > 0:
+            summary = f"""
+✅ FORCE SCAN COMPLETE
+
+Scanned:
+{scanned} coins
+
+Signals:
+{signals}
+
+Skipped:
+{skipped}
+
+Errors:
+{errors}
+"""
+        else:
+            summary = f"""
+⚠️ FORCE SCAN COMPLETE
+
+No valid signals found.
+
+Scanned:
+{scanned} coins
+
+Skipped:
+{skipped}
+
+Errors:
+{errors}
+"""
+
+        try:
+            bot.send_message(chat_id, summary)
+        except Exception:
+            # Fallback to global send_telegram
+            send_telegram(summary)
+
     threading.Thread(
-        target=lambda: [
-            analyze(symbol)
-            for symbol in symbols
-        ],
+        target=lambda: _forcecheck_runner(message.chat.id),
         daemon=True
     ).start()
     
@@ -1633,7 +1697,7 @@ def analyze(symbol):
             last_time = last_alert.get(symbol)
 
         if last_time and now - last_time < COOLDOWN:
-            return
+            return {"symbol": symbol, "result": "skipped"}
 
         # =========================
         # GET DATA
@@ -1680,13 +1744,12 @@ def analyze(symbol):
         )
 
         if candle_size > m15['atr'] * 1.5:
-
             print(
                 f"{symbol} skipped - candle too big",
                 flush=True
             )
 
-            return
+            return {"symbol": symbol, "result": "skipped"}
 
         # =========================
         # NO TRADE ZONE
@@ -1696,13 +1759,12 @@ def analyze(symbol):
             45 < m15['rsi'] < 55
             and m15['adx'] < 18
         ):
-
             print(
                 f"{symbol} skipped - sideways market",
                 flush=True
             )
 
-            return
+            return {"symbol": symbol, "result": "skipped"}
 
         # =========================
         # SCORE
@@ -1902,13 +1964,12 @@ def analyze(symbol):
         )
 
         if distance_ema99 < m15['atr'] * 0.3:
-
             print(
                 f"{symbol} skipped - too close EMA99",
                 flush=True
             )
 
-            return
+            return {"symbol": symbol, "result": "skipped"}
 
         # =========================
         # BTC FILTER
@@ -2062,12 +2123,12 @@ def analyze(symbol):
                         target=lambda: execute_trade(symbol, "long"),
                         daemon=True
                     ).start()
-                    
+
                     with state_lock:
                         last_alert[symbol] = now
-                    
+
                     # Skip signal storage since execute_trade will create entry
-                    return
+                    return {"symbol": symbol, "result": "signal"}
                 
                 else:
                     # Send skip reason
@@ -2105,7 +2166,7 @@ def analyze(symbol):
                     "created_at": time.time()
                 }
                 last_alert[symbol] = now
-
+            return {"symbol": symbol, "result": "signal"}
         # =========================
         # SHORT SIGNAL
         # =========================
@@ -2190,12 +2251,12 @@ def analyze(symbol):
                         target=lambda: execute_trade(symbol, "short"),
                         daemon=True
                     ).start()
-                    
+
                     with state_lock:
                         last_alert[symbol] = now
-                    
+
                     # Skip signal storage since execute_trade will create entry
-                    return
+                    return {"symbol": symbol, "result": "signal"}
                 
                 else:
                     # Send skip reason
@@ -2205,7 +2266,7 @@ def analyze(symbol):
                         f"SHORT\n\n"
                         f"Reason: {skip_reason}"
                     )
-
+            save_signal(
             # Store signal for manual trading (or if auto trade skipped)
             send_telegram(message)
 
@@ -2229,19 +2290,22 @@ def analyze(symbol):
                     "entry": entry,
                     "sl": sl,
                     "tp1": tp1,
-                    "tp2": tp2,
-                    "created_at": time.time()
-                }
-                last_alert[symbol] = now
-
+            return {"symbol": symbol, "result": "signal"}
     except Exception:
-
         print(
             f"{symbol} ERROR",
             flush=True
         )
 
         print(
+            traceback.format_exc(),
+            flush=True
+        )
+
+        return {"symbol": symbol, "result": "error"}
+
+    # If execution reaches here, no signal was generated for this symbol
+    return {"symbol": symbol, "result": "skipped"}
             traceback.format_exc(),
             flush=True
         )
