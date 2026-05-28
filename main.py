@@ -37,8 +37,8 @@ symbols = [
     'SOL/USDT:USDT',
     'XRP/USDT:USDT',
     'HYPE/USDT:USDT',
-    'ZEC/USDT:USDT',
-    'INJ/USDT:USDT'
+    #'ZEC/USDT:USDT',
+    #'INJ/USDT:USDT'
 ]
 
 # =========================
