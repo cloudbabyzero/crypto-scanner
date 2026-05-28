@@ -33,7 +33,7 @@ ATR_FILTER = 0.4
 symbols = [
     'BTC/USDT:USDT',
     'ETH/USDT:USDT',
-    'DOGE/USDT:USDT',
+    #'DOGE/USDT:USDT',
     'SOL/USDT:USDT',
     'XRP/USDT:USDT',
     'HYPE/USDT:USDT',
