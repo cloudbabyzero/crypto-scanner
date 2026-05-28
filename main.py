@@ -214,6 +214,8 @@ Scan Interval:
 @bot.message_handler(commands=['trades'])
 def trades(message):
 
+    cleanup_closed_trades()
+
     with state_lock:
         trade_items = list(active_trades.values())
 
@@ -1791,6 +1793,68 @@ def analyze(symbol):
             traceback.format_exc(),
             flush=True
         )
+
+# =========================
+# CLEANUP CLOSED TRADES
+# =========================
+
+def cleanup_closed_trades():
+
+    try:
+
+        all_positions = exchange.fetch_positions()
+
+        open_symbols = set()
+
+        for pos in all_positions:
+
+            try:
+
+                contracts = float(pos.get('contracts') or 0)
+
+            except (TypeError, ValueError):
+
+                contracts = 0
+
+            if contracts > 0:
+
+                open_symbols.add(pos['symbol'])
+
+    except Exception:
+
+        print(
+            "cleanup_closed_trades: fetch_positions failed",
+            flush=True
+        )
+
+        print(
+            traceback.format_exc(),
+            flush=True
+        )
+
+        return
+
+    with state_lock:
+
+        seen_symbols = set()
+
+        to_remove = []
+
+        for trade_id, trade in active_trades.items():
+
+            symbol = trade['symbol']
+
+            if symbol not in open_symbols or symbol in seen_symbols:
+
+                to_remove.append(trade_id)
+
+            else:
+
+                seen_symbols.add(symbol)
+
+        for trade_id in to_remove:
+
+            active_trades.pop(trade_id, None)
 
 # =========================
 # TRADE CHECKER
