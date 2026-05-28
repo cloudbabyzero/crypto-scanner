@@ -542,16 +542,20 @@ def place_protection_orders(
     tp2_price,
     amount
 ):
+    # BingX hedge mode rejects reduceOnly on protection orders.
+    base_params = {
+        'positionSide': side_cfg['position_side'],
+        'closePosition': True
+    }
+
     sl_order = exchange.create_order(
         symbol=symbol,
         type='STOP_MARKET',
         side=side_cfg['stop_side'],
         amount=amount,
         params={
-            'stopPrice': sl_price,
-            'positionSide': side_cfg['position_side'],
-            'reduceOnly': True,
-            'closePosition': True
+            **base_params,
+            'stopPrice': sl_price
         }
     )
 
@@ -562,10 +566,8 @@ def place_protection_orders(
             side=side_cfg['stop_side'],
             amount=amount,
             params={
-                'stopPrice': tp2_price,
-                'positionSide': side_cfg['position_side'],
-                'reduceOnly': True,
-                'closePosition': True
+                **base_params,
+                'stopPrice': tp2_price
             }
         )
     except Exception:
@@ -575,10 +577,8 @@ def place_protection_orders(
             side=side_cfg['stop_side'],
             amount=amount,
             params={
-                'stopPrice': tp2_price,
-                'positionSide': side_cfg['position_side'],
-                'reduceOnly': True,
-                'closePosition': True
+                **base_params,
+                'stopPrice': tp2_price
             }
         )
 
