@@ -67,7 +67,7 @@ def send_telegram(message):
             timeout=10
         )
 
-    except Exception:
+    except Exception as e:
 
         print(
             "Telegram Error:",
@@ -485,9 +485,6 @@ Pullback Entry:
 SL:
 {sl}
 
-TP1:
-{tp1}
-
 TP2:
 {tp2}
 
@@ -510,9 +507,9 @@ BTC Trend:
 {btc_trend}
 
 Plan:
-- TP1 = ปิด 70%
-- Move SL -> BE
-- TP2 = ปล่อยรัน
+- Full TP2 target
+- Fixed SL
+- No partial close
 """
 
 # =========================
@@ -1696,7 +1693,8 @@ def analyze(symbol):
                     "entry": entry,
                     "sl": sl,
                     "tp1": tp1,
-                    "tp2": tp2
+                    "tp2": tp2,
+                    "created_at": time.time()
                 }
                 last_alert[symbol] = now
 
@@ -1765,7 +1763,8 @@ def analyze(symbol):
                     "entry": entry,
                     "sl": sl,
                     "tp1": tp1,
-                    "tp2": tp2
+                    "tp2": tp2,
+                    "created_at": time.time()
                 }
                 last_alert[symbol] = now
 
@@ -1821,6 +1820,8 @@ def cleanup_closed_trades():
 
         return
 
+    now = time.time()
+
     with state_lock:
 
         seen_symbols = set()
@@ -1829,7 +1830,19 @@ def cleanup_closed_trades():
 
         for trade_id, trade in active_trades.items():
 
-            if trade.get("status") == "SIGNAL":
+            status = trade.get("status")
+
+            if status == "SIGNAL":
+
+                age = now - trade.get("created_at", now)
+
+                if age > 3600:
+
+                    to_remove.append(trade_id)
+
+                continue
+
+            if status == "PENDING":
 
                 continue
 
@@ -1905,6 +1918,21 @@ def check_trades():
                             f"✅ ORDER FILLED\n\n"
                             f"{trade['symbol']}"
                         )
+
+                    elif order_info['status'] in [
+                        'canceled', 'expired', 'rejected'
+                    ]:
+
+                        send_telegram(
+                            f"⚠️ ORDER {order_info['status'].upper()}\n\n"
+                            f"{trade['symbol']}"
+                        )
+
+                        with state_lock:
+
+                            active_trades.pop(signal_id, None)
+
+                        continue
 
                     else:
 
