@@ -41,6 +41,30 @@ symbols = [
     'INJ/USDT:USDT'
 ]
 
+# =========================
+# AUTO TRADE CONFIG
+# =========================
+
+AUTO_TRADE = False
+AUTO_TRADE_MIN_GRADE = "A"
+MAX_LONG_TRADES = 2
+MAX_SHORT_TRADES = 2
+
+GRADE_PRIORITY = {
+    "A+": 4,
+    "A": 3,
+    "B": 2,
+    "C": 1
+}
+
+# =========================
+# AUTO TRADE EXECUTION FILTERS
+# =========================
+
+AUTO_TRADE_MIN_ATR = 0.45
+AUTO_TRADE_MIN_ADX = 22
+AUTO_TRADE_HIGH_VOLUME_ONLY = False
+
 last_alert = {}
 
 active_trades = {}
@@ -584,6 +608,58 @@ def place_protection_orders(
     return sl_order['id'], tp2_order['id']
 
 # =========================
+# AUTO TRADE HELPERS
+# =========================
+
+def passes_grade_filter(grade):
+    """Check if grade meets minimum auto trade grade."""
+    if grade not in GRADE_PRIORITY:
+        return False
+    return GRADE_PRIORITY[grade] >= GRADE_PRIORITY[AUTO_TRADE_MIN_GRADE]
+
+def can_open_trade(side):
+    """Check if new trade can be opened based on position limits."""
+    with state_lock:
+        trade_items = list(active_trades.values())
+    
+    active_longs = sum(
+        1 for t in trade_items
+        if t.get("status") in ["PENDING", "OPEN"]
+        and t.get("side") == "LONG"
+    )
+    
+    active_shorts = sum(
+        1 for t in trade_items
+        if t.get("status") in ["PENDING", "OPEN"]
+        and t.get("side") == "SHORT"
+    )
+    
+    if side.upper() == "LONG":
+        return active_longs < MAX_LONG_TRADES
+    else:
+        return active_shorts < MAX_SHORT_TRADES
+
+def check_execution_filters(atr_percent, adx, volume_high):
+    """Check if trade meets execution filter requirements.
+    
+    Returns:
+        (passes, reason) tuple
+        passes: True if all filters pass, False otherwise
+        reason: Skip reason string if fails, None if passes
+    """
+    
+    if atr_percent < AUTO_TRADE_MIN_ATR:
+        return False, "ATR too low"
+    
+    if adx < AUTO_TRADE_MIN_ADX:
+        return False, "ADX too low"
+    
+    if AUTO_TRADE_HIGH_VOLUME_ONLY and not volume_high:
+        return False, "Volume not high"
+    
+    return True, None
+
+# =========================
 
 @bot.message_handler(commands=['adx'])
 def set_adx(message):
@@ -811,6 +887,36 @@ def help_command(message):
 /short xrp
 เปิด SHORT
 
+---
+
+🤖 AUTO TRADE COMMANDS
+
+/autoon
+เปิด AUTO TRADE
+
+/autooff
+ปิด AUTO TRADE
+
+/autostatus
+ดู status AUTO TRADE
+
+/grade A
+เปลี่ยน grade filter (A+, A, B, C)
+
+/autoatr 0.5
+เปลี่ยน ATR filter
+
+/autoadx 22
+เปลี่ยน ADX filter
+
+/autovol on
+เปิด High Volume Only
+
+/autovol off
+ปิด High Volume Only
+
+---
+
 /help
 ดูคำสั่งทั้งหมด
 """
@@ -819,7 +925,245 @@ def help_command(message):
         message,
         text
     )
-    
+
+# =========================
+
+@bot.message_handler(commands=['autoon'])
+def autoon(message):
+
+    global AUTO_TRADE
+    AUTO_TRADE = True
+
+    text = f"""
+✅ AUTO TRADE ENABLED
+
+Grade Filter:
+{AUTO_TRADE_MIN_GRADE}
+
+Max Longs:
+{MAX_LONG_TRADES}
+
+Max Shorts:
+{MAX_SHORT_TRADES}
+"""
+
+    bot.reply_to(
+        message,
+        text
+    )
+
+# =========================
+
+@bot.message_handler(commands=['autooff'])
+def autooff(message):
+
+    global AUTO_TRADE
+    AUTO_TRADE = False
+
+    bot.reply_to(
+        message,
+        "❌ AUTO TRADE DISABLED"
+    )
+
+# =========================
+
+@bot.message_handler(commands=['autostatus'])
+def autostatus(message):
+
+    cleanup_closed_trades()
+
+    with state_lock:
+        trade_items = list(active_trades.values())
+
+    active_longs = sum(
+        1 for t in trade_items
+        if t.get("status") in ["PENDING", "OPEN"]
+        and t.get("side") == "LONG"
+    )
+
+    active_shorts = sum(
+        1 for t in trade_items
+        if t.get("status") in ["PENDING", "OPEN"]
+        and t.get("side") == "SHORT"
+    )
+
+    status_text = "🔴 OFF" if not AUTO_TRADE else "🟢 ON"
+    vol_text = "🟢 ON" if AUTO_TRADE_HIGH_VOLUME_ONLY else "🔴 OFF"
+
+    text = f"""
+🤖 AUTO TRADE STATUS
+
+Status:
+{status_text}
+
+Grade Filter:
+{AUTO_TRADE_MIN_GRADE}
+
+ATR Filter:
+{AUTO_TRADE_MIN_ATR}%
+
+ADX Filter:
+{AUTO_TRADE_MIN_ADX}
+
+High Volume Only:
+{vol_text}
+
+Active Longs:
+{active_longs} / {MAX_LONG_TRADES}
+
+Active Shorts:
+{active_shorts} / {MAX_SHORT_TRADES}
+
+Total Active:
+{len([t for t in trade_items if t.get('status') in ['PENDING', 'OPEN']])}
+"""
+
+    bot.reply_to(
+        message,
+        text
+    )
+
+# =========================
+
+@bot.message_handler(commands=['grade'])
+def set_grade(message):
+
+    global AUTO_TRADE_MIN_GRADE
+
+    try:
+
+        parts = message.text.split()
+
+        if len(parts) < 2:
+            bot.reply_to(
+                message,
+                "Usage: /grade A\n\nAllowed: A+ A B C"
+            )
+            return
+
+        grade = parts[1].upper()
+
+        if grade not in GRADE_PRIORITY:
+            bot.reply_to(
+                message,
+                f"❌ Invalid grade: {grade}\n\nAllowed: A+ A B C"
+            )
+            return
+
+        AUTO_TRADE_MIN_GRADE = grade
+
+        bot.reply_to(
+            message,
+            f"✅ Auto Trade Grade Filter updated to {grade}"
+        )
+
+    except Exception as e:
+
+        bot.reply_to(
+            message,
+            f"ERROR: {str(e)}"
+        )
+
+# =========================
+
+@bot.message_handler(commands=['autoatr'])
+def set_autoatr(message):
+
+    global AUTO_TRADE_MIN_ATR
+
+    try:
+
+        value = parse_command_value(
+            message.text,
+            float
+        )
+
+        AUTO_TRADE_MIN_ATR = value
+
+        bot.reply_to(
+            message,
+            f"✅ Auto Trade ATR Filter updated to {value}%"
+        )
+
+    except Exception:
+
+        bot.reply_to(
+            message,
+            "Usage: /autoatr 0.5"
+        )
+
+# =========================
+
+@bot.message_handler(commands=['autoadx'])
+def set_autoadx(message):
+
+    global AUTO_TRADE_MIN_ADX
+
+    try:
+
+        value = parse_command_value(
+            message.text,
+            int
+        )
+
+        AUTO_TRADE_MIN_ADX = value
+
+        bot.reply_to(
+            message,
+            f"✅ Auto Trade ADX Filter updated to {value}"
+        )
+
+    except Exception:
+
+        bot.reply_to(
+            message,
+            "Usage: /autoadx 22"
+        )
+
+# =========================
+
+@bot.message_handler(commands=['autovol'])
+def set_autovol(message):
+
+    global AUTO_TRADE_HIGH_VOLUME_ONLY
+
+    try:
+
+        parts = message.text.split()
+
+        if len(parts) < 2:
+            bot.reply_to(
+                message,
+                "Usage: /autovol on\nUsage: /autovol off"
+            )
+            return
+
+        setting = parts[1].lower()
+
+        if setting == "on":
+            AUTO_TRADE_HIGH_VOLUME_ONLY = True
+            bot.reply_to(
+                message,
+                "✅ Auto Trade High Volume Only: ON"
+            )
+        elif setting == "off":
+            AUTO_TRADE_HIGH_VOLUME_ONLY = False
+            bot.reply_to(
+                message,
+                "✅ Auto Trade High Volume Only: OFF"
+            )
+        else:
+            bot.reply_to(
+                message,
+                "❌ Invalid setting. Use: on or off"
+            )
+
+    except Exception as e:
+
+        bot.reply_to(
+            message,
+            f"ERROR: {str(e)}"
+        )
 
 # =========================
 # TELEGRAM COMMANDS
@@ -1677,6 +2021,64 @@ def analyze(symbol):
                 flush=True
             )
 
+            # =========================
+            # AUTO TRADE LOGIC
+            # =========================
+
+            if AUTO_TRADE:
+                
+                skip_reason = None
+                
+                # Check grade filter
+                if not passes_grade_filter(grade):
+                    skip_reason = f"Grade: {grade} < {AUTO_TRADE_MIN_GRADE}"
+                
+                # Check execution filters (only if grade passed)
+                elif not skip_reason:
+                    passes_exec, exec_reason = check_execution_filters(
+                        atr_percent,
+                        m15['adx'],
+                        volume_high
+                    )
+                    if not passes_exec:
+                        skip_reason = exec_reason
+                
+                # Check position limit (only if all other filters passed)
+                if not skip_reason:
+                    if not can_open_trade("LONG"):
+                        skip_reason = f"Max {MAX_LONG_TRADES} long positions reached"
+                
+                # Execute if no skip reason
+                if not skip_reason:
+                    send_telegram(
+                        f"🤖 AUTO TRADE EXECUTED\n\n"
+                        f"{symbol}\n"
+                        f"LONG\n\n"
+                        f"Grade: {grade}\n"
+                        f"Entry: {entry}"
+                    )
+                    
+                    threading.Thread(
+                        target=lambda: execute_trade(symbol, "long"),
+                        daemon=True
+                    ).start()
+                    
+                    with state_lock:
+                        last_alert[symbol] = now
+                    
+                    # Skip signal storage since execute_trade will create entry
+                    return
+                
+                else:
+                    # Send skip reason
+                    send_telegram(
+                        f"⏭️ AUTO TRADE SKIPPED\n\n"
+                        f"{symbol}\n"
+                        f"LONG\n\n"
+                        f"Reason: {skip_reason}"
+                    )
+
+            # Store signal for manual trading (or if auto trade skipped)
             send_telegram(message)
             
             save_signal(
@@ -1747,6 +2149,64 @@ def analyze(symbol):
                 flush=True
             )
 
+            # =========================
+            # AUTO TRADE LOGIC
+            # =========================
+
+            if AUTO_TRADE:
+                
+                skip_reason = None
+                
+                # Check grade filter
+                if not passes_grade_filter(grade):
+                    skip_reason = f"Grade: {grade} < {AUTO_TRADE_MIN_GRADE}"
+                
+                # Check execution filters (only if grade passed)
+                elif not skip_reason:
+                    passes_exec, exec_reason = check_execution_filters(
+                        atr_percent,
+                        m15['adx'],
+                        volume_high
+                    )
+                    if not passes_exec:
+                        skip_reason = exec_reason
+                
+                # Check position limit (only if all other filters passed)
+                if not skip_reason:
+                    if not can_open_trade("SHORT"):
+                        skip_reason = f"Max {MAX_SHORT_TRADES} short positions reached"
+                
+                # Execute if no skip reason
+                if not skip_reason:
+                    send_telegram(
+                        f"🤖 AUTO TRADE EXECUTED\n\n"
+                        f"{symbol}\n"
+                        f"SHORT\n\n"
+                        f"Grade: {grade}\n"
+                        f"Entry: {entry}"
+                    )
+                    
+                    threading.Thread(
+                        target=lambda: execute_trade(symbol, "short"),
+                        daemon=True
+                    ).start()
+                    
+                    with state_lock:
+                        last_alert[symbol] = now
+                    
+                    # Skip signal storage since execute_trade will create entry
+                    return
+                
+                else:
+                    # Send skip reason
+                    send_telegram(
+                        f"⏭️ AUTO TRADE SKIPPED\n\n"
+                        f"{symbol}\n"
+                        f"SHORT\n\n"
+                        f"Reason: {skip_reason}"
+                    )
+
+            # Store signal for manual trading (or if auto trade skipped)
             send_telegram(message)
 
             save_signal(
@@ -2206,6 +2666,15 @@ def main():
 
     send_telegram(
         "🚀 Railway Scanner Bot Online"
+    )
+
+    # =========================
+    # SAFE RESTART WARNING
+    # =========================
+
+    send_telegram(
+        "⚠️ AUTO TRADE DISABLED AFTER RESTART\n\n"
+        "Use /autoon to enable auto trading."
     )
 
     # =========================
