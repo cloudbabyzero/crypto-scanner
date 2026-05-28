@@ -2266,7 +2266,7 @@ def analyze(symbol):
                         f"SHORT\n\n"
                         f"Reason: {skip_reason}"
                     )
-            save_signal(
+                               
             # Store signal for manual trading (or if auto trade skipped)
             send_telegram(message)
 
@@ -2290,7 +2290,14 @@ def analyze(symbol):
                     "entry": entry,
                     "sl": sl,
                     "tp1": tp1,
-            return {"symbol": symbol, "result": "signal"}
+                    "tp2": tp2,
+                    "created_at": time.time()
+            }
+
+            last_alert[symbol] = now
+
+        return {"symbol": symbol, "result": "signal"}
+    
     except Exception:
         print(
             f"{symbol} ERROR",
@@ -2305,10 +2312,8 @@ def analyze(symbol):
         return {"symbol": symbol, "result": "error"}
 
     # If execution reaches here, no signal was generated for this symbol
-    return {"symbol": symbol, "result": "skipped"}
-            traceback.format_exc(),
-            flush=True
-        )
+        
+        return {"symbol": symbol, "result": "skipped"}
 
 # =========================
 # CLEANUP CLOSED TRADES
