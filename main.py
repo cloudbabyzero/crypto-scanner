@@ -535,6 +535,57 @@ def get_side_config(side):
 
 # =========================
 
+def place_protection_orders(
+    symbol,
+    side_cfg,
+    sl_price,
+    tp2_price,
+    amount
+):
+    sl_order = exchange.create_order(
+        symbol=symbol,
+        type='STOP_MARKET',
+        side=side_cfg['stop_side'],
+        amount=amount,
+        params={
+            'stopPrice': sl_price,
+            'positionSide': side_cfg['position_side'],
+            'reduceOnly': True,
+            'closePosition': True
+        }
+    )
+
+    try:
+        tp2_order = exchange.create_order(
+            symbol=symbol,
+            type='TAKE_PROFIT_MARKET',
+            side=side_cfg['stop_side'],
+            amount=amount,
+            params={
+                'stopPrice': tp2_price,
+                'positionSide': side_cfg['position_side'],
+                'reduceOnly': True,
+                'closePosition': True
+            }
+        )
+    except Exception:
+        tp2_order = exchange.create_order(
+            symbol=symbol,
+            type='TAKE_PROFIT',
+            side=side_cfg['stop_side'],
+            amount=amount,
+            params={
+                'stopPrice': tp2_price,
+                'positionSide': side_cfg['position_side'],
+                'reduceOnly': True,
+                'closePosition': True
+            }
+        )
+
+    return sl_order['id'], tp2_order['id']
+
+# =========================
+
 @bot.message_handler(commands=['adx'])
 def set_adx(message):
 
@@ -975,10 +1026,33 @@ def execute_trade(symbol, side):
                 }
             )
 
+        side_cfg = get_side_config(
+            "LONG"
+            if side == "long"
+            else "SHORT"
+        )
+
+        sl_order_id = None
+        tp2_order_id = None
+
+        try:
+            sl_order_id, tp2_order_id = place_protection_orders(
+                symbol=symbol,
+                side_cfg=side_cfg,
+                sl_price=sl,
+                tp2_price=tp2,
+                amount=amount
+            )
+        except Exception as protect_error:
+            send_telegram(
+                f"⚠️ Protection pre-set failed for {symbol}\n"
+                f"{str(protect_error)}\n"
+                f"Bot will retry after fill."
+            )
+
         # =========================
         # SAVE TRADE
         # =========================
-
         trade_id = str(uuid.uuid4())[:8]
 
         with state_lock:
@@ -992,7 +1066,9 @@ def execute_trade(symbol, side):
                 "tp1_hit": False,
                 "status": "PENDING",
                 "order_id": order['id'],
-                "amount": amount
+                "amount": amount,
+                "sl_order_id": sl_order_id,
+                "tp2_order_id": tp2_order_id
             }
 
         # =========================
@@ -1750,23 +1826,21 @@ def check_trades():
                         side_cfg = get_side_config(trade['side'])
 
                         # =========================
-                        # CREATE INITIAL SL
+                        # ENSURE PROTECTION
                         # =========================
-
-                        sl_order = exchange.create_order(
-                            symbol=trade['symbol'],
-                            type='STOP_MARKET',
-                            side=side_cfg['stop_side'],
-                            amount=amount,
-                            params={
-                                'stopPrice': trade['sl'],
-                                'positionSide': side_cfg['position_side'],
-                                'reduceOnly': True,
-                                'closePosition': True
-                            }
-                        )
-
-                        trade['sl_order_id'] = sl_order['id']
+                        if (
+                            not trade.get('sl_order_id')
+                            or not trade.get('tp2_order_id')
+                        ):
+                            sl_order_id, tp2_order_id = place_protection_orders(
+                                symbol=trade['symbol'],
+                                side_cfg=side_cfg,
+                                sl_price=trade['sl'],
+                                tp2_price=trade['tp2'],
+                                amount=amount
+                            )
+                            trade['sl_order_id'] = sl_order_id
+                            trade['tp2_order_id'] = tp2_order_id
 
                         send_telegram(
                             f"✅ ORDER FILLED\n\n"
@@ -1853,21 +1927,26 @@ def check_trades():
                     except Exception:
                         pass
 
+                    try:
+                        if trade.get('tp2_order_id'):
+                            exchange.cancel_order(
+                                trade['tp2_order_id'],
+                                trade['symbol']
+                            )
+                    except Exception:
+                        pass
+
                     # MOVE SL -> BE
-                    be_sl = exchange.create_order(
+                    be_sl_id, new_tp2_id = place_protection_orders(
                         symbol=trade['symbol'],
-                        type='STOP_MARKET',
-                        side=side_cfg['stop_side'],
-                        amount=trade['amount'],
-                        params={
-                            'stopPrice': trade['entry'],
-                            'positionSide': side_cfg['position_side'],
-                            'reduceOnly': True,
-                            'closePosition': True
-                        }
+                        side_cfg=side_cfg,
+                        sl_price=trade['entry'],
+                        tp2_price=trade['tp2'],
+                        amount=trade['amount']
                     )
 
-                    trade['sl_order_id'] = be_sl['id']
+                    trade['sl_order_id'] = be_sl_id
+                    trade['tp2_order_id'] = new_tp2_id
 
                     send_telegram(
                         f"🎯 TP1 HIT\n\n"
@@ -1912,6 +1991,35 @@ def check_trades():
                     contracts <= 0
                     and not trade.get('closed')
                 ):
+                    tp2_filled = False
+
+                    if trade.get('tp2_order_id'):
+                        try:
+                            tp2_info = exchange.fetch_order(
+                                trade['tp2_order_id'],
+                                trade['symbol']
+                            )
+                            tp2_filled = tp2_info.get('status') == "closed"
+                        except Exception:
+                            tp2_filled = False
+
+                    if tp2_filled:
+                        trade['closed'] = True
+
+                        send_telegram(
+                            f"🏆 WIN\n\n"
+                            f"{trade['symbol']}"
+                        )
+
+                        update_signal_result(
+                            signal_id,
+                            "WIN"
+                        )
+
+                        with state_lock:
+                            active_trades.pop(signal_id, None)
+
+                        continue
 
                     result = (
                         "BE"
