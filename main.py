@@ -2421,18 +2421,53 @@ def check_trades():
                         sl_order_id = trade.get('sl_order_id')
                         tp2_order_id = trade.get('tp2_order_id')
 
-                        if not sl_order_id or not tp2_order_id:
+                        # -------------------------------------------------
+                        # The limit order has been filled. The original
+                        # entry price used for signal generation may differ
+                        # from the actual fill price (e.g., due to slippage).
+                        # For SHORT positions this caused the stop‑loss to be
+                        # placed below the filled entry price, which BingX
+                        # rejects. We now recalculate SL and TP2 based on the
+                        # real fill price while preserving the original ATR
+                        # distance.
+                        # -------------------------------------------------
 
-                            sl_order_id, tp2_order_id = place_protection_orders(
-                                symbol=trade['symbol'],
-                                side_cfg=side_cfg,
-                                sl_price=trade['sl'],
-                                tp2_price=trade['tp2'],
-                                amount=amount
-                            )
+                        # 1. Determine the actual filled entry price.
+                        #    ccxt returns the average fill price under the
+                        #    "average" key for most exchanges; fall back to
+                        #    "price" if unavailable.
+                        filled_entry = order_info.get('average') or order_info.get('price') or trade['entry']
+
+                        # 2. Derive the original ATR distance from the
+                        #    signal‑based entry and SL (ATR = |entry‑SL| / 1.5).
+                        original_atr = abs(trade['entry'] - trade['sl']) / 1.5
+
+                        # 3. Re‑calculate SL and TP2 using the filled entry.
+                        new_sl, _, new_tp2, _ = calculate_trade_levels(
+                            filled_entry,
+                            original_atr,
+                            trade['side']
+                        )
+
+                        # 4. Update trade dict with the actual entry and new
+                        #    protection levels.
+                        trade['entry'] = filled_entry
+                        trade['sl'] = new_sl
+                        trade['tp2'] = new_tp2
+
+                        # 5. (Re)place protection orders using the updated
+                        #    prices. We always place them here because the
+                        #    previous attempt may have failed or used stale
+                        #    values.
+                        sl_order_id, tp2_order_id = place_protection_orders(
+                            symbol=trade['symbol'],
+                            side_cfg=side_cfg,
+                            sl_price=trade['sl'],
+                            tp2_price=trade['tp2'],
+                            amount=amount
+                        )
 
                         with state_lock:
-
                             trade['status'] = "OPEN"
                             trade['sl_order_id'] = sl_order_id
                             trade['tp2_order_id'] = tp2_order_id
