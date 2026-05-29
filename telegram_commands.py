@@ -65,7 +65,7 @@ Scan Interval:
 
 @bot.message_handler(commands=['trades'])
 def trades(message):
-    main_mod.cleanup_closed_trades()
+    main_mod.trade_manager.cleanup_closed_trades()
     
     with main_mod.state_lock:
         trade_items = [
@@ -477,7 +477,7 @@ def autooff(message):
 
 @bot.message_handler(commands=['autostatus'])
 def autostatus(message):
-    main_mod.cleanup_closed_trades()
+    main_mod.trade_manager.cleanup_closed_trades()
     
     with main_mod.state_lock:
         trade_items = list(main_mod.active_trades.values())
