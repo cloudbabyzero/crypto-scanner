@@ -9,6 +9,7 @@ import threading
 
 # Reference to main.py's globals
 main_mod = sys.modules["__main__"]
+bingx = main_mod.bingx_client
 
 # Get bot reference for decorators
 bot = main_mod.bot
@@ -330,7 +331,7 @@ def long_order(message):
         
         coin = parts[1].upper()
         symbol = f"{coin}/USDT:USDT"
-        main_mod.execute_trade(symbol, "long")
+        bingx.execute_trade(symbol, "long")
     except Exception as e:
         bot.reply_to(message, f"ERROR: {str(e)}")
 
@@ -349,7 +350,7 @@ def short_order(message):
         
         coin = parts[1].upper()
         symbol = f"{coin}/USDT:USDT"
-        main_mod.execute_trade(symbol, "short")
+        bingx.execute_trade(symbol, "short")
     except Exception as e:
         bot.reply_to(message, f"ERROR: {str(e)}")
 

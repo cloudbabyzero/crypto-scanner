@@ -22,6 +22,7 @@ bot = telebot.TeleBot(
 
 # Import handlers after bot is created
 import telegram_commands
+import bingx_client
 
 SCAN_INTERVAL = 300
 COOLDOWN = 3600
@@ -336,54 +337,7 @@ def get_side_config(side):
 
 # =========================
 
-def place_protection_orders(
-    symbol,
-    side_cfg,
-    sl_price,
-    tp2_price,
-    amount
-):
-    # BingX hedge mode rejects reduceOnly on protection orders.
-    base_params = {
-        'positionSide': side_cfg['position_side'],
-        'closePosition': True
-    }
-
-    sl_order = exchange.create_order(
-        symbol=symbol,
-        type='STOP_MARKET',
-        side=side_cfg['stop_side'],
-        amount=amount,
-        params={
-            **base_params,
-            'stopPrice': sl_price
-        }
-    )
-
-    try:
-        tp2_order = exchange.create_order(
-            symbol=symbol,
-            type='TAKE_PROFIT_MARKET',
-            side=side_cfg['stop_side'],
-            amount=amount,
-            params={
-                **base_params,
-                'stopPrice': tp2_price
-            }
-        )
-    except Exception:
-        tp2_order = exchange.create_order(
-            symbol=symbol,
-            type='TAKE_PROFIT',
-            side=side_cfg['stop_side'],
-            amount=amount,
-            params={
-                **base_params,
-                'stopPrice': tp2_price
-            }
-        )
-
-    return sl_order['id'], tp2_order['id']
+# place_protection_orders moved to bingx_client.py
 
 # =========================
 # AUTO TRADE HELPERS
@@ -466,259 +420,7 @@ def get_latest_signal(symbol):
     return None
 
 
-def execute_trade(symbol, side):
-
-    try:
-
-        # =========================
-        # FORMAT SYMBOL
-        # =========================
-
-        symbol = symbol.upper()
-
-        if ":USDT" not in symbol:
-            symbol = f"{symbol}/USDT:USDT"
-
-        # =========================
-        # CHECK SYMBOL
-        # =========================
-
-        if symbol not in symbols:
-
-            send_telegram(
-                f"❌ {symbol} not supported"
-            )
-
-            return
-
-        # =========================
-        # PREVENT DUPLICATE
-        # =========================
-
-        with state_lock:
-            trade_items = list(active_trades.values())
-
-        for trade in trade_items:
-
-            if (
-                trade['symbol'] == symbol
-                and trade.get('status') in ["PENDING", "OPEN"]
-            ):
-
-                send_telegram(
-                    f"⚠️ {symbol} already active"
-                )
-
-                return
-
-        # =========================
-        # GET SIGNAL
-        # =========================
-
-        signal = get_latest_signal(symbol)
-
-        # =========================
-        # CHECK SIGNAL BEFORE ENTRY
-        # =========================
-
-        if not signal:
-            send_telegram(
-                f"❌ No signal found for {symbol}"
-            )
-            return
-
-        signal_type = signal.get("signal", "").upper()
-
-        if signal_type != side.upper():
-            send_telegram(
-                f"❌ No {side.upper()} signal for {symbol}\n\n"
-                f"Current Signal: {signal_type}"
-            )
-            return
-
-        entry = signal["entry"]
-        sl = signal["sl"]
-        atr = signal["atr"]
-        
-        # =========================
-        # MARGIN MODE
-        # =========================
-
-        try:
-
-            exchange.set_margin_mode(
-                "isolated",
-                symbol
-            )
-
-        except Exception:
-            pass
-
-        # =========================
-        # LEVERAGE
-        # =========================
-
-        if side == "long":
-
-            exchange.set_leverage(
-                LEVERAGE,
-                symbol,
-                {
-                     "side": "LONG"
-                }
-            )
-
-        else:
-
-            exchange.set_leverage(
-                LEVERAGE,
-                symbol,
-                {
-                    "side": "SHORT"
-                }
-            )
-
-        # =========================
-        # AMOUNT
-        # =========================
-
-        raw_amount = (
-            MARGIN_PER_TRADE * LEVERAGE
-        ) / entry
-
-        amount = exchange.amount_to_precision(
-            symbol,
-            raw_amount
-        )
-
-        amount = float(amount)
-
-        # =========================
-        # LONG
-        # =========================
-
-        if side == "long":
-            sl, tp1, tp2, _ = calculate_trade_levels(
-                entry,
-                atr,
-                "LONG"
-            )
-
-            order = exchange.create_order(
-                symbol=symbol,
-                type='limit',
-                side='buy',
-                amount=amount,
-                price=entry,
-                params={
-                    'positionSide': 'LONG',
-                    'tradeSide': 'OPEN',
-                    'marginMode': 'isolated'
-                }
-            )
-
-        # =========================
-        # SHORT
-        # =========================
-
-        else:
-            sl, tp1, tp2, _ = calculate_trade_levels(
-                entry,
-                atr,
-                "SHORT"
-            )
-
-            order = exchange.create_order(
-                symbol=symbol,
-                type='limit',
-                side='sell',
-                amount=amount,
-                price=entry,
-                params={
-                    'positionSide': 'SHORT',
-                    'tradeSide': 'OPEN',
-                    'marginMode': 'isolated'
-                }
-            )
-
-        side_cfg = get_side_config(
-            "LONG"
-            if side == "long"
-            else "SHORT"
-        )
-
-        sl_order_id = None
-        tp2_order_id = None
-
-        try:
-            sl_order_id, tp2_order_id = place_protection_orders(
-                symbol=symbol,
-                side_cfg=side_cfg,
-                sl_price=sl,
-                tp2_price=tp2,
-                amount=amount
-            )
-        except Exception as protect_error:
-            send_telegram(
-                f"⚠️ Protection pre-set failed for {symbol}\n"
-                f"{str(protect_error)}\n"
-                f"Bot will retry after fill."
-            )
-
-        # =========================
-        # SAVE TRADE
-        # =========================
-        trade_id = str(uuid.uuid4())[:8]
-
-        with state_lock:
-            active_trades[trade_id] = {
-                "symbol": symbol,
-                "side": side.upper(),
-                "entry": entry,
-                "sl": sl,
-                "tp2": tp2,
-                "status": "PENDING",
-                "order_id": order['id'],
-                "amount": amount,
-                "sl_order_id": sl_order_id,
-                "tp2_order_id": tp2_order_id
-            }
-
-        # =========================
-        # TELEGRAM
-        # =========================
-
-        message = f"""
-✅ ORDER EXECUTED
-
-{symbol}
-
-Side:
-{side.upper()}
-
-Entry:
-{entry}
-
-SL:
-{sl}
-
-TP2:
-{tp2}
-
-Leverage:
-x{LEVERAGE}
-
-Margin:
-{MARGIN_PER_TRADE} USDT
-"""
-
-        send_telegram(message)
-
-    except Exception as e:
-
-        send_telegram(
-            f"❌ ORDER ERROR\n\n{str(e)}"
-        )
+# execute_trade moved to bingx_client.py
 
 # =========================
 # BINGX
@@ -1356,7 +1058,7 @@ def analyze(symbol):
                     )
                     
                     threading.Thread(
-                        target=lambda: execute_trade(symbol, "long"),
+                        target=lambda: bingx_client.execute_trade(symbol, "long"),
                         daemon=True
                     ).start()
                 else:
@@ -1479,7 +1181,7 @@ def analyze(symbol):
                     )
                     
                     threading.Thread(
-                        target=lambda: execute_trade(symbol, "short"),
+                        target=lambda: bingx_client.execute_trade(symbol, "short"),
                         daemon=True
                     ).start()
                 else:
@@ -1666,7 +1368,7 @@ def check_trades():
                         #    prices. We always place them here because the
                         #    previous attempt may have failed or used stale
                         #    values.
-                        sl_order_id, tp2_order_id = place_protection_orders(
+                        sl_order_id, tp2_order_id = bingx_client.place_protection_orders(
                             symbol=trade['symbol'],
                             side_cfg=side_cfg,
                             sl_price=trade['sl'],
