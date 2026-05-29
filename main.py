@@ -21,8 +21,8 @@ bot = telebot.TeleBot(
 )
 
 # Import handlers after bot is created
-import telegram_commands
 import bingx_client
+import telegram_commands
 import trade_manager
 
 SCAN_INTERVAL = 300
