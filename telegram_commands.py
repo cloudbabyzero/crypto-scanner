@@ -169,59 +169,45 @@ def forcecheck(message):
     
     def _forcecheck_runner(chat_id):
         scanned = 0
-        signals = 0
-        skipped = 0
-        errors = 0
         
         for symbol in main_mod.symbols:
             scanned += 1
             try:
-                res = main_mod.analyze(symbol)
+                main_mod.analyze(symbol)
             except Exception:
-                res = {"symbol": symbol, "result": "error"}
-            
-            if not isinstance(res, dict):
-                res = {"symbol": symbol, "result": "skipped"}
-            
-            r = res.get("result")
-            if r == "signal":
-                signals += 1
-            elif r == "error":
-                errors += 1
-            else:
-                skipped += 1
+                pass
         
-        if signals > 0:
-            summary = f"""
-✅ FORCE SCAN COMPLETE
+        # Build summary counters from scan_results
+        results = getattr(main_mod, 'scan_results', {})
+        counters = {
+            "Signal Generated": 0,
+            "Score Below MIN_SCORE": 0,
+            "Sideways Market": 0,
+            "Candle Too Big": 0,
+            "Cooldown": 0,
+            "Too Close EMA99": 0,
+            "Error": 0,
+        }
+        
+        for data in results.values():
+            if isinstance(data, dict):
+                status = data.get("status", "Unknown")
+                if status in counters:
+                    counters[status] += 1
+            else:
+                counters["Error"] += 1
+        
+        summary = f"""📊 FORCE SCAN SUMMARY
 
-Scanned:
-{scanned} coins
+Scanned: {scanned}
 
-Signals:
-{signals}
-
-Skipped:
-{skipped}
-
-Errors:
-{errors}
-"""
-        else:
-            summary = f"""
-⚠️ FORCE SCAN COMPLETE
-
-No valid signals found.
-
-Scanned:
-{scanned} coins
-
-Skipped:
-{skipped}
-
-Errors:
-{errors}
-"""
+Signal Generated: {counters["Signal Generated"]}
+Score Below MIN_SCORE: {counters["Score Below MIN_SCORE"]}
+Sideways Market: {counters["Sideways Market"]}
+Candle Too Big: {counters["Candle Too Big"]}
+Cooldown: {counters["Cooldown"]}
+Too Close EMA99: {counters["Too Close EMA99"]}
+Errors: {counters["Error"]}"""
         
         try:
             bot.send_message(chat_id, summary)
@@ -404,6 +390,48 @@ Time: {current_time}
 # SCAN REPORT COMMAND
 # =========================
 
+def format_scan_row(symbol, data):
+    """Format a single scan result row for /scanreport output."""
+    if not isinstance(data, dict):
+        return f"{symbol}\nStatus: {data}\n"
+    
+    status = data.get("status", "Unknown")
+    score = data.get("score", 0)
+    adx = data.get("adx", 0)
+    atr = data.get("atr", 0)
+    volume = data.get("volume", "N/A")
+    min_score = getattr(main_mod, 'MIN_SCORE', 85)
+    
+    lines = [symbol]
+    lines.append(f"Status: {status}")
+    
+    if status == "Signal Generated":
+        lines.append(f"Score: {score}/{min_score}")
+        lines.append(f"ADX: {adx}")
+        lines.append(f"ATR: {atr}")
+        lines.append(f"Volume: {volume}")
+    elif status == "Score Below MIN_SCORE":
+        lines.append(f"Score: {score}/{min_score}")
+        lines.append(f"ATR: {atr}")
+        lines.append(f"ADX: {adx}")
+        lines.append(f"Volume: {volume}")
+    elif status == "Sideways Market":
+        lines.append(f"ADX: {adx}")
+    elif status == "Too Close EMA99":
+        lines.append(f"ADX: {adx}")
+        lines.append(f"ATR: {atr}")
+    elif status == "Candle Too Big":
+        lines.append(f"ADX: {adx}")
+        lines.append(f"ATR: {atr}%")
+        lines.append(f"Volume: {volume}")
+    elif status == "Cooldown":
+        pass
+    elif status == "Error":
+        pass
+    
+    return "\n".join(lines)
+
+
 @bot.message_handler(commands=['scanreport'])
 def scanreport(message):
     results = getattr(main_mod, 'scan_results', {})
@@ -414,10 +442,10 @@ def scanreport(message):
     
     text = "📋 SCAN REPORT\n\n"
     for symbol in main_mod.symbols:
-        reason = results.get(symbol, "Not Scanned")
-        text += f"{symbol} - {reason}\n"
+        data = results.get(symbol, "Not Scanned")
+        text += format_scan_row(symbol, data) + "\n\n"
     
-    bot.reply_to(message, text)
+    bot.reply_to(message, text.strip())
 
 
 # =========================

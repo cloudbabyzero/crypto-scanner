@@ -428,7 +428,7 @@ def analyze(symbol):
             last_time = last_alert.get(symbol)
 
         if last_time and now - last_time < COOLDOWN:
-            scan_results[symbol] = "Cooldown"
+            scan_results[symbol] = {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now}
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -481,7 +481,10 @@ def analyze(symbol):
                 flush=True
             )
 
-            scan_results[symbol] = "Candle Too Big"
+            adx_val = round(m15['adx'], 2)
+            atr_val = round((m15['atr'] / m15['close']) * 100, 2)
+            vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
+            scan_results[symbol] = {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now}
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -497,7 +500,10 @@ def analyze(symbol):
                 flush=True
             )
 
-            scan_results[symbol] = "Sideways Market"
+            adx_val = round(m15['adx'], 2)
+            atr_val = round((m15['atr'] / m15['close']) * 100, 2)
+            vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
+            scan_results[symbol] = {"status": "Sideways Market", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now}
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -703,7 +709,9 @@ def analyze(symbol):
                 flush=True
             )
 
-            scan_results[symbol] = "Too Close EMA99"
+            score = max(long_score, short_score)
+            vol_status = "HIGH" if volume_high else "NORMAL"
+            scan_results[symbol] = {"status": "Too Close EMA99", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now}
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -911,7 +919,8 @@ def analyze(symbol):
                         f"Longs: {pos_status}"
                     )
 
-            scan_results[symbol] = "Signal Generated"
+            vol_status = "HIGH" if volume_high else "NORMAL"
+            scan_results[symbol] = {"status": "Signal Generated", "score": long_score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now}
             return {"symbol": symbol, "result": "signal"}
         # =========================
         # SHORT SIGNAL
@@ -1050,7 +1059,8 @@ def analyze(symbol):
                         f"Shorts: {pos_status}"
                     )
 
-            scan_results[symbol] = "Signal Generated"
+            vol_status = "HIGH" if volume_high else "NORMAL"
+            scan_results[symbol] = {"status": "Signal Generated", "score": short_score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now}
             return {"symbol": symbol, "result": "signal"}
     
     except Exception:
@@ -1064,11 +1074,13 @@ def analyze(symbol):
             flush=True
         )
 
-        scan_results[symbol] = "Error"
+        scan_results[symbol] = {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()}
         return {"symbol": symbol, "result": "error"}
 
     # No LONG or SHORT signal generated — fall through from try
-    scan_results[symbol] = "Score Below MIN_SCORE"
+    vol_status = "HIGH" if volume_high else "NORMAL"
+    score = max(long_score, short_score)
+    scan_results[symbol] = {"status": "Score Below MIN_SCORE", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now}
     return {"symbol": symbol, "result": "skipped"}
 
 # =========================
