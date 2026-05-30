@@ -1,6 +1,3 @@
-import ccxt
-import pandas as pd
-import ta
 import requests
 import time
 import os
@@ -33,9 +30,22 @@ from config import (
     AUTO_TRADE_MIN_ATR,
     AUTO_TRADE_MIN_ADX,
     AUTO_TRADE_HIGH_VOLUME_ONLY,
-    BINGX_API_KEY,
-    BINGX_SECRET_KEY,
 )
+
+# =========================
+# INDICATORS - Import from indicators.py
+# =========================
+
+from indicators import get_dataframe, get_btc_trend
+
+# =========================
+# EXCHANGE CLIENT
+# =========================
+
+from exchange_client import get_exchange, load_markets_if_needed
+
+# Create and share exchange instance for other modules
+exchange = get_exchange()
 
 # Import handlers after bot is created
 import bingx_client
@@ -394,172 +404,6 @@ def get_latest_signal(symbol):
 
 
 # execute_trade moved to bingx_client.py
-
-# =========================
-# BINGX
-# =========================
-
-exchange = ccxt.bingx({
-
-    'apiKey': BINGX_API_KEY,
-
-    'secret': BINGX_SECRET_KEY,
-
-    'enableRateLimit': True,
-
-    'options': {
-
-        'defaultType': 'swap',
-
-        'defaultSubType': 'linear',
-
-        'adjustForTimeDifference': True
-
-    }
-
-})
-
-exchange.set_sandbox_mode(False)
-
-exchange.options['defaultType'] = 'swap'
-exchange.options['defaultSubType'] = 'linear'
-
-markets = exchange.load_markets()
-
-print("✅ FUTURES MARKETS LOADED")
-
-# =========================
-# DATAFRAME
-# =========================
-
-def get_dataframe(symbol, timeframe):
-
-    ohlcv = exchange.fetch_ohlcv(
-        symbol,
-        timeframe=timeframe,
-        limit=200
-    )
-
-    df = pd.DataFrame(
-        ohlcv,
-        columns=[
-            'time',
-            'open',
-            'high',
-            'low',
-            'close',
-            'volume'
-        ]
-    )
-
-    # =========================
-    # EMA
-    # =========================
-
-    df['ema7'] = ta.trend.ema_indicator(
-        df['close'],
-        window=7
-    )
-
-    df['ema25'] = ta.trend.ema_indicator(
-        df['close'],
-        window=25
-    )
-
-    df['ema99'] = ta.trend.ema_indicator(
-        df['close'],
-        window=99
-    )
-
-    # =========================
-    # RSI
-    # =========================
-
-    df['rsi'] = ta.momentum.rsi(
-        df['close'],
-        window=14
-    )
-
-    # =========================
-    # MACD
-    # =========================
-
-    macd = ta.trend.MACD(df['close'])
-
-    df['macd'] = macd.macd()
-
-    df['macd_signal'] = macd.macd_signal()
-
-    # =========================
-    # ADX
-    # =========================
-
-    adx = ta.trend.ADXIndicator(
-        df['high'],
-        df['low'],
-        df['close'],
-        window=14
-    )
-
-    df['adx'] = adx.adx()
-
-    # =========================
-    # BOLLINGER
-    # =========================
-
-    bb = ta.volatility.BollingerBands(
-        close=df['close'],
-        window=20,
-        window_dev=2
-    )
-
-    df['bb_mid'] = bb.bollinger_mavg()
-
-    df['bb_upper'] = bb.bollinger_hband()
-
-    df['bb_lower'] = bb.bollinger_lband()
-
-    # =========================
-    # ATR
-    # =========================
-
-    df['atr'] = ta.volatility.average_true_range(
-        df['high'],
-        df['low'],
-        df['close'],
-        window=14
-    )
-
-    # =========================
-    # VOLUME
-    # =========================
-
-    df['vol_avg'] = (
-        df['volume']
-        .rolling(20)
-        .mean()
-    )
-
-    return df
-
-# =========================
-# BTC TREND
-# =========================
-
-def get_btc_trend():
-
-    btc_df = get_dataframe(
-        'BTC/USDT:USDT',
-        '4h'
-    )
-
-    btc = btc_df.iloc[-2]
-
-    if btc['ema25'] > btc['ema99']:
-
-        return "bullish"
-
-    return "bearish"
 
 # =========================
 # ANALYZE
