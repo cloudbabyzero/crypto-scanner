@@ -30,6 +30,7 @@ from config import (
     AUTO_TRADE_MIN_ATR,
     AUTO_TRADE_MIN_ADX,
     AUTO_TRADE_HIGH_VOLUME_ONLY,
+    HEARTBEAT_INTERVAL,
 )
 
 # =========================
@@ -56,6 +57,10 @@ last_alert = {}
 
 active_trades = {}
 state_lock = threading.RLock()
+
+BOT_START_TIME = time.time()
+
+scan_results = {}
 
 # =========================
 # TELEGRAM
@@ -423,6 +428,7 @@ def analyze(symbol):
             last_time = last_alert.get(symbol)
 
         if last_time and now - last_time < COOLDOWN:
+            scan_results[symbol] = "Cooldown"
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -475,6 +481,7 @@ def analyze(symbol):
                 flush=True
             )
 
+            scan_results[symbol] = "Candle Too Big"
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -490,6 +497,7 @@ def analyze(symbol):
                 flush=True
             )
 
+            scan_results[symbol] = "Sideways Market"
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -695,6 +703,7 @@ def analyze(symbol):
                 flush=True
             )
 
+            scan_results[symbol] = "Too Close EMA99"
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -866,12 +875,19 @@ def analyze(symbol):
                 
                 # Execute if no skip reason
                 if not skip_reason:
+                    vol_status = "HIGH" if volume_high else "NORMAL"
+                    pos_status = f"{len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])} / {MAX_LONG_TRADES}"
+                    
                     send_telegram(
-                        f"🤖 AUTO TRADE EXECUTED\n\n"
-                        f"{symbol}\n"
-                        f"LONG\n\n"
+                        f"🤖 AUTO TRADE DECISION\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Side: LONG\n"
+                        f"Result: EXECUTED\n"
                         f"Grade: {grade}\n"
-                        f"Entry: {entry}"
+                        f"ATR: {round(atr_percent, 2)}%\n"
+                        f"ADX: {round(m15['adx'], 2)}\n"
+                        f"Volume: {vol_status}\n"
+                        f"Longs: {pos_status}"
                     )
                     
                     threading.Thread(
@@ -879,14 +895,23 @@ def analyze(symbol):
                         daemon=True
                     ).start()
                 else:
-                    # Send skip reason
+                    vol_status = "HIGH" if volume_high else "NORMAL"
+                    pos_status = f"{len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])} / {MAX_LONG_TRADES}"
+                    
                     send_telegram(
-                        f"⏭️ AUTO TRADE SKIPPED\n\n"
-                        f"{symbol}\n"
-                        f"LONG\n\n"
-                        f"Reason: {skip_reason}"
+                        f"🤖 AUTO TRADE DECISION\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Side: LONG\n"
+                        f"Result: SKIPPED\n"
+                        f"Reason: {skip_reason}\n"
+                        f"Grade: {grade}\n"
+                        f"ATR: {round(atr_percent, 2)}%\n"
+                        f"ADX: {round(m15['adx'], 2)}\n"
+                        f"Volume: {vol_status}\n"
+                        f"Longs: {pos_status}"
                     )
 
+            scan_results[symbol] = "Signal Generated"
             return {"symbol": symbol, "result": "signal"}
         # =========================
         # SHORT SIGNAL
@@ -989,12 +1014,19 @@ def analyze(symbol):
                 
                 # Execute if no skip reason
                 if not skip_reason:
+                    vol_status = "HIGH" if volume_high else "NORMAL"
+                    pos_status = f"{len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])} / {MAX_SHORT_TRADES}"
+                    
                     send_telegram(
-                        f"🤖 AUTO TRADE EXECUTED\n\n"
-                        f"{symbol}\n"
-                        f"SHORT\n\n"
+                        f"🤖 AUTO TRADE DECISION\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Side: SHORT\n"
+                        f"Result: EXECUTED\n"
                         f"Grade: {grade}\n"
-                        f"Entry: {entry}"
+                        f"ATR: {round(atr_percent, 2)}%\n"
+                        f"ADX: {round(m15['adx'], 2)}\n"
+                        f"Volume: {vol_status}\n"
+                        f"Shorts: {pos_status}"
                     )
                     
                     threading.Thread(
@@ -1002,14 +1034,23 @@ def analyze(symbol):
                         daemon=True
                     ).start()
                 else:
-                    # Send skip reason
+                    vol_status = "HIGH" if volume_high else "NORMAL"
+                    pos_status = f"{len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])} / {MAX_SHORT_TRADES}"
+                    
                     send_telegram(
-                        f"⏭️ AUTO TRADE SKIPPED\n\n"
-                        f"{symbol}\n"
-                        f"SHORT\n\n"
-                        f"Reason: {skip_reason}"
+                        f"🤖 AUTO TRADE DECISION\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Side: SHORT\n"
+                        f"Result: SKIPPED\n"
+                        f"Reason: {skip_reason}\n"
+                        f"Grade: {grade}\n"
+                        f"ATR: {round(atr_percent, 2)}%\n"
+                        f"ADX: {round(m15['adx'], 2)}\n"
+                        f"Volume: {vol_status}\n"
+                        f"Shorts: {pos_status}"
                     )
 
+            scan_results[symbol] = "Signal Generated"
             return {"symbol": symbol, "result": "signal"}
     
     except Exception:
@@ -1023,11 +1064,12 @@ def analyze(symbol):
             flush=True
         )
 
+        scan_results[symbol] = "Error"
         return {"symbol": symbol, "result": "error"}
 
-    # If execution reaches here, no signal was generated for this symbol
-        
-        return {"symbol": symbol, "result": "skipped"}
+    # No LONG or SHORT signal generated — fall through from try
+    scan_results[symbol] = "Score Below MIN_SCORE"
+    return {"symbol": symbol, "result": "skipped"}
 
 # =========================
 # TRADE MANAGER
@@ -1060,6 +1102,70 @@ def telegram_polling():
             time.sleep(10)
 
 
+def heartbeat_thread():
+
+    while True:
+
+        try:
+
+            time.sleep(HEARTBEAT_INTERVAL)
+
+            uptime_seconds = int(
+                time.time() - BOT_START_TIME
+            )
+
+            uptime_hours = uptime_seconds // 3600
+            uptime_minutes = (uptime_seconds % 3600) // 60
+
+            uptime_str = (
+                f"{uptime_hours}h {uptime_minutes}m"
+            )
+
+            with state_lock:
+                active_count = len(
+                    [
+                        t
+                        for t in active_trades.values()
+                        if t.get("status")
+                        in ["PENDING", "OPEN"]
+                    ]
+                )
+
+            auto_trade_status = (
+                "ON" if AUTO_TRADE else "OFF"
+            )
+
+            current_time = time.strftime(
+                "%Y-%m-%d %H:%M:%S UTC",
+                time.gmtime()
+            )
+
+            message = f"""
+💓 HEARTBEAT
+
+Status: ONLINE
+Uptime: {uptime_str}
+Active Trades: {active_count}
+Coins: {len(symbols)}
+Auto Trade: {auto_trade_status}
+Time: {current_time}
+"""
+
+            send_telegram(message)
+
+        except Exception:
+
+            print(
+                "Heartbeat error",
+                flush=True
+            )
+
+            print(
+                traceback.format_exc(),
+                flush=True
+            )
+
+
 def main():
     threading.Thread(
         target=telegram_polling,
@@ -1077,17 +1183,35 @@ def main():
         daemon=True
     ).start()
 
-    send_telegram(
-        "🚀 Railway Scanner Bot Online"
+    # =========================
+    # HEARTBEAT
+    # =========================
+
+    threading.Thread(
+        target=heartbeat_thread,
+        daemon=True
+    ).start()
+
+    # =========================
+    # STARTUP REPORT
+    # =========================
+
+    with state_lock:
+        restored_trades = len(active_trades)
+
+    auto_status = "ON" if AUTO_TRADE else "OFF"
+    startup_time = time.strftime(
+        "%Y-%m-%d %H:%M:%S UTC",
+        time.gmtime()
     )
 
-    # =========================
-    # SAFE RESTART WARNING
-    # =========================
-
     send_telegram(
-        "⚠️ AUTO TRADE DISABLED AFTER RESTART\n\n"
-        "Use /autoon to enable auto trading."
+        f"🚀 STARTUP REPORT\n\n"
+        f"Status: STARTED\n"
+        f"Time: {startup_time}\n"
+        f"Coins: {len(symbols)}\n"
+        f"Active Trades Restored: {restored_trades}\n"
+        f"Auto Trade: {auto_status}"
     )
 
     # =========================

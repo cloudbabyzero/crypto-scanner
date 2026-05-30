@@ -356,6 +356,71 @@ def short_order(message):
 
 
 # =========================
+# HEARTBEAT COMMAND
+# =========================
+
+@bot.message_handler(commands=['heartbeat'])
+def heartbeat(message):
+    uptime_seconds = int(
+        main_mod.time.time() - main_mod.BOT_START_TIME
+    )
+    uptime_hours = uptime_seconds // 3600
+    uptime_minutes = (uptime_seconds % 3600) // 60
+    uptime_str = f"{uptime_hours}h {uptime_minutes}m"
+
+    with main_mod.state_lock:
+        active_count = len(
+            [
+                t
+                for t in main_mod.active_trades.values()
+                if t.get("status")
+                in ["PENDING", "OPEN"]
+            ]
+        )
+
+    auto_trade_status = (
+        "ON" if main_mod.AUTO_TRADE else "OFF"
+    )
+
+    current_time = main_mod.time.strftime(
+        "%Y-%m-%d %H:%M:%S UTC",
+        main_mod.time.gmtime()
+    )
+
+    text = f"""
+💓 HEARTBEAT
+
+Status: ONLINE
+Uptime: {uptime_str}
+Active Trades: {active_count}
+Coins: {len(main_mod.symbols)}
+Auto Trade: {auto_trade_status}
+Time: {current_time}
+"""
+    bot.reply_to(message, text)
+
+
+# =========================
+# SCAN REPORT COMMAND
+# =========================
+
+@bot.message_handler(commands=['scanreport'])
+def scanreport(message):
+    results = getattr(main_mod, 'scan_results', {})
+    
+    if not results:
+        bot.reply_to(message, "📋 SCAN REPORT\n\nNo scan data yet.")
+        return
+    
+    text = "📋 SCAN REPORT\n\n"
+    for symbol in main_mod.symbols:
+        reason = results.get(symbol, "Not Scanned")
+        text += f"{symbol} - {reason}\n"
+    
+    bot.reply_to(message, text)
+
+
+# =========================
 # HELP COMMAND
 # =========================
 
@@ -369,6 +434,12 @@ def help_command(message):
 
 /status
 ดูสถานะบอท
+
+/heartbeat
+ดูสถานะแบบละเอียด
+
+/scanreport
+ดูผลสแกนล่าสุด
 
 /stats
 ดู winrate

@@ -83,3 +83,9 @@ AUTO_TRADE_HIGH_VOLUME_ONLY = False
 
 BINGX_API_KEY = os.getenv("BINGX_API_KEY")
 BINGX_SECRET_KEY = os.getenv("BINGX_SECRET_KEY")
+
+# =========================
+# HEARTBEAT CONFIGURATION
+# =========================
+
+HEARTBEAT_INTERVAL = 3600  # seconds (60 minutes)
