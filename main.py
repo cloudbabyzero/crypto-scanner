@@ -112,7 +112,7 @@ MARKET_MODE = "TRENDING"
 CURRENT_REGIME = "UNKNOWN"
 LAST_REGIME = "UNKNOWN"
 LAST_REGIME_CHECK = 0
-REGIME_CHECK_INTERVAL = 1800  # 30 minutes
+REGIME_CHECK_INTERVAL = 300  # 5 minutes (sync with scan cycle)
 
 # =========================
 # TELEGRAM
@@ -457,7 +457,8 @@ def get_latest_signal(symbol):
                 "tp": trade['tp2'],
                 "atr": abs(
                     trade['entry'] - trade['sl']
-                ) / 1.5
+                ) / 1.5,
+                "signal_regime": trade.get("signal_regime", "UNKNOWN")
             }
 
     return None
@@ -943,6 +944,8 @@ def analyze_trend(symbol, bypass_cooldown=False):
                 tp2
             )
 
+            signal_regime = CURRENT_REGIME
+
             with state_lock:
                 active_trades[signal_id] = {
                     "symbol": symbol,
@@ -952,6 +955,7 @@ def analyze_trend(symbol, bypass_cooldown=False):
                     "sl": sl,
                     "tp1": tp1,
                     "tp2": tp2,
+                    "signal_regime": signal_regime,
                     "created_at": time.time()
                 }
                 # Update last_alert after storing the signal
@@ -983,7 +987,12 @@ def analyze_trend(symbol, bypass_cooldown=False):
                 if not skip_reason:
                     if not can_open_trade("LONG"):
                         skip_reason = f"Max {MAX_LONG_TRADES} long positions reached"
-                
+
+                # Check market regime (only if all other filters passed)
+                if not skip_reason:
+                    if CURRENT_REGIME != signal_regime:
+                        skip_reason = "MARKET_REGIME_CHANGED"
+
                 # Execute if no skip reason
                 if not skip_reason:
                     vol_status = "HIGH" if volume_high else "NORMAL"
@@ -1005,6 +1014,13 @@ def analyze_trend(symbol, bypass_cooldown=False):
                         target=lambda: bingx_client.execute_trade(symbol, "long"),
                         daemon=True
                     ).start()
+                elif skip_reason == "MARKET_REGIME_CHANGED":
+                    send_telegram(
+                        f"⚠️ Auto Trade Cancelled\n\n"
+                        f"Reason: Market Regime Changed\n\n"
+                        f"Signal Regime:\n{signal_regime}\n\n"
+                        f"Current Regime:\n{CURRENT_REGIME}"
+                    )
                 else:
                     vol_status = "HIGH" if volume_high else "NORMAL"
                     pos_status = f"{len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])} / {MAX_LONG_TRADES}"
@@ -1083,6 +1099,8 @@ def analyze_trend(symbol, bypass_cooldown=False):
                 tp2
             )
 
+            signal_regime = CURRENT_REGIME
+
             with state_lock:
                 active_trades[signal_id] = {
                     "symbol": symbol,
@@ -1092,6 +1110,7 @@ def analyze_trend(symbol, bypass_cooldown=False):
                     "sl": sl,
                     "tp1": tp1,
                     "tp2": tp2,
+                    "signal_regime": signal_regime,
                     "created_at": time.time()
                 }
                 # Update last_alert after storing the signal
@@ -1123,7 +1142,12 @@ def analyze_trend(symbol, bypass_cooldown=False):
                 if not skip_reason:
                     if not can_open_trade("SHORT"):
                         skip_reason = f"Max {MAX_SHORT_TRADES} short positions reached"
-                
+
+                # Check market regime (only if all other filters passed)
+                if not skip_reason:
+                    if CURRENT_REGIME != signal_regime:
+                        skip_reason = "MARKET_REGIME_CHANGED"
+
                 # Execute if no skip reason
                 if not skip_reason:
                     vol_status = "HIGH" if volume_high else "NORMAL"
@@ -1145,6 +1169,13 @@ def analyze_trend(symbol, bypass_cooldown=False):
                         target=lambda: bingx_client.execute_trade(symbol, "short"),
                         daemon=True
                     ).start()
+                elif skip_reason == "MARKET_REGIME_CHANGED":
+                    send_telegram(
+                        f"⚠️ Auto Trade Cancelled\n\n"
+                        f"Reason: Market Regime Changed\n\n"
+                        f"Signal Regime:\n{signal_regime}\n\n"
+                        f"Current Regime:\n{CURRENT_REGIME}"
+                    )
                 else:
                     vol_status = "HIGH" if volume_high else "NORMAL"
                     pos_status = f"{len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])} / {MAX_SHORT_TRADES}"
@@ -1394,6 +1425,8 @@ def analyze_sideways(symbol, bypass_cooldown=False):
             tp
         )
 
+        signal_regime = CURRENT_REGIME
+
         with state_lock:
             active_trades[signal_id] = {
                 "symbol": symbol,
@@ -1403,6 +1436,7 @@ def analyze_sideways(symbol, bypass_cooldown=False):
                 "sl": sl,
                 "tp1": tp,
                 "tp2": tp,
+                "signal_regime": signal_regime,
                 "created_at": time.time()
             }
             # Update last_alert after storing the signal
@@ -1415,10 +1449,6 @@ def analyze_sideways(symbol, bypass_cooldown=False):
         if AUTO_TRADE:
 
             skip_reason = None
-
-            # Check grade filter
-            if not passes_grade_filter(grade):
-                skip_reason = f"Grade: {grade} < {AUTO_TRADE_MIN_GRADE}"
 
             # Check execution filters (only if grade passed)
             if not skip_reason:
@@ -1434,6 +1464,11 @@ def analyze_sideways(symbol, bypass_cooldown=False):
             if not skip_reason:
                 if not can_open_trade(side):
                     skip_reason = f"Max {'LONG' if side == 'LONG' else 'SHORT'} {'longs' if side == 'LONG' else 'shorts'} positions reached"
+
+            # Check market regime (only if all other filters passed)
+            if not skip_reason:
+                if CURRENT_REGIME != signal_regime:
+                    skip_reason = "MARKET_REGIME_CHANGED"
 
             # Execute if no skip reason
             if not skip_reason:
@@ -1455,6 +1490,13 @@ def analyze_sideways(symbol, bypass_cooldown=False):
                     target=lambda: bingx_client.execute_trade(symbol, side.lower()),
                     daemon=True
                 ).start()
+            elif skip_reason == "MARKET_REGIME_CHANGED":
+                send_telegram(
+                    f"⚠️ Auto Trade Cancelled\n\n"
+                    f"Reason: Market Regime Changed\n\n"
+                    f"Signal Regime:\n{signal_regime}\n\n"
+                    f"Current Regime:\n{CURRENT_REGIME}"
+                )
             else:
                 vol_status = "HIGH" if volume_high else "NORMAL"
 

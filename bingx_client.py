@@ -205,6 +205,21 @@ def execute_trade(symbol, side):
             )
             return
 
+        # =========================
+        # MARKET REGIME SAFETY LOCK
+        # =========================
+
+        signal_regime = signal.get("signal_regime", "UNKNOWN")
+
+        if main_mod.CURRENT_REGIME != signal_regime:
+            main_mod.send_telegram(
+                f"⚠️ Signal Expired\n\n"
+                f"Reason: Market Regime Changed\n\n"
+                f"Signal Regime:\n{signal_regime}\n\n"
+                f"Current Regime:\n{main_mod.CURRENT_REGIME}"
+            )
+            return
+
         entry = signal["entry"]
         sl = signal["sl"]
         atr = signal["atr"]
