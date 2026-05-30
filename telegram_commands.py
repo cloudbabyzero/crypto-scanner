@@ -7,6 +7,7 @@ through the main_mod reference to avoid circular imports.
 import sys
 import threading
 import bingx_client
+from telebot import types
 
 # Reference to main.py's globals
 main_mod = sys.modules["__main__"]
@@ -173,7 +174,7 @@ def forcecheck(message):
         for symbol in main_mod.symbols:
             scanned += 1
             try:
-                main_mod.analyze(symbol)
+                main_mod.analyze(symbol, bypass_cooldown=True)
             except Exception:
                 pass
         
@@ -373,6 +374,9 @@ def heartbeat(message):
         main_mod.time.gmtime()
     )
 
+    market_mode = getattr(main_mod, 'MARKET_MODE', 'TRENDING')
+    current_regime = getattr(main_mod, 'CURRENT_REGIME', 'UNKNOWN')
+
     text = f"""
 💓 HEARTBEAT
 
@@ -381,6 +385,8 @@ Uptime: {uptime_str}
 Active Trades: {active_count}
 Coins: {len(main_mod.symbols)}
 Auto Trade: {auto_trade_status}
+Market Mode: {market_mode}
+Market Regime: {current_regime}
 Time: {current_time}
 """
     bot.reply_to(message, text)
@@ -406,12 +412,19 @@ def format_scan_row(symbol, data):
     lines.append(f"Status: {status}")
     
     if status == "Signal Generated":
+        strategy = data.get("strategy", "TREND")
+        lines.append(f"Strategy: {strategy}")
         lines.append(f"Score: {score}/{min_score}")
         lines.append(f"ADX: {adx}")
         lines.append(f"ATR: {atr}")
         lines.append(f"Volume: {volume}")
     elif status == "Score Below MIN_SCORE":
-        lines.append(f"Score: {score}/{min_score}")
+        long_score = data.get("long_score", 0)
+        short_score = data.get("short_score", 0)
+        missing_points = data.get("missing_points", 0)
+        lines.append(f"Long Score: {long_score}")
+        lines.append(f"Short Score: {short_score}")
+        lines.append(f"Need: +{missing_points} points")
         lines.append(f"ATR: {atr}")
         lines.append(f"ADX: {adx}")
         lines.append(f"Volume: {volume}")
@@ -449,6 +462,172 @@ def scanreport(message):
 
 
 # =========================
+# DASHBOARD COMMAND
+# =========================
+
+@bot.message_handler(commands=['dashboard'])
+def dashboard(message):
+    counters = getattr(main_mod, 'scan_counters', {})
+    total = counters.get("Total Scans", 0)
+    signals = counters.get("Signal Generated", 0)
+    sideways = counters.get("Sideways Market", 0)
+    score_low = counters.get("Score Below MIN_SCORE", 0)
+    cooldown = counters.get("Cooldown", 0)
+    candle = counters.get("Candle Too Big", 0)
+    ema99 = counters.get("Too Close EMA99", 0)
+    errors = counters.get("Error", 0)
+
+    uptime_seconds = int(
+        main_mod.time.time() - main_mod.BOT_START_TIME
+    )
+    uptime_hours = uptime_seconds // 3600
+    uptime_minutes = (uptime_seconds % 3600) // 60
+    uptime_str = f"{uptime_hours}h {uptime_minutes}m"
+
+    def pct(val):
+        if total == 0:
+            return 0
+        return round((val / total) * 100)
+
+    sideways_pct = pct(sideways)
+    score_low_pct = pct(score_low)
+    cooldown_pct = pct(cooldown)
+    candle_pct = pct(candle)
+    ema99_pct = pct(ema99)
+    errors_pct = pct(errors)
+
+    market_mode = getattr(main_mod, 'MARKET_MODE', 'TRENDING')
+    current_regime = getattr(main_mod, 'CURRENT_REGIME', 'UNKNOWN')
+
+    text = f"""
+📊 DASHBOARD
+
+Uptime:
+{uptime_str}
+
+Scans:
+{total}
+
+Signals:
+{signals}
+
+Sideways:
+{sideways_pct}%
+
+Score Low:
+{score_low_pct}%
+
+Cooldown:
+{cooldown_pct}%
+
+Candle Big:
+{candle_pct}%
+
+EMA99:
+{ema99_pct}%
+
+Errors:
+{errors}
+
+Current Regime:
+{current_regime}
+
+Market Mode:
+{market_mode}
+"""
+    bot.reply_to(message, text)
+
+
+# =========================
+# MARKET COMMAND
+# =========================
+
+def get_regime_recommendation(regime):
+    recommendations = {
+        "TRENDING": "Trend Following",
+        "SIDEWAYS": "Mean Reversion",
+        "VOLATILE": "Volatility Breakout",
+    }
+    return recommendations.get(regime, "Trend Following")
+
+
+@bot.message_handler(commands=['market'])
+def market(message):
+    try:
+        regime, btc_adx, btc_atr_pct = main_mod.detect_market_regime()
+    except Exception:
+        bot.reply_to(message, "❌ Failed to detect market regime.")
+        return
+
+    market_mode = getattr(main_mod, 'MARKET_MODE', 'TRENDING')
+    current_regime = getattr(main_mod, 'CURRENT_REGIME', 'UNKNOWN')
+    recommendation = get_regime_recommendation(regime)
+
+    text = f"""
+📊 MARKET REPORT
+
+Current Regime:
+{regime}
+
+BTC ADX: {btc_adx}
+
+Recommended Strategy:
+{recommendation}
+
+Current Market Mode:
+{market_mode}
+
+Market Regime:
+{current_regime}
+"""
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn_trend = types.InlineKeyboardButton(
+        "✅ Enable Trend Mode", callback_data="mode_trending"
+    )
+    btn_sideways = types.InlineKeyboardButton(
+        "🔄 Enable Sideways Mode", callback_data="mode_sideways"
+    )
+    btn_skip = types.InlineKeyboardButton(
+        "⏭ Skip", callback_data="mode_skip"
+    )
+    markup.add(btn_trend, btn_sideways, btn_skip)
+
+    bot.send_message(message.chat.id, text, reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("mode_"))
+def market_mode_callback(call):
+    action = call.data.replace("mode_", "")
+
+    if action == "trending":
+        main_mod.MARKET_MODE = "TRENDING"
+        bot.answer_callback_query(call.id, "✅ Trend Mode enabled")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"{call.message.text}\n\n✅ Market Mode set to TRENDING"
+        )
+
+    elif action == "sideways":
+        main_mod.MARKET_MODE = "SIDEWAYS"
+        bot.answer_callback_query(call.id, "🔄 Sideways Mode enabled")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"{call.message.text}\n\n✅ Market Mode set to SIDEWAYS"
+        )
+
+    elif action == "skip":
+        bot.answer_callback_query(call.id, "⏭ No changes made")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=call.message.text
+        )
+
+
+# =========================
 # HELP COMMAND
 # =========================
 
@@ -480,6 +659,12 @@ def help_command(message):
 
 /forcecheck
 บังคับสแกนทันที
+
+/market
+ดู market regime และเลือกโหมด
+
+/dashboard
+ดู dashboard สถิติทั้งหมด
 
 /csv
 ดาวน์โหลด signals.csv

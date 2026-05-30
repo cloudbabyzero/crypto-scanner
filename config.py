@@ -89,3 +89,11 @@ BINGX_SECRET_KEY = os.getenv("BINGX_SECRET_KEY")
 # =========================
 
 HEARTBEAT_INTERVAL = 3600  # seconds (60 minutes)
+
+# =========================
+# MARKET REGIME DETECTION
+# =========================
+
+MARKET_REGIME_ADX_TRENDING = 22   # BTC ADX >= this → TRENDING
+MARKET_REGIME_ADX_SIDEWAYS = 18   # BTC ADX <  this → SIDEWAYS
+MARKET_REGIME_ATR_VOLATILE = 1.0  # BTC ATR% >= this → VOLATILE

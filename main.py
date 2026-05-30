@@ -31,6 +31,9 @@ from config import (
     AUTO_TRADE_MIN_ADX,
     AUTO_TRADE_HIGH_VOLUME_ONLY,
     HEARTBEAT_INTERVAL,
+    MARKET_REGIME_ADX_TRENDING,
+    MARKET_REGIME_ADX_SIDEWAYS,
+    MARKET_REGIME_ATR_VOLATILE,
 )
 
 # =========================
@@ -61,6 +64,55 @@ state_lock = threading.RLock()
 BOT_START_TIME = time.time()
 
 scan_results = {}
+
+scan_counters = {
+    "Total Scans": 0,
+    "Signal Generated": 0,
+    "Sideways Market": 0,
+    "Score Below MIN_SCORE": 0,
+    "Cooldown": 0,
+    "Candle Too Big": 0,
+    "Too Close EMA99": 0,
+    "Error": 0,
+}
+
+
+def set_scan_result(symbol, data):
+    """Store scan result dict and increment the corresponding counter."""
+    scan_counters["Total Scans"] += 1
+    status = data.get("status", "Unknown")
+    if status in scan_counters:
+        scan_counters[status] += 1
+    scan_results[symbol] = data
+
+
+def calculate_sideways_levels(entry, atr, bb_mid, side):
+    """Calculate SL and TP for sideways mean reversion trades.
+
+    SL: ATR * 1.2
+    TP: Bollinger Middle Band
+    """
+    if side == "LONG":
+        sl = round(entry - atr * 1.2, 4)
+        tp = round(bb_mid, 4)
+        risk = entry - sl
+        reward = tp - entry
+    else:
+        sl = round(entry + atr * 1.2, 4)
+        tp = round(bb_mid, 4)
+        risk = sl - entry
+        reward = entry - tp
+
+    rr = round(reward / risk, 2) if risk > 0 else 0
+    return sl, tp, rr
+
+
+MARKET_MODE = "TRENDING"
+
+CURRENT_REGIME = "UNKNOWN"
+LAST_REGIME = "UNKNOWN"
+LAST_REGIME_CHECK = 0
+REGIME_CHECK_INTERVAL = 1800  # 30 minutes
 
 # =========================
 # TELEGRAM
@@ -270,6 +322,9 @@ def build_signal_message(
 
 {symbol}
 
+Strategy:
+TREND
+
 Grade:
 {grade}
 
@@ -411,10 +466,57 @@ def get_latest_signal(symbol):
 # execute_trade moved to bingx_client.py
 
 # =========================
-# ANALYZE
+# MARKET REGIME DETECTION
 # =========================
 
-def analyze(symbol):
+def detect_market_regime():
+    """Detect current BTC market regime: TRENDING, SIDEWAYS, or VOLATILE.
+
+    Returns:
+        (regime, btc_adx, btc_atr_percent) tuple
+    """
+    try:
+        df_15m = get_dataframe('BTC/USDT:USDT', '15m')
+        btc = df_15m.iloc[-2]
+
+        btc_adx = round(btc['adx'], 2)
+        btc_atr_percent = round((btc['atr'] / btc['close']) * 100, 2)
+
+        # VOLATILE has highest priority
+        if btc_atr_percent >= MARKET_REGIME_ATR_VOLATILE:
+            return "VOLATILE", btc_adx, btc_atr_percent
+
+        if btc_adx >= MARKET_REGIME_ADX_TRENDING:
+            return "TRENDING", btc_adx, btc_atr_percent
+
+        if btc_adx < MARKET_REGIME_ADX_SIDEWAYS:
+            return "SIDEWAYS", btc_adx, btc_atr_percent
+
+        # Default to TRENDING if between thresholds
+        return "TRENDING", btc_adx, btc_atr_percent
+
+    except Exception:
+        print("Market regime detection error", flush=True)
+        print(traceback.format_exc(), flush=True)
+        return "TRENDING", 0, 0
+
+
+# =========================
+# ANALYZE - Strategy Dispatcher
+# =========================
+
+def analyze(symbol, bypass_cooldown=False):
+    """Route to the correct analysis strategy based on MARKET_MODE."""
+    if MARKET_MODE == "SIDEWAYS":
+        return analyze_sideways(symbol, bypass_cooldown=bypass_cooldown)
+    return analyze_trend(symbol, bypass_cooldown=bypass_cooldown)
+
+
+# =========================
+# ANALYZE TREND
+# =========================
+
+def analyze_trend(symbol, bypass_cooldown=False):
 
     try:
 
@@ -424,12 +526,13 @@ def analyze(symbol):
         # COOLDOWN
         # =========================
 
-        with state_lock:
-            last_time = last_alert.get(symbol)
+        if not bypass_cooldown:
+            with state_lock:
+                last_time = last_alert.get(symbol)
 
-        if last_time and now - last_time < COOLDOWN:
-            scan_results[symbol] = {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now}
-            return {"symbol": symbol, "result": "skipped"}
+            if last_time and now - last_time < COOLDOWN:
+                set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                return {"symbol": symbol, "result": "skipped"}
 
         # =========================
         # GET DATA
@@ -484,7 +587,7 @@ def analyze(symbol):
             adx_val = round(m15['adx'], 2)
             atr_val = round((m15['atr'] / m15['close']) * 100, 2)
             vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
-            scan_results[symbol] = {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now}
+            set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -503,7 +606,7 @@ def analyze(symbol):
             adx_val = round(m15['adx'], 2)
             atr_val = round((m15['atr'] / m15['close']) * 100, 2)
             vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
-            scan_results[symbol] = {"status": "Sideways Market", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now}
+            set_scan_result(symbol, {"status": "Sideways Market", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -711,7 +814,7 @@ def analyze(symbol):
 
             score = max(long_score, short_score)
             vol_status = "HIGH" if volume_high else "NORMAL"
-            scan_results[symbol] = {"status": "Too Close EMA99", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now}
+            set_scan_result(symbol, {"status": "Too Close EMA99", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now})
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -920,7 +1023,7 @@ def analyze(symbol):
                     )
 
             vol_status = "HIGH" if volume_high else "NORMAL"
-            scan_results[symbol] = {"status": "Signal Generated", "score": long_score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now}
+            set_scan_result(symbol, {"status": "Signal Generated", "score": long_score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "strategy": "TREND"})
             return {"symbol": symbol, "result": "signal"}
         # =========================
         # SHORT SIGNAL
@@ -1060,7 +1163,7 @@ def analyze(symbol):
                     )
 
             vol_status = "HIGH" if volume_high else "NORMAL"
-            scan_results[symbol] = {"status": "Signal Generated", "score": short_score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now}
+            set_scan_result(symbol, {"status": "Signal Generated", "score": short_score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "strategy": "TREND"})
             return {"symbol": symbol, "result": "signal"}
     
     except Exception:
@@ -1074,14 +1177,318 @@ def analyze(symbol):
             flush=True
         )
 
-        scan_results[symbol] = {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()}
+        set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
         return {"symbol": symbol, "result": "error"}
 
     # No LONG or SHORT signal generated — fall through from try
     vol_status = "HIGH" if volume_high else "NORMAL"
     score = max(long_score, short_score)
-    scan_results[symbol] = {"status": "Score Below MIN_SCORE", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now}
+    missing_points = max(MIN_SCORE - score, 0)
+    set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "long_score": long_score, "short_score": short_score, "missing_points": missing_points})
     return {"symbol": symbol, "result": "skipped"}
+
+
+# =========================
+# ANALYZE SIDEWAYS
+# =========================
+
+def build_sideways_message(symbol, side, entry, sl, tp, rr, rsi, adx, atr_percent, volume_high):
+    icon = "🚀" if side == "LONG" else "🔻"
+    return f"""
+{icon} {side} SIGNAL
+
+{symbol}
+
+Strategy:
+SIDEWAYS
+
+Mean Reversion Entry:
+{entry}
+
+SL:
+{sl}
+
+TP:
+{tp}
+
+RR:
+1:{rr}
+
+RSI:
+{round(rsi, 2)}
+
+ADX:
+{round(adx, 2)}
+
+ATR %:
+{round(atr_percent, 2)}
+
+Volume:
+{"HIGH" if volume_high else "NORMAL"}
+
+Plan:
+- Mean reversion to BB middle
+- Fixed SL
+"""
+
+
+def analyze_sideways(symbol, bypass_cooldown=False):
+
+    try:
+
+        now = time.time()
+
+        # =========================
+        # COOLDOWN
+        # =========================
+
+        if not bypass_cooldown:
+            with state_lock:
+                last_time = last_alert.get(symbol)
+
+            if last_time and now - last_time < COOLDOWN:
+                set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # GET DATA
+        # =========================
+
+        df_15m = get_dataframe(
+            symbol,
+            '15m'
+        )
+
+        m15 = df_15m.iloc[-2]
+
+        # =========================
+        # FOMO FILTER
+        # =========================
+
+        candle_size = abs(
+            m15['close'] - m15['open']
+        )
+
+        if candle_size > m15['atr'] * 1.5:
+            print(
+                f"{symbol} skipped - candle too big",
+                flush=True
+            )
+
+            adx_val = round(m15['adx'], 2)
+            atr_val = round((m15['atr'] / m15['close']) * 100, 2)
+            vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
+            set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # INDICATORS
+        # =========================
+
+        rsi = m15['rsi']
+        close = m15['close']
+        bb_lower = m15['bb_lower']
+        bb_upper = m15['bb_upper']
+        bb_mid = m15['bb_mid']
+        adx = m15['adx']
+        atr = m15['atr']
+
+        atr_percent = round((atr / close) * 100, 2)
+        volume_high = m15['volume'] > m15['vol_avg'] * 1.3
+        signal_id = str(uuid.uuid4())[:8]
+
+        # =========================
+        # SIDEWAYS CONDITION CHECK
+        # =========================
+
+        # LONG: RSI < 35, Close <= BB Lower, ADX < 20
+        long_condition = (
+            rsi < 35
+            and close <= bb_lower
+            and adx < 20
+        )
+
+        # SHORT: RSI > 65, Close >= BB Upper, ADX < 20
+        short_condition = (
+            rsi > 65
+            and close >= bb_upper
+            and adx < 20
+        )
+
+        if not long_condition and not short_condition:
+            set_scan_result(symbol, {"status": "Sideways Market", "score": 0, "adx": round(adx, 2), "atr": atr_percent, "volume": "HIGH" if volume_high else "NORMAL", "timestamp": now})
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # PICK SIDE
+        # =========================
+
+        if long_condition and short_condition:
+            # Both conditions met — pick the more extreme RSI
+            side = "LONG" if abs(30 - rsi) > abs(70 - rsi) else "SHORT"
+        elif long_condition:
+            side = "LONG"
+        else:
+            side = "SHORT"
+
+        # =========================
+        # CALCULATE LEVELS
+        # =========================
+
+        if side == "LONG":
+            entry = round(close, 4)
+        else:
+            entry = round(close, 4)
+
+        sl, tp, rr = calculate_sideways_levels(
+            entry, atr, bb_mid, side
+        )
+
+        # =========================
+        # GRADE
+        # =========================
+
+        if rr >= 2.0:
+            grade = "A+"
+        elif rr >= 1.5:
+            grade = "A"
+        elif rr >= 1.2:
+            grade = "B"
+        else:
+            grade = "C"
+
+        # =========================
+        # SIGNAL MESSAGE
+        # =========================
+
+        message = build_sideways_message(
+            symbol=symbol,
+            side=side,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            rr=rr,
+            rsi=rsi,
+            adx=adx,
+            atr_percent=atr_percent,
+            volume_high=volume_high
+        )
+
+        print(
+            message,
+            flush=True
+        )
+
+        # Store signal for manual trading (or if auto trade skipped)
+        send_telegram(message)
+
+        save_signal(
+            signal_id,
+            symbol,
+            side,
+            grade,
+            0,
+            entry,
+            sl,
+            tp,
+            tp
+        )
+
+        with state_lock:
+            active_trades[signal_id] = {
+                "symbol": symbol,
+                "status": "SIGNAL",
+                "side": side,
+                "entry": entry,
+                "sl": sl,
+                "tp1": tp,
+                "tp2": tp,
+                "created_at": time.time()
+            }
+            # Update last_alert after storing the signal
+            last_alert[symbol] = now
+
+        # =========================
+        # AUTO TRADE LOGIC
+        # =========================
+
+        if AUTO_TRADE:
+
+            skip_reason = None
+
+            # Check grade filter
+            if not passes_grade_filter(grade):
+                skip_reason = f"Grade: {grade} < {AUTO_TRADE_MIN_GRADE}"
+
+            # Check execution filters (only if grade passed)
+            if not skip_reason:
+                passes_exec, exec_reason = check_execution_filters(
+                    atr_percent,
+                    adx,
+                    volume_high
+                )
+                if not passes_exec:
+                    skip_reason = exec_reason
+
+            # Check position limit (only if all other filters passed)
+            if not skip_reason:
+                if not can_open_trade(side):
+                    skip_reason = f"Max {'LONG' if side == 'LONG' else 'SHORT'} {'longs' if side == 'LONG' else 'shorts'} positions reached"
+
+            # Execute if no skip reason
+            if not skip_reason:
+                vol_status = "HIGH" if volume_high else "NORMAL"
+
+                send_telegram(
+                    f"🤖 AUTO TRADE DECISION\n\n"
+                    f"Symbol: {symbol}\n"
+                    f"Side: {side}\n"
+                    f"Strategy: SIDEWAYS\n"
+                    f"Result: EXECUTED\n"
+                    f"Grade: {grade}\n"
+                    f"ATR: {atr_percent}%\n"
+                    f"ADX: {round(adx, 2)}\n"
+                    f"Volume: {vol_status}"
+                )
+
+                threading.Thread(
+                    target=lambda: bingx_client.execute_trade(symbol, side.lower()),
+                    daemon=True
+                ).start()
+            else:
+                vol_status = "HIGH" if volume_high else "NORMAL"
+
+                send_telegram(
+                    f"🤖 AUTO TRADE DECISION\n\n"
+                    f"Symbol: {symbol}\n"
+                    f"Side: {side}\n"
+                    f"Strategy: SIDEWAYS\n"
+                    f"Result: SKIPPED\n"
+                    f"Reason: {skip_reason}\n"
+                    f"Grade: {grade}\n"
+                    f"ATR: {atr_percent}%\n"
+                    f"ADX: {round(adx, 2)}\n"
+                    f"Volume: {vol_status}"
+                )
+
+        vol_status = "HIGH" if volume_high else "NORMAL"
+        set_scan_result(symbol, {"status": "Signal Generated", "score": 0, "adx": round(adx, 2), "atr": atr_percent, "volume": vol_status, "timestamp": now, "strategy": "SIDEWAYS"})
+        return {"symbol": symbol, "result": "signal"}
+
+    except Exception:
+        print(
+            f"{symbol} ERROR",
+            flush=True
+        )
+
+        print(
+            traceback.format_exc(),
+            flush=True
+        )
+
+        set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        return {"symbol": symbol, "result": "error"}
+
 
 # =========================
 # TRADE MANAGER
@@ -1152,6 +1559,10 @@ def heartbeat_thread():
                 time.gmtime()
             )
 
+            market_mode_text = MARKET_MODE
+
+            current_regime_text = CURRENT_REGIME
+
             message = f"""
 💓 HEARTBEAT
 
@@ -1160,6 +1571,8 @@ Uptime: {uptime_str}
 Active Trades: {active_count}
 Coins: {len(symbols)}
 Auto Trade: {auto_trade_status}
+Market Mode: {market_mode_text}
+Market Regime: {current_regime_text}
 Time: {current_time}
 """
 
@@ -1179,6 +1592,8 @@ Time: {current_time}
 
 
 def main():
+    global CURRENT_REGIME, LAST_REGIME, LAST_REGIME_CHECK
+
     threading.Thread(
         target=telegram_polling,
         daemon=True
@@ -1208,6 +1623,13 @@ def main():
     # STARTUP REPORT
     # =========================
 
+    # Initial market regime detection
+    try:
+        init_regime, _, _ = detect_market_regime()
+        CURRENT_REGIME = init_regime
+    except Exception:
+        pass
+
     with state_lock:
         restored_trades = len(active_trades)
 
@@ -1217,13 +1639,17 @@ def main():
         time.gmtime()
     )
 
+    market_mode_text = MARKET_MODE
+
     send_telegram(
         f"🚀 STARTUP REPORT\n\n"
         f"Status: STARTED\n"
         f"Time: {startup_time}\n"
         f"Coins: {len(symbols)}\n"
         f"Active Trades Restored: {restored_trades}\n"
-        f"Auto Trade: {auto_status}"
+        f"Auto Trade: {auto_status}\n"
+        f"Market Mode: {market_mode_text}\n"
+        f"Market Regime: {CURRENT_REGIME}"
     )
 
     # =========================
@@ -1237,6 +1663,28 @@ def main():
                 "Bot alive - scanning market...",
                 flush=True
             )
+
+            # =========================
+            # MARKET REGIME CHECK
+            # =========================
+
+            now = time.time()
+            if now - LAST_REGIME_CHECK >= REGIME_CHECK_INTERVAL:
+                LAST_REGIME_CHECK = now
+                new_regime, btc_adx, btc_atr_pct = detect_market_regime()
+                if CURRENT_REGIME == "UNKNOWN":
+                    # First check — silent initialisation
+                    CURRENT_REGIME = new_regime
+                elif new_regime != CURRENT_REGIME:
+                    LAST_REGIME = CURRENT_REGIME
+                    CURRENT_REGIME = new_regime
+                    send_telegram(
+                        f"📊 MARKET REGIME CHANGED\n\n"
+                        f"Previous:\n{LAST_REGIME}\n\n"
+                        f"Current:\n{CURRENT_REGIME}\n\n"
+                        f"BTC ADX:\n{btc_adx}\n\n"
+                        f"BTC ATR:\n{btc_atr_pct}%"
+                    )
 
             for symbol in symbols:
 
