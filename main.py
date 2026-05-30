@@ -7,68 +7,40 @@ import os
 import traceback
 import csv
 import threading
-import telebot
 import uuid
 
 # =========================
-# CONFIG
+# CONFIG - Import from config.py
 # =========================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-bot = telebot.TeleBot(
-    TELEGRAM_TOKEN
+from config import (
+    bot,
+    TELEGRAM_TOKEN,
+    CHAT_ID,
+    SCAN_INTERVAL,
+    COOLDOWN,
+    LEVERAGE,
+    MARGIN_PER_TRADE,
+    ADX_FILTER,
+    MIN_SCORE,
+    ATR_FILTER,
+    symbols,
+    AUTO_TRADE,
+    AUTO_TRADE_MIN_GRADE,
+    MAX_LONG_TRADES,
+    MAX_SHORT_TRADES,
+    GRADE_PRIORITY,
+    AUTO_TRADE_MIN_ATR,
+    AUTO_TRADE_MIN_ADX,
+    AUTO_TRADE_HIGH_VOLUME_ONLY,
+    BINGX_API_KEY,
+    BINGX_SECRET_KEY,
 )
 
 # Import handlers after bot is created
 import bingx_client
 import telegram_commands
 import trade_manager
-
-SCAN_INTERVAL = 300
-COOLDOWN = 3600
-
-LEVERAGE = 25
-MARGIN_PER_TRADE = 0.84
-
-ADX_FILTER = 20
-MIN_SCORE = 85
-ATR_FILTER = 0.4
-
-symbols = [
-    'BTC/USDT:USDT',
-    'ETH/USDT:USDT',
-    #'DOGE/USDT:USDT',
-    'SOL/USDT:USDT',
-    'XRP/USDT:USDT',
-    'HYPE/USDT:USDT',
-    #'ZEC/USDT:USDT',
-    #'INJ/USDT:USDT'
-]
-
-# =========================
-# AUTO TRADE CONFIG
-# =========================
-
-AUTO_TRADE = False
-AUTO_TRADE_MIN_GRADE = "A"
-MAX_LONG_TRADES = 2
-MAX_SHORT_TRADES = 2
-
-GRADE_PRIORITY = {
-    "A+": 4,
-    "A": 3,
-    "B": 2,
-    "C": 1
-}
-
-# =========================
-# AUTO TRADE EXECUTION FILTERS
-# =========================
-
-AUTO_TRADE_MIN_ATR = 0.45
-AUTO_TRADE_MIN_ADX = 22
-AUTO_TRADE_HIGH_VOLUME_ONLY = False
 
 last_alert = {}
 
@@ -429,9 +401,9 @@ def get_latest_signal(symbol):
 
 exchange = ccxt.bingx({
 
-    'apiKey': os.getenv("BINGX_API_KEY"),
+    'apiKey': BINGX_API_KEY,
 
-    'secret': os.getenv("BINGX_SECRET_KEY"),
+    'secret': BINGX_SECRET_KEY,
 
     'enableRateLimit': True,
 
