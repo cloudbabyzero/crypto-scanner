@@ -1,4 +1,4 @@
-."""
+"""
 Configuration file for Crypto Scanner Bot.
 Contains all configuration constants and initialization.
 """
