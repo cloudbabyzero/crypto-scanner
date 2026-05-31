@@ -73,6 +73,7 @@ BOT_START_TIME = time.time()
 
 scan_results = {}
 
+# Lifetime statistics
 scan_counters = {
     "Total Scans": 0,
     "Signal Generated": 0,
@@ -84,14 +85,45 @@ scan_counters = {
     "Error": 0,
 }
 
+# Current scan cycle statistics
+cycle_counters = {
+    "Total Scans": 0,
+    "Signal Generated": 0,
+    "Sideways Market": 0,
+    "Score Below MIN_SCORE": 0,
+    "Cooldown": 0,
+    "Candle Too Big": 0,
+    "Too Close EMA99": 0,
+    "Error": 0,
+}
 
-def set_scan_result(symbol, data):
-    """Store scan result dict and increment the corresponding counter."""
+def reset_cycle_counters():
+    global cycle_counters
+
+    cycle_counters = {
+        "Total Scans": 0,
+        "Signal Generated": 0,
+        "Sideways Market": 0,
+        "Score Below MIN_SCORE": 0,
+        "Cooldown": 0,
+        "Candle Too Big": 0,
+        "Too Close EMA99": 0,
+        "Error": 0,
+    }
+
+    print("[CYCLE_COUNTERS] Reset", flush=True)
+
+
     scan_counters["Total Scans"] += 1
+    cycle_counters["Total Scans"] += 1
+
     status = data.get("status", "Unknown")
-    if status in scan_counters:
-        scan_counters[status] += 1
-    scan_results[symbol] = data
+
+if status in scan_counters:
+    scan_counters[status] += 1
+
+if status in cycle_counters:
+    cycle_counters[status] += 1
 
 
 def calculate_sideways_levels(entry, atr, bb_mid, side):
@@ -296,9 +328,9 @@ def startup_market_scan():
         # Save updated state to persistent storage
         save_regime_storage()
         
-        # Feature 5: Run immediate full rescan after startup scan
+        # Feature 5: Run immediate full rescan after startup scan (read-only)
         send_telegram("🔄 Startup Full Rescan")
-        immediate_full_rescan(is_startup=True)
+        immediate_full_rescan(is_startup=True, read_only=True)
         
         # Feature 6: Send top candidates from startup rescan
         send_top_candidates()
@@ -382,8 +414,8 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
     # Save to persistent storage (Feature 7)
     save_regime_storage()
     
-    # Feature 5: Run immediate full rescan after regime change
-    immediate_full_rescan(is_startup=False)
+    # Feature 5: Run immediate full rescan after regime change (read-only)
+    immediate_full_rescan(is_startup=False, read_only=True)
     
     # Feature 4: Disable cooldown bypass after rescan completes
     ignore_cooldown_once = False
@@ -429,7 +461,7 @@ def determine_mode_from_regime(regime):
 # IMMEDIATE FULL RESCAN (Feature 5)
 # =========================
 
-def immediate_full_rescan(is_startup=False):
+def immediate_full_rescan(is_startup=False, read_only=True):
     """Run a complete market scan immediately.
     
     Feature 5: When regime changes, run a complete market scan immediately.
@@ -444,6 +476,8 @@ def immediate_full_rescan(is_startup=False):
     
     Args:
         is_startup: If True, this is a startup scan.
+        read_only: If True, do not save signals, create active_trades, or execute trades.
+                   All rescans are read-only — they only build candidate_signals for TOP_CANDIDATES.
     
     This does NOT wait for the next scan interval.
     """
@@ -462,8 +496,8 @@ def immediate_full_rescan(is_startup=False):
     
     for symbol in symbols:
         try:
-            # Always bypass cooldown, silence signals, and skip auto trades during rescan
-            analyze(symbol, bypass_cooldown=True, silent_mode=True, signal_only=is_startup)
+            # Always bypass cooldown, silence signals, and skip all signal creation during rescan
+            analyze(symbol, bypass_cooldown=True, silent_mode=True, signal_only=read_only)
             scanned_count += 1
             time.sleep(2)
         except Exception as e:
@@ -2123,12 +2157,25 @@ def heartbeat_thread():
 
 Status: ONLINE
 Uptime: {uptime_str}
+
+📊 BOT STATUS
+
 Active Trades: {active_count}
 Coins: {len(symbols)}
 Auto Trade: {auto_trade_status}
+
+📈 MARKET
+
 Market Mode: {market_mode_text}
 Market Regime: {current_regime_text}
 Control Mode: {control_mode_text}
+
+📋 SCAN STATS
+
+Signals Generated: {scan_counters['Signal Generated']}
+Cooldown Rejects: {scan_counters['Cooldown']}
+Low Score Rejects: {scan_counters['Score Below MIN_SCORE']}
+
 Time: {current_time}
 """
 
@@ -2263,6 +2310,7 @@ def main():
             # NORMAL SCAN CYCLE
             # =========================
             
+            reset_cycle_counters()
             for symbol in symbols:
 
                 analyze(symbol)
