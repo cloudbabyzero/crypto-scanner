@@ -1,4 +1,4 @@
-"""
+."""
 Configuration file for Crypto Scanner Bot.
 Contains all configuration constants and initialization.
 """
@@ -45,13 +45,17 @@ ATR_FILTER = 0.4
 symbols = [
     'BTC/USDT:USDT',
     'ETH/USDT:USDT',
-    #'DOGE/USDT:USDT',
     'SOL/USDT:USDT',
     'XRP/USDT:USDT',
-    'HYPE/USDT:USDT',
-    #'ZEC/USDT:USDT',
-    #'INJ/USDT:USDT'
-]
+    'DOGE/USDT:USDT',
+    'INJ/USDT:USDT',
+    'LINK/USDT:USDT',
+    'SUI/USDT:USDT',
+    'AAVE/USDT:USDT',
+    'AVAX/USDT:USDT',
+    'ADA/USDT:USDT',
+    'NEAR/USDT:USDT',
+  ]
 
 # =========================
 # AUTO TRADE CONFIGURATION
