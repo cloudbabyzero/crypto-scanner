@@ -11,7 +11,7 @@ from telebot import types
 
 # Reference to main.py's globals
 main_mod = sys.modules["__main__"]
-TREND_MIN_ADX
+
 # Get bot reference for decorators
 bot = main_mod.bot
 
