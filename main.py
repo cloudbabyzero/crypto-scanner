@@ -6,6 +6,7 @@ import csv
 import threading
 import uuid
 import json
+from telebot import types
 
 # =========================
 # CONFIG - Import from config.py
@@ -143,6 +144,51 @@ def send_telegram(message):
 
         print(
             "Telegram Error:",
+            e,
+            flush=True
+        )
+
+
+def send_telegram_with_mode_buttons(previous_regime, current_regime, btc_adx, btc_atr_pct):
+    """Send market regime change notification with inline mode selection buttons."""
+    
+    # Build the recommendation message based on current regime
+    recommendation_map = {
+        "TRENDING": "⚠️ Recommended Strategy: TREND",
+        "SIDEWAYS": "⚠️ Recommended Strategy: SIDEWAYS",
+        "VOLATILE": "⚠️ Recommended Strategy: VOLATILITY BREAKOUT",
+    }
+    recommendation = recommendation_map.get(current_regime, "⚠️ Recommended Strategy: TREND")
+    
+    # Build message text
+    message_text = (
+        f"📊 MARKET REGIME CHANGED\n\n"
+        f"Previous:\n{previous_regime}\n\n"
+        f"Current:\n{current_regime}\n\n"
+        f"BTC ADX:\n{btc_adx}\n\n"
+        f"BTC ATR:\n{btc_atr_pct}%\n\n"
+        f"{recommendation}"
+    )
+    
+    # Create inline keyboard
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn_trend = types.InlineKeyboardButton(
+        "✅ Switch to Trend Mode", callback_data="mode_trending"
+    )
+    btn_sideways = types.InlineKeyboardButton(
+        "🔄 Switch to Sideways Mode", callback_data="mode_sideways"
+    )
+    btn_skip = types.InlineKeyboardButton(
+        "⏭ Keep Current Mode", callback_data="mode_skip"
+    )
+    markup.add(btn_trend, btn_sideways, btn_skip)
+    
+    # Send message with buttons using bot
+    try:
+        bot.send_message(CHAT_ID, message_text, reply_markup=markup)
+    except Exception as e:
+        print(
+            "Telegram Error sending market regime notification:",
             e,
             flush=True
         )
@@ -1794,12 +1840,11 @@ def main():
                 elif new_regime != CURRENT_REGIME:
                     LAST_REGIME = CURRENT_REGIME
                     CURRENT_REGIME = new_regime
-                    send_telegram(
-                        f"📊 MARKET REGIME CHANGED\n\n"
-                        f"Previous:\n{LAST_REGIME}\n\n"
-                        f"Current:\n{CURRENT_REGIME}\n\n"
-                        f"BTC ADX:\n{btc_adx}\n\n"
-                        f"BTC ATR:\n{btc_atr_pct}%"
+                    send_telegram_with_mode_buttons(
+                        LAST_REGIME,
+                        CURRENT_REGIME,
+                        btc_adx,
+                        btc_atr_pct
                     )
 
             for symbol in symbols:

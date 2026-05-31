@@ -604,13 +604,13 @@ Market Regime:
 
     markup = types.InlineKeyboardMarkup(row_width=1)
     btn_trend = types.InlineKeyboardButton(
-        "✅ Enable Trend Mode", callback_data="mode_trending"
+        "✅ Switch to Trend Mode", callback_data="mode_trending"
     )
     btn_sideways = types.InlineKeyboardButton(
-        "🔄 Enable Sideways Mode", callback_data="mode_sideways"
+        "🔄 Switch to Sideways Mode", callback_data="mode_sideways"
     )
     btn_skip = types.InlineKeyboardButton(
-        "⏭ Skip", callback_data="mode_skip"
+        "⏭ Keep Current Mode", callback_data="mode_skip"
     )
     markup.add(btn_trend, btn_sideways, btn_skip)
 
@@ -623,7 +623,7 @@ def market_mode_callback(call):
 
     if action == "trending":
         main_mod.MARKET_MODE = "TRENDING"
-        bot.answer_callback_query(call.id, "✅ Trend Mode enabled")
+        bot.answer_callback_query(call.id, "✅ Switched to Trend Mode")
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
@@ -632,7 +632,7 @@ def market_mode_callback(call):
 
     elif action == "sideways":
         main_mod.MARKET_MODE = "SIDEWAYS"
-        bot.answer_callback_query(call.id, "🔄 Sideways Mode enabled")
+        bot.answer_callback_query(call.id, "🔄 Switched to Sideways Mode")
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
