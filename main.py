@@ -114,16 +114,25 @@ def reset_cycle_counters():
     print("[CYCLE_COUNTERS] Reset", flush=True)
 
 
+def set_scan_result(symbol, data):
+    """Store scan result and update counters."""
+
+    global scan_results
+    global scan_counters
+    global cycle_counters
+
     scan_counters["Total Scans"] += 1
     cycle_counters["Total Scans"] += 1
 
     status = data.get("status", "Unknown")
 
     if status in scan_counters:
-    scan_counters[status] += 1
+        scan_counters[status] += 1
 
     if status in cycle_counters:
-    cycle_counters[status] += 1
+        cycle_counters[status] += 1
+
+    scan_results[symbol] = data
 
 
 def calculate_sideways_levels(entry, atr, bb_mid, side):
@@ -1804,9 +1813,9 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             with state_lock:
                 last_time = last_alert.get(symbol)
 
-            if last_time and now - last_time < COOLDOWN:
-                set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
-                return {"symbol": symbol, "result": "skipped"}
+                if last_time and now - last_time < COOLDOWN:
+                    set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                    return {"symbol": symbol, "result": "skipped"}
 
         # =========================
         # GET DATA
