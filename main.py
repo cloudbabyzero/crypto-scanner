@@ -1037,7 +1037,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             with state_lock:
                 last_time = last_alert.get(symbol)
 
-             if last_time and now - last_time < COOLDOWN:
+            if last_time and now - last_time < COOLDOWN:
                 set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
                 return {"symbol": symbol, "result": "skipped"}
 
