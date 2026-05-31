@@ -70,12 +70,20 @@ GRADE_PRIORITY = {
 }
 
 # =========================
-# AUTO TRADE EXECUTION FILTERS
+# TREND STRATEGY FILTERS
 # =========================
 
-AUTO_TRADE_MIN_ATR = 0.45
-AUTO_TRADE_MIN_ADX = 22
-AUTO_TRADE_HIGH_VOLUME_ONLY = False
+TREND_MIN_ADX = 22
+TREND_MIN_ATR = 0.45
+TREND_HIGH_VOLUME_ONLY = False
+
+# =========================
+# SIDEWAYS STRATEGY FILTERS
+# =========================
+
+SIDEWAYS_MAX_ADX = 20
+SIDEWAYS_MIN_ATR = 0.20
+SIDEWAYS_HIGH_VOLUME_ONLY = False
 
 # =========================
 # BINGX API CONFIGURATION

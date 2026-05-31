@@ -284,22 +284,43 @@ def set_atr(message):
 @bot.message_handler(commands=['config'])
 def config(message):
     text = f"""
-⚙️ CURRENT CONFIG
+📈 TREND STRATEGY
 
-ADX FILTER:
-{main_mod.ADX_FILTER}
+TREND_MIN_ADX:
+{main_mod.TREND_MIN_ADX}
 
-MIN SCORE:
-{main_mod.MIN_SCORE}
+TREND_MIN_ATR:
+{main_mod.TREND_MIN_ATR}%
 
-ATR FILTER:
-{main_mod.ATR_FILTER}
+TREND_HIGH_VOLUME_ONLY:
+{main_mod.TREND_HIGH_VOLUME_ONLY}
+
+📉 SIDEWAYS STRATEGY
+
+SIDEWAYS_MAX_ADX:
+{main_mod.SIDEWAYS_MAX_ADX}
+
+SIDEWAYS_MIN_ATR:
+{main_mod.SIDEWAYS_MIN_ATR}%
+
+SIDEWAYS_HIGH_VOLUME_ONLY:
+{main_mod.SIDEWAYS_HIGH_VOLUME_ONLY}
+
+🤖 AUTO TRADE
+
+AUTO_TRADE:
+{main_mod.AUTO_TRADE}
+
+AUTO_TRADE_MIN_GRADE:
+{main_mod.AUTO_TRADE_MIN_GRADE}
+
+⚙️ GENERAL
+
+SCAN_INTERVAL:
+{main_mod.SCAN_INTERVAL}s
 
 COOLDOWN:
-{main_mod.COOLDOWN}
-
-SCAN INTERVAL:
-{main_mod.SCAN_INTERVAL}
+{main_mod.COOLDOWN}s
 """
     bot.reply_to(message, text)
 
@@ -628,6 +649,114 @@ def market_mode_callback(call):
 
 
 # =========================
+# TREND ADX FILTER COMMAND
+# =========================
+
+@bot.message_handler(commands=['trendadx'])
+def set_trendadx(message):
+    try:
+        value = parse_command_value(message.text, int)
+        old_value = main_mod.TREND_MIN_ADX
+        main_mod.TREND_MIN_ADX = value
+        main_mod.save_config()
+        bot.reply_to(
+            message,
+            f"""✅ TREND_MIN_ADX updated
+
+Old: {old_value}
+New: {value}"""
+        )
+    except Exception:
+        bot.reply_to(message, "Usage: /trendadx 25")
+
+
+# =========================
+# TREND ATR FILTER COMMAND
+# =========================
+
+@bot.message_handler(commands=['trendatr'])
+def set_trendatr(message):
+    try:
+        value = parse_command_value(message.text, float)
+        old_value = main_mod.TREND_MIN_ATR
+        main_mod.TREND_MIN_ATR = value
+        main_mod.save_config()
+        bot.reply_to(
+            message,
+            f"""✅ TREND_MIN_ATR updated
+
+Old: {old_value}
+New: {value}"""
+        )
+    except Exception:
+        bot.reply_to(message, "Usage: /trendatr 0.50")
+
+
+# =========================
+# SIDEWAYS ADX FILTER COMMAND
+# =========================
+
+@bot.message_handler(commands=['sideadx'])
+def set_sideadx(message):
+    try:
+        value = parse_command_value(message.text, int)
+        old_value = main_mod.SIDEWAYS_MAX_ADX
+        main_mod.SIDEWAYS_MAX_ADX = value
+        main_mod.save_config()
+        bot.reply_to(
+            message,
+            f"""✅ SIDEWAYS_MAX_ADX updated
+
+Old: {old_value}
+New: {value}"""
+        )
+    except Exception:
+        bot.reply_to(message, "Usage: /sideadx 18")
+
+
+# =========================
+# SIDEWAYS ATR FILTER COMMAND
+# =========================
+
+@bot.message_handler(commands=['sideatr'])
+def set_sideatr(message):
+    try:
+        value = parse_command_value(message.text, float)
+        old_value = main_mod.SIDEWAYS_MIN_ATR
+        main_mod.SIDEWAYS_MIN_ATR = value
+        main_mod.save_config()
+        bot.reply_to(
+            message,
+            f"""✅ SIDEWAYS_MIN_ATR updated
+
+Old: {old_value}
+New: {value}"""
+        )
+    except Exception:
+        bot.reply_to(message, "Usage: /sideatr 0.20")
+
+
+# =========================
+# STRATEGY COMMAND
+# =========================
+
+@bot.message_handler(commands=['strategy'])
+def strategy(message):
+    text = f"""
+📈 TREND
+
+MIN ADX: {main_mod.TREND_MIN_ADX}
+MIN ATR: {main_mod.TREND_MIN_ATR}%
+
+📉 SIDEWAYS
+
+MAX ADX: {main_mod.SIDEWAYS_MAX_ADX}
+MIN ATR: {main_mod.SIDEWAYS_MIN_ATR}%
+"""
+    bot.reply_to(message, text)
+
+
+# =========================
 # HELP COMMAND
 # =========================
 
@@ -636,60 +765,42 @@ def help_command(message):
     text = """
 🤖 AVAILABLE COMMANDS
 
-/ping
-เช็คว่าบอทยังออนไลน์ไหม
-
-/status
-ดูสถานะบอท
-
-/heartbeat
-ดูสถานะแบบละเอียด
-
-/scanreport
-ดูผลสแกนล่าสุด
-
-/stats
-ดู winrate
-
-/trades
-ดู active trades
-
-/coins
-ดูเหรียญที่สแกน
-
-/forcecheck
-บังคับสแกนทันที
+📊 Market
 
 /market
 ดู market regime และเลือกโหมด
 
-/dashboard
-ดู dashboard สถิติทั้งหมด
-
-/csv
-ดาวน์โหลด signals.csv
-
-/adx 18
-เปลี่ยน ADX filter
-
-/score 85
-เปลี่ยน minimum score
-
-/atr 0.4
-เปลี่ยน ATR filter
-
 /config
 ดู config ปัจจุบัน
 
-/long xrp
-เปิด LONG
+/strategy
+ดู TREND/SIDEWAYS strategy settings
 
-/short xrp
-เปิด SHORT
+📈 Trend Strategy
 
----
+/trendadx <value>
+เปลี่ยน TREND MIN ADX
 
-🤖 AUTO TRADE COMMANDS
+Example: /trendadx 25
+
+/trendatr <value>
+เปลี่ยน TREND MIN ATR
+
+Example: /trendatr 0.50
+
+📉 Sideways Strategy
+
+/sideadx <value>
+เปลี่ยน SIDEWAYS MAX ADX
+
+Example: /sideadx 18
+
+/sideatr <value>
+เปลี่ยน SIDEWAYS MIN ATR
+
+Example: /sideatr 0.20
+
+🤖 Auto Trade
 
 /autoon
 เปิด AUTO TRADE
@@ -703,17 +814,45 @@ def help_command(message):
 /grade A
 เปลี่ยน grade filter (A+, A, B, C)
 
-/autoatr 0.5
-เปลี่ยน ATR filter
+📋 Reports
 
-/autoadx 22
-เปลี่ยน ADX filter
+/scanreport
+ดูผลสแกนล่าสุด
 
-/autovol on
-เปิด High Volume Only
+/status
+ดูสถานะบอท
 
-/autovol off
-ปิด High Volume Only
+/heartbeat
+ดูสถานะแบบละเอียด
+
+📊 Other
+
+/ping
+เช็คว่าบอทยังออนไลน์ไหม
+
+/stats
+ดู winrate
+
+/trades
+ดู active trades
+
+/coins
+ดูเหรียญที่สแกน
+
+/forcecheck
+บังคับสแกนทันที
+
+/long xrp
+เปิด LONG
+
+/short xrp
+เปิด SHORT
+
+/csv
+ดาวน์โหลด signals.csv
+
+/dashboard
+ดู dashboard สถิติทั้งหมด
 
 ---
 
@@ -779,7 +918,6 @@ def autostatus(message):
     )
     
     status_text = "🔴 OFF" if not main_mod.AUTO_TRADE else "🟢 ON"
-    vol_text = "🟢 ON" if main_mod.AUTO_TRADE_HIGH_VOLUME_ONLY else "🔴 OFF"
     
     text = f"""
 🤖 AUTO TRADE STATUS
@@ -790,14 +928,21 @@ Status:
 Grade Filter:
 {main_mod.AUTO_TRADE_MIN_GRADE}
 
-ATR Filter:
-{main_mod.AUTO_TRADE_MIN_ATR}%
+📈 TREND STRATEGY
 
-ADX Filter:
-{main_mod.AUTO_TRADE_MIN_ADX}
+TREND_MIN_ADX:
+{main_mod.TREND_MIN_ADX}
 
-High Volume Only:
-{vol_text}
+TREND_MIN_ATR:
+{main_mod.TREND_MIN_ATR}%
+
+📉 SIDEWAYS STRATEGY
+
+SIDEWAYS_MAX_ADX:
+{main_mod.SIDEWAYS_MAX_ADX}
+
+SIDEWAYS_MIN_ATR:
+{main_mod.SIDEWAYS_MIN_ATR}%
 
 Active Longs:
 {active_longs} / {main_mod.MAX_LONG_TRADES}
@@ -841,73 +986,4 @@ def set_grade(message):
         bot.reply_to(message, f"ERROR: {str(e)}")
 
 
-# =========================
-# AUTO TRADE MIN ATR COMMAND
-# =========================
 
-@bot.message_handler(commands=['autoatr'])
-def set_autoatr(message):
-    try:
-        value = parse_command_value(message.text, float)
-        main_mod.AUTO_TRADE_MIN_ATR = value
-        bot.reply_to(
-            message,
-            f"✅ Auto Trade ATR Filter updated to {value}%"
-        )
-    except Exception:
-        bot.reply_to(message, "Usage: /autoatr 0.5")
-
-
-# =========================
-# AUTO TRADE MIN ADX COMMAND
-# =========================
-
-@bot.message_handler(commands=['autoadx'])
-def set_autoadx(message):
-    try:
-        value = parse_command_value(message.text, int)
-        main_mod.AUTO_TRADE_MIN_ADX = value
-        bot.reply_to(
-            message,
-            f"✅ Auto Trade ADX Filter updated to {value}"
-        )
-    except Exception:
-        bot.reply_to(message, "Usage: /autoadx 22")
-
-
-# =========================
-# AUTO TRADE VOLUME ONLY COMMAND
-# =========================
-
-@bot.message_handler(commands=['autovol'])
-def set_autovol(message):
-    try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(
-                message,
-                "Usage: /autovol on\nUsage: /autovol off"
-            )
-            return
-        
-        setting = parts[1].lower()
-        
-        if setting == "on":
-            main_mod.AUTO_TRADE_HIGH_VOLUME_ONLY = True
-            bot.reply_to(
-                message,
-                "✅ Auto Trade High Volume Only: ON"
-            )
-        elif setting == "off":
-            main_mod.AUTO_TRADE_HIGH_VOLUME_ONLY = False
-            bot.reply_to(
-                message,
-                "✅ Auto Trade High Volume Only: OFF"
-            )
-        else:
-            bot.reply_to(
-                message,
-                "❌ Invalid setting. Use: on or off"
-            )
-    except Exception as e:
-        bot.reply_to(message, f"ERROR: {str(e)}")

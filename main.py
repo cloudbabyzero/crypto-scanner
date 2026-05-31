@@ -5,6 +5,7 @@ import traceback
 import csv
 import threading
 import uuid
+import json
 
 # =========================
 # CONFIG - Import from config.py
@@ -27,9 +28,12 @@ from config import (
     MAX_LONG_TRADES,
     MAX_SHORT_TRADES,
     GRADE_PRIORITY,
-    AUTO_TRADE_MIN_ATR,
-    AUTO_TRADE_MIN_ADX,
-    AUTO_TRADE_HIGH_VOLUME_ONLY,
+    TREND_MIN_ADX,
+    TREND_MIN_ATR,
+    TREND_HIGH_VOLUME_ONLY,
+    SIDEWAYS_MAX_ADX,
+    SIDEWAYS_MIN_ATR,
+    SIDEWAYS_HIGH_VOLUME_ONLY,
     HEARTBEAT_INTERVAL,
     MARKET_REGIME_ADX_TRENDING,
     MARKET_REGIME_ADX_SIDEWAYS,
@@ -142,6 +146,51 @@ def send_telegram(message):
             e,
             flush=True
         )
+
+# =========================
+# CONFIG PERSISTENCE
+# =========================
+
+def save_config():
+    """Save strategy filter configuration to config.json"""
+    try:
+        config_data = {
+            "TREND_MIN_ADX": TREND_MIN_ADX,
+            "TREND_MIN_ATR": TREND_MIN_ATR,
+            "TREND_HIGH_VOLUME_ONLY": TREND_HIGH_VOLUME_ONLY,
+            "SIDEWAYS_MAX_ADX": SIDEWAYS_MAX_ADX,
+            "SIDEWAYS_MIN_ATR": SIDEWAYS_MIN_ATR,
+            "SIDEWAYS_HIGH_VOLUME_ONLY": SIDEWAYS_HIGH_VOLUME_ONLY,
+        }
+        with open('config.json', 'w') as f:
+            json.dump(config_data, f, indent=2)
+    except Exception as e:
+        print(f"Error saving config: {e}", flush=True)
+
+def load_config():
+    """Load strategy filter configuration from config.json"""
+    global TREND_MIN_ADX, TREND_MIN_ATR, TREND_HIGH_VOLUME_ONLY
+    global SIDEWAYS_MAX_ADX, SIDEWAYS_MIN_ATR, SIDEWAYS_HIGH_VOLUME_ONLY
+    
+    try:
+        if os.path.exists('config.json'):
+            with open('config.json', 'r') as f:
+                config_data = json.load(f)
+                
+            TREND_MIN_ADX = config_data.get('TREND_MIN_ADX', TREND_MIN_ADX)
+            TREND_MIN_ATR = config_data.get('TREND_MIN_ATR', TREND_MIN_ATR)
+            TREND_HIGH_VOLUME_ONLY = config_data.get('TREND_HIGH_VOLUME_ONLY', TREND_HIGH_VOLUME_ONLY)
+            SIDEWAYS_MAX_ADX = config_data.get('SIDEWAYS_MAX_ADX', SIDEWAYS_MAX_ADX)
+            SIDEWAYS_MIN_ATR = config_data.get('SIDEWAYS_MIN_ATR', SIDEWAYS_MIN_ATR)
+            SIDEWAYS_HIGH_VOLUME_ONLY = config_data.get('SIDEWAYS_HIGH_VOLUME_ONLY', SIDEWAYS_HIGH_VOLUME_ONLY)
+            
+            print("Config loaded from config.json", flush=True)
+        else:
+            # Create default config file
+            save_config()
+            print("Created default config.json", flush=True)
+    except Exception as e:
+        print(f"Error loading config: {e}, using defaults", flush=True)
 
 # =========================
 # SAVE SIGNAL
@@ -414,8 +463,8 @@ def can_open_trade(side):
     else:
         return active_shorts < MAX_SHORT_TRADES
 
-def check_execution_filters(atr_percent, adx, volume_high):
-    """Check if trade meets execution filter requirements.
+def check_trend_filters(atr_percent, adx, volume_high):
+    """Check if trade meets TREND strategy filter requirements.
     
     Returns:
         (passes, reason) tuple
@@ -423,13 +472,33 @@ def check_execution_filters(atr_percent, adx, volume_high):
         reason: Skip reason string if fails, None if passes
     """
     
-    if atr_percent < AUTO_TRADE_MIN_ATR:
+    if atr_percent < TREND_MIN_ATR:
         return False, "ATR too low"
     
-    if adx < AUTO_TRADE_MIN_ADX:
+    if adx < TREND_MIN_ADX:
         return False, "ADX too low"
     
-    if AUTO_TRADE_HIGH_VOLUME_ONLY and not volume_high:
+    if TREND_HIGH_VOLUME_ONLY and not volume_high:
+        return False, "Volume not high"
+    
+    return True, None
+
+def check_sideways_filters(atr_percent, adx, volume_high):
+    """Check if trade meets SIDEWAYS strategy filter requirements.
+    
+    Returns:
+        (passes, reason) tuple
+        passes: True if all filters pass, False otherwise
+        reason: Skip reason string if fails, None if passes
+    """
+    
+    if atr_percent < SIDEWAYS_MIN_ATR:
+        return False, "ATR too low"
+    
+    if adx > SIDEWAYS_MAX_ADX:
+        return False, "ADX too high"
+    
+    if SIDEWAYS_HIGH_VOLUME_ONLY and not volume_high:
         return False, "Volume not high"
     
     return True, None
@@ -975,7 +1044,7 @@ def analyze_trend(symbol, bypass_cooldown=False):
                 
                 # Check execution filters (only if grade passed)
                 elif not skip_reason:
-                    passes_exec, exec_reason = check_execution_filters(
+                    passes_exec, exec_reason = check_trend_filters(
                         atr_percent,
                         m15['adx'],
                         volume_high
@@ -1130,7 +1199,7 @@ def analyze_trend(symbol, bypass_cooldown=False):
                 
                 # Check execution filters (only if grade passed)
                 elif not skip_reason:
-                    passes_exec, exec_reason = check_execution_filters(
+                    passes_exec, exec_reason = check_trend_filters(
                         atr_percent,
                         m15['adx'],
                         volume_high
@@ -1452,7 +1521,7 @@ def analyze_sideways(symbol, bypass_cooldown=False):
 
             # Check execution filters (only if grade passed)
             if not skip_reason:
-                passes_exec, exec_reason = check_execution_filters(
+                passes_exec, exec_reason = check_sideways_filters(
                     atr_percent,
                     adx,
                     volume_high
@@ -1635,6 +1704,11 @@ Time: {current_time}
 
 def main():
     global CURRENT_REGIME, LAST_REGIME, LAST_REGIME_CHECK
+
+    # =========================
+    # LOAD CONFIG
+    # =========================
+    load_config()
 
     threading.Thread(
         target=telegram_polling,
