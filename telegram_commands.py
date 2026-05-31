@@ -314,6 +314,11 @@ AUTO_TRADE:
 AUTO_TRADE_MIN_GRADE:
 {main_mod.AUTO_TRADE_MIN_GRADE}
 
+🎮 CONTROL MODE
+
+CONTROL_MODE:
+{main_mod.CONTROL_MODE}
+
 ⚙️ GENERAL
 
 SCAN_INTERVAL:
@@ -397,6 +402,7 @@ def heartbeat(message):
 
     market_mode = getattr(main_mod, 'MARKET_MODE', 'TRENDING')
     current_regime = getattr(main_mod, 'CURRENT_REGIME', 'UNKNOWN')
+    control_mode = getattr(main_mod, 'CONTROL_MODE', 'AUTO')
 
     text = f"""
 💓 HEARTBEAT
@@ -408,6 +414,7 @@ Coins: {len(main_mod.symbols)}
 Auto Trade: {auto_trade_status}
 Market Mode: {market_mode}
 Market Regime: {current_regime}
+Control Mode: {control_mode}
 Time: {current_time}
 """
     bot.reply_to(message, text)
@@ -519,6 +526,7 @@ def dashboard(message):
 
     market_mode = getattr(main_mod, 'MARKET_MODE', 'TRENDING')
     current_regime = getattr(main_mod, 'CURRENT_REGIME', 'UNKNOWN')
+    control_mode = getattr(main_mod, 'CONTROL_MODE', 'AUTO')
 
     text = f"""
 📊 DASHBOARD
@@ -555,6 +563,9 @@ Current Regime:
 
 Market Mode:
 {market_mode}
+
+Control Mode:
+{control_mode}
 """
     bot.reply_to(message, text)
 
@@ -582,6 +593,7 @@ def market(message):
 
     market_mode = getattr(main_mod, 'MARKET_MODE', 'TRENDING')
     current_regime = getattr(main_mod, 'CURRENT_REGIME', 'UNKNOWN')
+    control_mode = getattr(main_mod, 'CONTROL_MODE', 'AUTO')
     recommendation = get_regime_recommendation(regime)
 
     text = f"""
@@ -598,10 +610,14 @@ Recommended Strategy:
 Current Market Mode:
 {market_mode}
 
-Market Regime:
+Market Regime (Active):
 {current_regime}
+
+Control Mode:
+{control_mode}
 """
 
+    # Keep inline buttons for manual override (Feature 8)
     markup = types.InlineKeyboardMarkup(row_width=1)
     btn_trend = types.InlineKeyboardButton(
         "✅ Switch to Trend Mode", callback_data="mode_trending"
@@ -609,43 +625,197 @@ Market Regime:
     btn_sideways = types.InlineKeyboardButton(
         "🔄 Switch to Sideways Mode", callback_data="mode_sideways"
     )
-    btn_skip = types.InlineKeyboardButton(
-        "⏭ Keep Current Mode", callback_data="mode_skip"
+    btn_auto = types.InlineKeyboardButton(
+        "🤖 Auto Mode", callback_data="mode_auto"
     )
-    markup.add(btn_trend, btn_sideways, btn_skip)
+    markup.add(btn_trend, btn_sideways, btn_auto)
 
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
+
+# =========================
+# CALLBACK: MODE BUTTONS
+# =========================
+# Feature 8: Keep manual controls as optional override.
+# These buttons let the user switch modes manually.
+# Use caution: if user sets FORCE_TREND or FORCE_SIDEWAY,
+# auto regime switching will be disabled.
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("mode_"))
 def market_mode_callback(call):
     action = call.data.replace("mode_", "")
 
     if action == "trending":
+        # Feature 8: Set FORCE_TREND override
+        main_mod.CONTROL_MODE = "FORCE_TREND"
         main_mod.MARKET_MODE = "TRENDING"
-        bot.answer_callback_query(call.id, "✅ Switched to Trend Mode")
+        # Save to persistent storage
+        main_mod.save_regime_storage()
+        
+        bot.answer_callback_query(call.id, "✅ FORCE_TREND Override Active")
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            text=f"{call.message.text}\n\n✅ Market Mode set to TRENDING"
+            text=f"{call.message.text}\n\n🔒 FORCE_TREND Override Active\nAuto switching disabled"
+        )
+        
+        # Send confirmation to main channel
+        main_mod.send_telegram(
+            "🔒 CONTROL MODE CHANGED\n\n"
+            "Mode: FORCE_TREND\n"
+            "Auto regime switching disabled.\n"
+            "Use /setauto to re-enable."
         )
 
     elif action == "sideways":
+        # Feature 8: Set FORCE_SIDEWAY override
+        main_mod.CONTROL_MODE = "FORCE_SIDEWAY"
         main_mod.MARKET_MODE = "SIDEWAYS"
-        bot.answer_callback_query(call.id, "🔄 Switched to Sideways Mode")
+        # Save to persistent storage
+        main_mod.save_regime_storage()
+        
+        bot.answer_callback_query(call.id, "🔄 FORCE_SIDEWAY Override Active")
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            text=f"{call.message.text}\n\n✅ Market Mode set to SIDEWAYS"
+            text=f"{call.message.text}\n\n🔒 FORCE_SIDEWAY Override Active\nAuto switching disabled"
+        )
+        
+        # Send confirmation to main channel
+        main_mod.send_telegram(
+            "🔒 CONTROL MODE CHANGED\n\n"
+            "Mode: FORCE_SIDEWAY\n"
+            "Auto regime switching disabled.\n"
+            "Use /setauto to re-enable."
         )
 
-    elif action == "skip":
-        bot.answer_callback_query(call.id, "⏭ No changes made")
+    elif action == "auto":
+        # Feature 8: Re-enable AUTO mode
+        old_control = main_mod.CONTROL_MODE
+        main_mod.CONTROL_MODE = "AUTO"
+        
+        # When switching back to auto, re-detect regime and set mode
+        try:
+            new_regime, btc_adx, btc_atr_pct = main_mod.detect_market_regime()
+            new_mode = main_mod.determine_mode_from_regime(new_regime)
+            main_mod.CURRENT_REGIME = new_regime
+            main_mod.MARKET_MODE = new_mode
+        except Exception:
+            pass
+        
+        # Save to persistent storage
+        main_mod.save_regime_storage()
+        
+        bot.answer_callback_query(call.id, "🤖 Auto Mode Enabled")
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            text=call.message.text
+            text=f"{call.message.text}\n\n🤖 Auto Mode Enabled\nAuto regime switching active"
         )
+        
+        # Send confirmation to main channel
+        main_mod.send_telegram(
+            "🤖 CONTROL MODE CHANGED\n\n"
+            "Mode: AUTO\n"
+            "Auto regime switching enabled.\n"
+            f"Market Mode set to: {main_mod.MARKET_MODE}"
+        )
+    
+    # After any mode change, save config
+    try:
+        main_mod.save_config()
+    except Exception:
+        pass
+
+
+# =========================
+# SET AUTO MODE COMMAND
+# =========================
+
+@bot.message_handler(commands=['setauto'])
+def set_auto_mode(message):
+    """Manually set control mode via Telegram command.
+    
+    Feature 8: Allows users to switch between AUTO, FORCE_TREND, and FORCE_SIDEWAY.
+    
+    Usage:
+    /setauto auto           - Enable auto regime switching
+    /setauto trend          - Force trend mode always
+    /setauto sideways       - Force sideways mode always
+    """
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            text = (
+                f"🎮 CONTROL MODE\n\n"
+                f"Current: {main_mod.CONTROL_MODE}\n\n"
+                f"Usage:\n"
+                f"/setauto auto      - Auto regime switching\n"
+                f"/setauto trend     - Force trend mode\n"
+                f"/setauto sideways  - Force sideways mode"
+            )
+            bot.reply_to(message, text)
+            return
+        
+        mode_arg = parts[1].lower()
+        
+        if mode_arg == "auto":
+            old = main_mod.CONTROL_MODE
+            main_mod.CONTROL_MODE = "AUTO"
+            # Re-detect regime to set mode
+            try:
+                new_regime, _, _ = main_mod.detect_market_regime()
+                main_mod.CURRENT_REGIME = new_regime
+                main_mod.MARKET_MODE = main_mod.determine_mode_from_regime(new_regime)
+            except Exception:
+                pass
+            main_mod.save_regime_storage()
+            
+            bot.reply_to(
+                message,
+                f"🤖 Control Mode: AUTO\n\n"
+                f"Old: {old}\n"
+                f"Auto regime switching enabled."
+            )
+            
+        elif mode_arg == "trend":
+            old = main_mod.CONTROL_MODE
+            main_mod.CONTROL_MODE = "FORCE_TREND"
+            main_mod.MARKET_MODE = "TRENDING"
+            main_mod.save_regime_storage()
+            
+            bot.reply_to(
+                message,
+                f"🔒 Control Mode: FORCE_TREND\n\n"
+                f"Old: {old}\n"
+                f"Auto regime switching disabled."
+            )
+            
+        elif mode_arg == "sideways":
+            old = main_mod.CONTROL_MODE
+            main_mod.CONTROL_MODE = "FORCE_SIDEWAY"
+            main_mod.MARKET_MODE = "SIDEWAYS"
+            main_mod.save_regime_storage()
+            
+            bot.reply_to(
+                message,
+                f"🔒 Control Mode: FORCE_SIDEWAY\n\n"
+                f"Old: {old}\n"
+                f"Auto regime switching disabled."
+            )
+            
+        else:
+            bot.reply_to(
+                message,
+                f"❌ Unknown mode: {mode_arg}\n\n"
+                f"Usage:\n"
+                f"/setauto auto      - Auto regime switching\n"
+                f"/setauto trend     - Force trend mode\n"
+                f"/setauto sideways  - Force sideways mode"
+            )
+            
+    except Exception as e:
+        bot.reply_to(message, f"ERROR: {str(e)}")
 
 
 # =========================
@@ -775,6 +945,20 @@ def help_command(message):
 
 /strategy
 ดู TREND/SIDEWAYS strategy settings
+
+🎮 Control Mode (Feature 8)
+
+/setauto
+ดู control mode ปัจจุบัน
+
+/setauto auto
+เปิด AUTO mode (bot ควบคุมอัตโนมัติ)
+
+/setauto trend
+บังคับ TREND mode ตลอด
+
+/setauto sideways
+บังคับ SIDEWAYS mode ตลอด
 
 📈 Trend Strategy
 
@@ -984,6 +1168,3 @@ def set_grade(message):
         )
     except Exception as e:
         bot.reply_to(message, f"ERROR: {str(e)}")
-
-
-

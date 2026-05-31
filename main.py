@@ -39,6 +39,9 @@ from config import (
     MARKET_REGIME_ADX_TRENDING,
     MARKET_REGIME_ADX_SIDEWAYS,
     MARKET_REGIME_ATR_VOLATILE,
+    MODE,
+    SIGNAL_COOLDOWN,
+    TOP_CANDIDATES_COUNT,
 )
 
 # =========================
@@ -112,12 +115,97 @@ def calculate_sideways_levels(entry, atr, bb_mid, side):
     return sl, tp, rr
 
 
+# =========================
+# MARKET REGIME STATE
+# =========================
+
 MARKET_MODE = "TRENDING"
 
 CURRENT_REGIME = "UNKNOWN"
 LAST_REGIME = "UNKNOWN"
 LAST_REGIME_CHECK = 0
 REGIME_CHECK_INTERVAL = 300  # 5 minutes (sync with scan cycle)
+
+# Feature 3 & 4: Signal cache and cooldown bypass
+candidate_signals = {}      # Symbols that generated signals (for top candidates)
+rejected_signals = set()    # Symbols rejected in current regime
+signal_cache = {}           # Cache of signal results by symbol
+ignore_cooldown_once = False  # Feature 4: Bypass cooldown for one rescan
+
+# Feature 8: Override mode
+CONTROL_MODE = MODE  # "AUTO", "FORCE_TREND", "FORCE_SIDEWAY"
+
+# =========================
+# PERSISTENT STORAGE (Feature 7)
+# =========================
+
+REGIME_STORAGE_FILE = "regime_storage.json"
+
+
+def save_regime_storage():
+    """Save current_mode and control_mode to persistent storage.
+    
+    Feature 7: Current mode must survive restart.
+    """
+    try:
+        data = {
+            "MARKET_MODE": MARKET_MODE,
+            "CONTROL_MODE": CONTROL_MODE,
+            "CURRENT_REGIME": CURRENT_REGIME,
+        }
+        with open(REGIME_STORAGE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+        print(f"Regime storage saved: {data}", flush=True)
+    except Exception as e:
+        print(f"Error saving regime storage: {e}", flush=True)
+
+
+def load_regime_storage():
+    """Load saved regime settings from persistent storage.
+    
+    Feature 7: On startup, load saved configuration before scanning.
+    """
+    global MARKET_MODE, CONTROL_MODE, CURRENT_REGIME
+    try:
+        if os.path.exists(REGIME_STORAGE_FILE):
+            with open(REGIME_STORAGE_FILE, "r") as f:
+                data = json.load(f)
+            MARKET_MODE = data.get("MARKET_MODE", MARKET_MODE)
+            CONTROL_MODE = data.get("CONTROL_MODE", CONTROL_MODE)
+            CURRENT_REGIME = data.get("CURRENT_REGIME", CURRENT_REGIME)
+            print(f"Regime storage loaded: {data}", flush=True)
+        else:
+            print("No regime storage file found, using defaults", flush=True)
+    except Exception as e:
+        print(f"Error loading regime storage: {e}, using defaults", flush=True)
+
+
+# =========================
+# SIGNAL CACHE MANAGEMENT (Feature 3)
+# =========================
+
+def reset_signal_cache():
+    """Clear all cached signals when regime changes.
+    
+    Feature 3: Signals rejected in SIDEWAYS mode may become valid in TRENDING mode.
+    Old regime data must not affect the new regime.
+    
+    Clears:
+        candidate_signals - Symbols that generated signals
+        rejected_signals  - Symbols rejected in current regime
+        signal_cache      - Cached signal results
+    """
+    global candidate_signals, rejected_signals, signal_cache
+    
+    print("🔄 Clearing signal cache for regime change...", flush=True)
+    
+    # Clear all signal caches
+    candidate_signals = {}
+    rejected_signals = set()
+    signal_cache = {}
+    
+    print("✅ Signal cache cleared", flush=True)
+
 
 # =========================
 # TELEGRAM
@@ -149,49 +237,290 @@ def send_telegram(message):
         )
 
 
-def send_telegram_with_mode_buttons(previous_regime, current_regime, btc_adx, btc_atr_pct):
-    """Send market regime change notification with inline mode selection buttons."""
+# =========================
+# STARTUP MARKET SCAN (Feature 1)
+# =========================
+
+def startup_market_scan():
+    """Detect current BTC regime immediately after loading storage.
     
-    # Build the recommendation message based on current regime
-    recommendation_map = {
-        "TRENDING": "⚠️ Recommended Strategy: TREND",
-        "SIDEWAYS": "⚠️ Recommended Strategy: SIDEWAYS",
-        "VOLATILE": "⚠️ Recommended Strategy: VOLATILITY BREAKOUT",
-    }
-    recommendation = recommendation_map.get(current_regime, "⚠️ Recommended Strategy: TREND")
+    Feature 1: After loading regime_storage.json, detect current regime
+    because saved regime may be outdated if market changed while bot was offline.
     
-    # Build message text
-    message_text = (
-        f"📊 MARKET REGIME CHANGED\n\n"
-        f"Previous:\n{previous_regime}\n\n"
-        f"Current:\n{current_regime}\n\n"
-        f"BTC ADX:\n{btc_adx}\n\n"
-        f"BTC ATR:\n{btc_atr_pct}%\n\n"
-        f"{recommendation}"
-    )
+    Flow:
+    load_regime_storage()
+    → startup_market_scan()
+    → immediate_full_rescan()
+    → send_top_candidates()
+    → bot_ready()
+    """
+    global CURRENT_REGIME, MARKET_MODE
     
-    # Create inline keyboard
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    btn_trend = types.InlineKeyboardButton(
-        "✅ Switch to Trend Mode", callback_data="mode_trending"
-    )
-    btn_sideways = types.InlineKeyboardButton(
-        "🔄 Switch to Sideways Mode", callback_data="mode_sideways"
-    )
-    btn_skip = types.InlineKeyboardButton(
-        "⏭ Keep Current Mode", callback_data="mode_skip"
-    )
-    markup.add(btn_trend, btn_sideways, btn_skip)
+    print("[STARTUP_SCAN] Beginning startup market scan", flush=True)
     
-    # Send message with buttons using bot
+    send_telegram("🚀 Bot Started")
+    send_telegram("🔍 Startup Market Scan")
+    
     try:
-        bot.send_message(CHAT_ID, message_text, reply_markup=markup)
-    except Exception as e:
+        # Detect current BTC market regime
+        startup_regime, btc_adx, btc_atr_pct = detect_market_regime()
+        
+        # Send regime info
+        send_telegram(
+            f"Regime: {startup_regime}\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%"
+        )
+        
         print(
-            "Telegram Error sending market regime notification:",
-            e,
+            f"[STARTUP_SCAN] Detected regime: {startup_regime}, "
+            f"BTC ADX: {btc_adx}, BTC ATR: {btc_atr_pct}%",
             flush=True
         )
+        
+        # Update state with live detection
+        CURRENT_REGIME = startup_regime
+        
+        # Set market mode based on control mode
+        if CONTROL_MODE == "FORCE_TREND":
+            MARKET_MODE = "TRENDING"
+            send_telegram("✅ Trend Mode Activated (FORCE_TREND override)")
+        elif CONTROL_MODE == "FORCE_SIDEWAY":
+            MARKET_MODE = "SIDEWAYS"
+            send_telegram("✅ Sideways Mode Activated (FORCE_SIDEWAY override)")
+        else:
+            new_mode = determine_mode_from_regime(startup_regime)
+            MARKET_MODE = new_mode
+            send_telegram(f"✅ {new_mode} Mode Activated (auto)")
+        
+        # Save updated state to persistent storage
+        save_regime_storage()
+        
+        # Feature 5: Run immediate full rescan after startup scan
+        send_telegram("🔄 Startup Full Rescan")
+        immediate_full_rescan(is_startup=True)
+        
+        # Feature 6: Send top candidates from startup rescan
+        send_top_candidates()
+        
+        send_telegram("✅ Bot Ready")
+        
+    except Exception as e:
+        print(f"[STARTUP_SCAN] Error: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        CURRENT_REGIME = "TRENDING"
+        MARKET_MODE = "TRENDING"
+        send_telegram("⚠️ Startup regime detection failed, defaulting to TRENDING")
+
+
+# =========================
+# AUTO REGIME SWITCHING (Feature 2)
+# =========================
+
+def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
+    """Automatically switch market mode when regime changes.
+    
+    Feature 2: Remove dependency on Telegram buttons.
+    
+    When market regime changes:
+    1. Update current mode based on regime
+    2. Save mode to persistent storage
+    3. Send notification
+    4. Clear signal cache (Feature 3)
+    5. Set ignore_cooldown_once flag (Feature 4)
+    6. Trigger immediate full rescan (Feature 5)
+    
+    Feature 8: If CONTROL_MODE is FORCE_TREND or FORCE_SIDEWAY,
+    auto switching is disabled.
+    """
+    global MARKET_MODE, CURRENT_REGIME, LAST_REGIME
+    global ignore_cooldown_once
+    
+    # Feature 8: Skip auto-switch if override mode is active
+    if CONTROL_MODE == "FORCE_TREND":
+        print(f"Regime changed to {new_regime}, but FORCE_TREND override active", flush=True)
+        send_telegram(
+            f"🚨 MARKET REGIME CHANGED\n\n"
+            f"{old_regime} → {new_regime}\n\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%\n\n"
+            f"🔒 FORCE_TREND override active\n"
+            f"No mode switch applied."
+        )
+        CURRENT_REGIME = new_regime
+        return
+    
+    if CONTROL_MODE == "FORCE_SIDEWAY":
+        print(f"Regime changed to {new_regime}, but FORCE_SIDEWAY override active", flush=True)
+        send_telegram(
+            f"🚨 MARKET REGIME CHANGED\n\n"
+            f"{old_regime} → {new_regime}\n\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%\n\n"
+            f"🔒 FORCE_SIDEWAY override active\n"
+            f"No mode switch applied."
+        )
+        CURRENT_REGIME = new_regime
+        return
+    
+    # Determine the new market mode based on regime
+    new_mode = determine_mode_from_regime(new_regime)
+    
+    # Update state
+    old_mode = MARKET_MODE
+    LAST_REGIME = old_regime
+    CURRENT_REGIME = new_regime
+    MARKET_MODE = new_mode
+    
+    # Feature 3: Clear signal cache
+    reset_signal_cache()
+    
+    # Feature 4: Set ignore_cooldown_once to bypass cooldown for next rescan
+    ignore_cooldown_once = True
+    print(f"🔄 ignore_cooldown_once = True (regime changed)", flush=True)
+    
+    # Save to persistent storage (Feature 7)
+    save_regime_storage()
+    
+    # Feature 5: Run immediate full rescan after regime change
+    immediate_full_rescan(is_startup=False)
+    
+    # Feature 4: Disable cooldown bypass after rescan completes
+    ignore_cooldown_once = False
+    
+    # Feature 6: Send top candidates from the rescan
+    send_top_candidates()
+    
+    # Build notification message
+    regime_icon = "📈" if new_regime == "TRENDING" else ("📉" if new_regime == "SIDEWAYS" else "⚡")
+    mode_text = f"{regime_icon} Auto Switched To {new_mode} Mode"
+    
+    notification = (
+        f"🚨 MARKET REGIME CHANGED\n\n"
+        f"{old_regime} → {new_regime}\n\n"
+        f"BTC ADX: {btc_adx}\n"
+        f"BTC ATR: {btc_atr_pct}%\n\n"
+        f"✅ {mode_text}\n\n"
+        f"🔄 Immediate Rescan Complete - Top Candidates Sent"
+    )
+    
+    print(
+        f"Regime auto-switch: {old_regime} -> {new_regime}, "
+        f"Mode: {old_mode} -> {new_mode}",
+        flush=True
+    )
+    send_telegram(notification)
+
+
+def determine_mode_from_regime(regime):
+    """Map a market regime to the corresponding strategy mode.
+    
+    TRENDING -> TRENDING strategy
+    SIDEWAYS -> SIDEWAYS strategy
+    VOLATILE -> TRENDING strategy (trend following for volatility breakout)
+    """
+    if regime == "SIDEWAYS":
+        return "SIDEWAYS"
+    # TRENDING, VOLATILE, and default all use TREND mode
+    return "TRENDING"
+
+
+# =========================
+# IMMEDIATE FULL RESCAN (Feature 5)
+# =========================
+
+def immediate_full_rescan(is_startup=False):
+    """Run a complete market scan immediately.
+    
+    Feature 5: When regime changes, run a complete market scan immediately.
+    Feature 1: On startup, scan immediately.
+    
+    Requirements:
+    1. Loop through all symbols.
+    2. Call analyze(symbol, bypass_cooldown=True)
+    3. Rebuild candidate_signals.
+    4. Print start/end logs.
+    5. Return total scanned count.
+    
+    Args:
+        is_startup: If True, this is a startup scan.
+    
+    This does NOT wait for the next scan interval.
+    """
+    global ignore_cooldown_once, scan_results, candidate_signals
+    
+    scan_label = "Startup" if is_startup else "Regime Change"
+    print(f"[RESCAN_START] {scan_label} Full Rescan Started", flush=True)
+    
+    # Reset scan results for fresh data
+    scan_results = {}
+    
+    # Clear previous candidate signals for fresh top candidates
+    candidate_signals = {}
+    
+    scanned_count = 0
+    
+    for symbol in symbols:
+        try:
+            # Always bypass cooldown, silence signals, and skip auto trades during rescan
+            analyze(symbol, bypass_cooldown=True, silent_mode=True, signal_only=is_startup)
+            scanned_count += 1
+            time.sleep(2)
+        except Exception as e:
+            print(f"Error scanning {symbol} during rescan: {e}", flush=True)
+    
+    print(f"[RESCAN_END] {scan_label} Full Rescan Completed - {scanned_count} symbols scanned", flush=True)
+    return scanned_count
+
+
+# =========================
+# TOP CANDIDATES (Feature 6)
+# =========================
+
+def send_top_candidates():
+    """After immediate rescan, send strongest setups found.
+    
+    Feature 6: Send only symbols that pass all filters.
+    
+    Sorts candidate_signals by score descending and sends
+    the top TOP_CANDIDATES_COUNT results.
+    """
+    if not candidate_signals:
+        print("No candidate signals to report", flush=True)
+        return
+    
+    # Sort candidates by score descending
+    sorted_candidates = sorted(
+        candidate_signals.values(),
+        key=lambda x: x.get("score", 0),
+        reverse=True
+    )
+    
+    # Take top N
+    top_count = min(TOP_CANDIDATES_COUNT, len(sorted_candidates))
+    top_candidates = sorted_candidates[:top_count]
+    
+    message = "📊 TOP CANDIDATES\n\n"
+    
+    for i, candidate in enumerate(top_candidates, 1):
+        symbol = candidate.get("symbol", "UNKNOWN")
+        score = candidate.get("score", 0)
+        side = candidate.get("side", "N/A")
+        grade = candidate.get("grade", "N/A")
+        strategy = candidate.get("strategy", "N/A")
+        icon = "🚀" if side == "LONG" else "🔻"
+        
+        message += (
+            f"{i}. {symbol}\n"
+            f"   Score: {score}\n"
+            f"   Side: {icon} {side}\n"
+            f"   Grade: {grade}\n"
+            f"   Strategy: {strategy}\n\n"
+        )
+    
+    send_telegram(message.strip())
+    print(f"Top candidates sent: {len(top_candidates)} signals", flush=True)
+
 
 # =========================
 # CONFIG PERSISTENCE
@@ -621,28 +950,47 @@ def detect_market_regime():
 # ANALYZE - Strategy Dispatcher
 # =========================
 
-def analyze(symbol, bypass_cooldown=False):
-    """Route to the correct analysis strategy based on MARKET_MODE."""
-    if MARKET_MODE == "SIDEWAYS":
-        return analyze_sideways(symbol, bypass_cooldown=bypass_cooldown)
-    return analyze_trend(symbol, bypass_cooldown=bypass_cooldown)
+def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
+    """Route to the correct analysis strategy based on MARKET_MODE.
+    
+    Feature 8: Respect CONTROL_MODE override.
+    - If FORCE_TREND: always use trend analysis
+    - If FORCE_SIDEWAY: always use sideways analysis
+    - If AUTO: use MARKET_MODE (which follows detected regime)
+    
+    Args:
+        symbol: Trading symbol to analyze.
+        bypass_cooldown: If True, ignore cooldown timers.
+        silent_mode: If True, do not send Telegram signals (for rescans).
+        signal_only: If True, do not execute auto trades (for startup rescans).
+    """
+    # Determine effective mode
+    effective_mode = MARKET_MODE
+    if CONTROL_MODE == "FORCE_TREND":
+        effective_mode = "TRENDING"
+    elif CONTROL_MODE == "FORCE_SIDEWAY":
+        effective_mode = "SIDEWAYS"
+    
+    if effective_mode == "SIDEWAYS":
+        return analyze_sideways(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
+    return analyze_trend(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
 
 
 # =========================
 # ANALYZE TREND
 # =========================
 
-def analyze_trend(symbol, bypass_cooldown=False):
+def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
 
     try:
 
         now = time.time()
 
         # =========================
-        # COOLDOWN
+        # COOLDOWN (Feature 4: Bypass if ignore_cooldown_once is set)
         # =========================
 
-        if not bypass_cooldown:
+        if not bypass_cooldown and not ignore_cooldown_once:
             with state_lock:
                 last_time = last_alert.get(symbol)
 
@@ -704,6 +1052,8 @@ def analyze_trend(symbol, bypass_cooldown=False):
             atr_val = round((m15['atr'] / m15['close']) * 100, 2)
             vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
             set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
+            # Track rejected signal (Feature 3)
+            rejected_signals.add(symbol)
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -723,6 +1073,8 @@ def analyze_trend(symbol, bypass_cooldown=False):
             atr_val = round((m15['atr'] / m15['close']) * 100, 2)
             vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
             set_scan_result(symbol, {"status": "Sideways Market", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
+            # Track rejected signal (Feature 3)
+            rejected_signals.add(symbol)
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -931,6 +1283,8 @@ def analyze_trend(symbol, bypass_cooldown=False):
             score = max(long_score, short_score)
             vol_status = "HIGH" if volume_high else "NORMAL"
             set_scan_result(symbol, {"status": "Too Close EMA99", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now})
+            # Track rejected signal (Feature 3)
+            rejected_signals.add(symbol)
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1045,24 +1399,26 @@ def analyze_trend(symbol, bypass_cooldown=False):
             )
 
             # Store signal for manual trading (or if auto trade skipped)
-            send_telegram(message)
+            if not silent_mode:
+                send_telegram(message)
             
-            save_signal(
-                signal_id,
-                symbol,
-                "LONG",
-                grade,
-                long_score,
-                entry,
-                sl,
-                tp1,
-                tp2
-            )
+            if not signal_only:
+                save_signal(
+                    signal_id,
+                    symbol,
+                    "LONG",
+                    grade,
+                    long_score,
+                    entry,
+                    sl,
+                    tp1,
+                    tp2
+                )
 
-            signal_regime = CURRENT_REGIME
+                signal_regime = CURRENT_REGIME
 
-            with state_lock:
-                active_trades[signal_id] = {
+                with state_lock:
+                    active_trades[signal_id] = {
                     "symbol": symbol,
                     "status": "SIGNAL",
                     "side": "LONG",
@@ -1080,7 +1436,7 @@ def analyze_trend(symbol, bypass_cooldown=False):
             # AUTO TRADE LOGIC
             # =========================
 
-            if AUTO_TRADE:
+            if AUTO_TRADE and not signal_only:
                 
                 skip_reason = None
                 
@@ -1155,7 +1511,16 @@ def analyze_trend(symbol, bypass_cooldown=False):
 
             vol_status = "HIGH" if volume_high else "NORMAL"
             set_scan_result(symbol, {"status": "Signal Generated", "score": long_score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "strategy": "TREND"})
+            # Track candidate signal for top candidates (Feature 6)
+            candidate_signals[symbol] = {
+                "side": "LONG",
+                "grade": grade,
+                "score": long_score,
+                "symbol": symbol,
+                "strategy": "TREND",
+            }
             return {"symbol": symbol, "result": "signal"}
+        
         # =========================
         # SHORT SIGNAL
         # =========================
@@ -1200,24 +1565,26 @@ def analyze_trend(symbol, bypass_cooldown=False):
             )
 
             # Store signal for manual trading (or if auto trade skipped)
-            send_telegram(message)
+            if not silent_mode:
+                send_telegram(message)
             
-            save_signal(
-                signal_id,
-                symbol,
-                "SHORT",
-                grade,
-                short_score,
-                entry,
-                sl,
-                tp1,
-                tp2
-            )
+            if not signal_only:
+                save_signal(
+                    signal_id,
+                    symbol,
+                    "SHORT",
+                    grade,
+                    short_score,
+                    entry,
+                    sl,
+                    tp1,
+                    tp2
+                )
 
-            signal_regime = CURRENT_REGIME
+                signal_regime = CURRENT_REGIME
 
-            with state_lock:
-                active_trades[signal_id] = {
+                with state_lock:
+                    active_trades[signal_id] = {
                     "symbol": symbol,
                     "status": "SIGNAL",
                     "side": "SHORT",
@@ -1235,7 +1602,7 @@ def analyze_trend(symbol, bypass_cooldown=False):
             # AUTO TRADE LOGIC
             # =========================
 
-            if AUTO_TRADE:
+            if AUTO_TRADE and not signal_only:
                 
                 skip_reason = None
                 
@@ -1310,6 +1677,14 @@ def analyze_trend(symbol, bypass_cooldown=False):
 
             vol_status = "HIGH" if volume_high else "NORMAL"
             set_scan_result(symbol, {"status": "Signal Generated", "score": short_score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "strategy": "TREND"})
+            # Track candidate signal for top candidates (Feature 6)
+            candidate_signals[symbol] = {
+                "side": "SHORT",
+                "grade": grade,
+                "score": short_score,
+                "symbol": symbol,
+                "strategy": "TREND",
+            }
             return {"symbol": symbol, "result": "signal"}
     
     except Exception:
@@ -1331,6 +1706,9 @@ def analyze_trend(symbol, bypass_cooldown=False):
     score = max(long_score, short_score)
     missing_points = max(MIN_SCORE - score, 0)
     set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "long_score": long_score, "short_score": short_score, "missing_points": missing_points})
+    # Track rejected signal (Feature 3)
+    if score > 0:
+        rejected_signals.add(symbol)
     return {"symbol": symbol, "result": "skipped"}
 
 
@@ -1378,17 +1756,17 @@ Plan:
 """
 
 
-def analyze_sideways(symbol, bypass_cooldown=False):
+def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
 
     try:
 
         now = time.time()
 
         # =========================
-        # COOLDOWN
+        # COOLDOWN (Feature 4: Bypass if ignore_cooldown_once is set)
         # =========================
 
-        if not bypass_cooldown:
+        if not bypass_cooldown and not ignore_cooldown_once:
             with state_lock:
                 last_time = last_alert.get(symbol)
 
@@ -1425,6 +1803,8 @@ def analyze_sideways(symbol, bypass_cooldown=False):
             atr_val = round((m15['atr'] / m15['close']) * 100, 2)
             vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
             set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
+            # Track rejected signal (Feature 3)
+            rejected_signals.add(symbol)
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1463,6 +1843,8 @@ def analyze_sideways(symbol, bypass_cooldown=False):
 
         if not long_condition and not short_condition:
             set_scan_result(symbol, {"status": "Sideways Market", "score": 0, "adx": round(adx, 2), "atr": atr_percent, "volume": "HIGH" if volume_high else "NORMAL", "timestamp": now})
+            # Track rejected signal (Feature 3)
+            rejected_signals.add(symbol)
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1526,24 +1908,26 @@ def analyze_sideways(symbol, bypass_cooldown=False):
         )
 
         # Store signal for manual trading (or if auto trade skipped)
-        send_telegram(message)
+        if not silent_mode:
+            send_telegram(message)
 
-        save_signal(
-            signal_id,
-            symbol,
-            side,
-            grade,
-            0,
-            entry,
-            sl,
-            tp,
-            tp
-        )
+        if not signal_only:
+            save_signal(
+                signal_id,
+                symbol,
+                side,
+                grade,
+                0,
+                entry,
+                sl,
+                tp,
+                tp
+            )
 
-        signal_regime = CURRENT_REGIME
+            signal_regime = CURRENT_REGIME
 
-        with state_lock:
-            active_trades[signal_id] = {
+            with state_lock:
+                active_trades[signal_id] = {
                 "symbol": symbol,
                 "status": "SIGNAL",
                 "side": side,
@@ -1561,7 +1945,7 @@ def analyze_sideways(symbol, bypass_cooldown=False):
         # AUTO TRADE LOGIC
         # =========================
 
-        if AUTO_TRADE:
+        if AUTO_TRADE and not signal_only:
 
             skip_reason = None
 
@@ -1630,6 +2014,14 @@ def analyze_sideways(symbol, bypass_cooldown=False):
 
         vol_status = "HIGH" if volume_high else "NORMAL"
         set_scan_result(symbol, {"status": "Signal Generated", "score": 0, "adx": round(adx, 2), "atr": atr_percent, "volume": vol_status, "timestamp": now, "strategy": "SIDEWAYS"})
+        # Track candidate signal for top candidates (Feature 6)
+        candidate_signals[symbol] = {
+            "side": side,
+            "grade": grade,
+            "score": 0,
+            "symbol": symbol,
+            "strategy": "SIDEWAYS",
+        }
         return {"symbol": symbol, "result": "signal"}
 
     except Exception:
@@ -1648,9 +2040,8 @@ def analyze_sideways(symbol, bypass_cooldown=False):
 
 
 # =========================
-# TRADE MANAGER
+# TELEGRAM POLLING
 # =========================
-# cleanup_closed_trades, check_trades, restore_open_positions moved to trade_manager.py
 
 def telegram_polling():
 
@@ -1677,6 +2068,10 @@ def telegram_polling():
 
             time.sleep(10)
 
+
+# =========================
+# HEARTBEAT THREAD
+# =========================
 
 def heartbeat_thread():
 
@@ -1720,6 +2115,9 @@ def heartbeat_thread():
 
             current_regime_text = CURRENT_REGIME
 
+            # Also show control mode in heartbeat
+            control_mode_text = CONTROL_MODE
+
             message = f"""
 💓 HEARTBEAT
 
@@ -1730,6 +2128,7 @@ Coins: {len(symbols)}
 Auto Trade: {auto_trade_status}
 Market Mode: {market_mode_text}
 Market Regime: {current_regime_text}
+Control Mode: {control_mode_text}
 Time: {current_time}
 """
 
@@ -1748,13 +2147,25 @@ Time: {current_time}
             )
 
 
+# =========================
+# MAIN
+# =========================
+
 def main():
     global CURRENT_REGIME, LAST_REGIME, LAST_REGIME_CHECK
+    global MARKET_MODE, CONTROL_MODE
+    global ignore_cooldown_once
 
     # =========================
     # LOAD CONFIG
     # =========================
     load_config()
+
+    # Feature 7: Load regime storage before anything else
+    load_regime_storage()
+
+    # Apply control mode from loaded storage
+    CONTROL_MODE = CONTROL_MODE  # Already set by load_regime_storage
 
     threading.Thread(
         target=telegram_polling,
@@ -1782,15 +2193,12 @@ def main():
     ).start()
 
     # =========================
-    # STARTUP REPORT
+    # FEATURE 1: STARTUP MARKET SCAN
     # =========================
-
-    # Initial market regime detection
-    try:
-        init_regime, _, _ = detect_market_regime()
-        CURRENT_REGIME = init_regime
-    except Exception:
-        pass
+    # Flow: load_regime_storage() → startup_market_scan() → immediate_full_rescan() → send_top_candidates() → bot_ready()
+    # startup_market_scan() handles: detect regime, set mode, save storage, rescan, top candidates, bot ready
+    
+    startup_market_scan()
 
     with state_lock:
         restored_trades = len(active_trades)
@@ -1827,31 +2235,43 @@ def main():
             )
 
             # =========================
-            # MARKET REGIME CHECK
+            # MARKET REGIME CHECK (Feature 2: Auto Switch)
             # =========================
 
             now = time.time()
             if now - LAST_REGIME_CHECK >= REGIME_CHECK_INTERVAL:
                 LAST_REGIME_CHECK = now
                 new_regime, btc_adx, btc_atr_pct = detect_market_regime()
+                
                 if CURRENT_REGIME == "UNKNOWN":
                     # First check — silent initialisation
                     CURRENT_REGIME = new_regime
+                    # Set mode based on regime
+                    MARKET_MODE = determine_mode_from_regime(new_regime)
+                    save_regime_storage()
+                    
                 elif new_regime != CURRENT_REGIME:
-                    LAST_REGIME = CURRENT_REGIME
-                    CURRENT_REGIME = new_regime
-                    send_telegram_with_mode_buttons(
-                        LAST_REGIME,
-                        CURRENT_REGIME,
-                        btc_adx,
-                        btc_atr_pct
-                    )
+                    print("[REGIME_CHANGE] Market regime changed", flush=True)
+                    print(f"[REGIME_CHANGE] {CURRENT_REGIME} → {new_regime}", flush=True)
+                    
+                    # Feature 2: Auto regime switching
+                    # auto_switch_regime() handles: mode switch, cache reset, cooldown bypass,
+                    # immediate_full_rescan(), cooldown bypass reset, send_top_candidates(), notification
+                    auto_switch_regime(CURRENT_REGIME, new_regime, btc_adx, btc_atr_pct)
 
+            # =========================
+            # NORMAL SCAN CYCLE
+            # =========================
+            
             for symbol in symbols:
 
                 analyze(symbol)
 
                 time.sleep(2)
+
+            # Reset candidate_signals at the end of each normal scan cycle
+            # (not after regime-change rescans, which keep them for top candidates)
+            candidate_signals.clear()
 
             print(
                 "Sleep 5 minutes...",

@@ -109,3 +109,27 @@ HEARTBEAT_INTERVAL = 3600  # seconds (60 minutes)
 MARKET_REGIME_ADX_TRENDING = 22   # BTC ADX >= this → TRENDING
 MARKET_REGIME_ADX_SIDEWAYS = 18   # BTC ADX <  this → SIDEWAYS
 MARKET_REGIME_ATR_VOLATILE = 1.0  # BTC ATR% >= this → VOLATILE
+
+# =========================
+# MARKET REGIME CONTROL MODE
+# =========================
+# AUTO          - Bot controls regime switching automatically
+# FORCE_TREND   - Always use trend mode (manual override)
+# FORCE_SIDEWAY - Always use sideway mode (manual override)
+
+MODE = "AUTO"
+
+# =========================
+# SIGNAL CACHE
+# =========================
+# Cache of signal IDs/symbols that have been previously processed.
+# These caches persist across scan cycles.
+
+SIGNAL_COOLDOWN = 3600  # seconds (same as COOLDOWN)
+
+# =========================
+# TOP CANDIDATES
+# =========================
+# How many top candidates to show after a regime-change rescan
+
+TOP_CANDIDATES_COUNT = 5
