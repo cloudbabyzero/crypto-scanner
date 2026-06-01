@@ -3,6 +3,7 @@ import time
 import traceback
 import uuid
 import bingx_client
+from telegram_commands import status
 
 # Reference main module globals
 main_mod = sys.modules["__main__"]
@@ -113,25 +114,18 @@ def check_trades():
                         trade['symbol']
                     )
 
-                    status = str(order_info.get('status', '')).lower()
-
-                    if status in ['closed', 'filled']:
-
-                        main_mod.send_telegram(
-                            f"🟢 DEBUG FILL DETECTED\n\n"
-                            f"{trade['symbol']}\n"
-                            f"status={status}"
-                        )
-
-                        amount = trade['amount']
-                        side_cfg = main_mod.get_side_config(trade['side'])
+                    status = str(order_info.get('status', '')).lower()  
+                if status in ['closed', 'filled']:
+                    
+                    amount = trade['amount']
+                    side_cfg = main_mod.get_side_config(trade['side'])
 
                         # =========================
                         # ENSURE PROTECTION
                         # =========================
 
-                        sl_order_id = trade.get('sl_order_id')
-                        tp2_order_id = trade.get('tp2_order_id')
+                    sl_order_id = trade.get('sl_order_id')
+                    tp2_order_id = trade.get('tp2_order_id')
 
                         # -------------------------------------------------
                         # The limit order has been filled. The original
@@ -148,7 +142,7 @@ def check_trades():
                         #    ccxt returns the average fill price under the
                         #    "average" key for most exchanges; fall back to
                         #    "price" if unavailable.
-                        filled_entry = float(
+                    filled_entry = float(
                             order_info.get('average')
                             or order_info.get('price')
                             or trade['entry']
@@ -156,10 +150,10 @@ def check_trades():
 
                         # 2. Derive the original ATR distance from the
                         #    signal‑based entry and SL (ATR = |entry‑SL| / 1.5).
-                        original_atr = abs(trade['entry'] - trade['sl']) / 1.5
+                    original_atr = abs(trade['entry'] - trade['sl']) / 1.5
 
                         # 3. Re‑calculate SL and TP2 using the filled entry.
-                        new_sl, _, new_tp2, _ = main_mod.calculate_trade_levels(
+                    new_sl, _, new_tp2, _ = main_mod.calculate_trade_levels(
                             filled_entry,
                             original_atr,
                             trade['side']
@@ -167,15 +161,15 @@ def check_trades():
 
                         # 4. Update trade dict with the actual entry and new
                         #    protection levels.
-                        trade['entry'] = filled_entry
-                        trade['sl'] = new_sl
-                        trade['tp2'] = new_tp2
+                    trade['entry'] = filled_entry
+                    trade['sl'] = new_sl
+                    trade['tp2'] = new_tp2
 
                         # 5. (Re)place protection orders using the updated
                         #    prices. We always place them here because the
                         #    previous attempt may have failed or used stale
                         #    values.
-                        try:
+                    try:
                             sl_order_id, tp2_order_id = bingx_client.place_protection_orders(
                                 symbol=trade['symbol'],
                                 side_cfg=side_cfg,
@@ -183,7 +177,7 @@ def check_trades():
                                 tp2_price=trade['tp2'],
                                 amount=amount
                             )
-                        except Exception as e:
+                    except Exception as e:
                             main_mod.send_telegram(
                                 f"🚨 PROTECTION FAILED AFTER FILL\n\n"
                                 f"{trade['symbol']}\n\n"
@@ -192,17 +186,17 @@ def check_trades():
 
                             continue
 
-                        with main_mod.state_lock:
+                    with main_mod.state_lock:
                             trade['status'] = "OPEN"
                             trade['sl_order_id'] = sl_order_id
                             trade['tp2_order_id'] = tp2_order_id
 
-                        main_mod.send_telegram(
+                    main_mod.send_telegram(
                             f"✅ ORDER FILLED\n\n"
                             f"{trade['symbol']}"
                         )
 
-                    elif order_info['status'] in [
+                elif order_info['status'] in [
                         'canceled', 'expired', 'rejected'
                     ]:
 
@@ -217,7 +211,7 @@ def check_trades():
 
                         continue
 
-                    else:
+                else:
 
                         # Check if pending order has expired (>30 minutes)
                         now = time.time()
