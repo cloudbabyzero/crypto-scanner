@@ -295,7 +295,7 @@ def startup_market_scan():
     → send_top_candidates()
     → bot_ready()
     """
-    global CURRENT_REGIME, MARKET_MODE
+    global CURRENT_REGIME, MARKET_MODE, LAST_REGIME_CHECK
     
     print("[STARTUP_SCAN] Beginning startup market scan", flush=True)
     
@@ -337,6 +337,8 @@ def startup_market_scan():
         # Save updated state to persistent storage
         save_regime_storage()
         
+        LAST_REGIME_CHECK = time.time()
+
         # Feature 5: Run immediate full rescan after startup scan (read-only)
         send_telegram("🔄 Startup Full Rescan")
         immediate_full_rescan(is_startup=True, read_only=True)
@@ -415,6 +417,8 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
     
     # Feature 3: Clear signal cache
     reset_signal_cache()
+    # Feature 3b: Cancel pending orders on regime change
+    trade_manager.cancel_pending_orders("Market Regime Changed")
     
     # Feature 4: Set ignore_cooldown_once to bypass cooldown for next rescan
     ignore_cooldown_once = True

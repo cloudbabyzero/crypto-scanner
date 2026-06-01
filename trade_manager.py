@@ -113,7 +113,15 @@ def check_trades():
                         trade['symbol']
                     )
 
-                    if order_info['status'] == "closed":
+                    status = str(order_info.get('status', '')).lower()
+
+                    if status in ['closed', 'filled']:
+
+                        main_mod.send_telegram(
+                            f"🟢 DEBUG FILL DETECTED\n\n"
+                            f"{trade['symbol']}\n"
+                            f"status={status}"
+                        )
 
                         amount = trade['amount']
                         side_cfg = main_mod.get_side_config(trade['side'])
@@ -167,13 +175,22 @@ def check_trades():
                         #    prices. We always place them here because the
                         #    previous attempt may have failed or used stale
                         #    values.
-                        sl_order_id, tp2_order_id = bingx_client.place_protection_orders(
-                            symbol=trade['symbol'],
-                            side_cfg=side_cfg,
-                            sl_price=trade['sl'],
-                            tp2_price=trade['tp2'],
-                            amount=amount
-                        )
+                        try:
+                            sl_order_id, tp2_order_id = bingx_client.place_protection_orders(
+                                symbol=trade['symbol'],
+                                side_cfg=side_cfg,
+                                sl_price=trade['sl'],
+                                tp2_price=trade['tp2'],
+                                amount=amount
+                            )
+                        except Exception as e:
+                            main_mod.send_telegram(
+                                f"🚨 PROTECTION FAILED AFTER FILL\n\n"
+                                f"{trade['symbol']}\n\n"
+                                f"{str(e)}"
+                            )
+
+                            continue
 
                         with main_mod.state_lock:
                             trade['status'] = "OPEN"
@@ -201,6 +218,30 @@ def check_trades():
                         continue
 
                     else:
+
+                        # Check if pending order has expired (>30 minutes)
+                        now = time.time()
+                        created_at = trade.get('created_at', now)
+                        age = now - created_at
+
+                        if age > 1800:  # 30 minutes = 1800 seconds
+                            try:
+                                main_mod.exchange.cancel_order(
+                                    trade['order_id'],
+                                    trade['symbol']
+                                )
+                            except Exception:
+                                pass
+
+                            main_mod.send_telegram(
+                                f"⚠️ PENDING ORDER EXPIRED\n\n"
+                                f"{trade['symbol']}\n\n"
+                                f"Reason:\n"
+                                f"Pending more than 30 minutes"
+                            )
+
+                            with main_mod.state_lock:
+                                main_mod.active_trades.pop(signal_id, None)
 
                         continue
 
@@ -429,3 +470,39 @@ def restore_open_positions():
             "restore_open_positions: no open positions found",
             flush=True
         )
+
+
+# =========================
+# CANCEL PENDING ORDERS
+# =========================
+
+def cancel_pending_orders(reason):
+    """Cancel all pending orders with a given reason."""
+    # Collect pending trades under lock to avoid holding the lock while
+    # performing network operations.
+    with main_mod.state_lock:
+        pending_trades = [
+            (trade_id, trade)
+            for trade_id, trade in main_mod.active_trades.items()
+            if trade.get('status') == "PENDING"
+        ]
+
+    for trade_id, trade in pending_trades:
+        try:
+            main_mod.exchange.cancel_order(
+                trade['order_id'],
+                trade['symbol']
+            )
+        except Exception:
+            # Ignore cancel errors; we still remove local tracking
+            pass
+
+        main_mod.send_telegram(
+            f"⚠️ PENDING ORDER CANCELLED\n\n"
+            f"{trade['symbol']}\n\n"
+            f"Reason:\n"
+            f"{reason}"
+        )
+
+        with main_mod.state_lock:
+            main_mod.active_trades.pop(trade_id, None)
