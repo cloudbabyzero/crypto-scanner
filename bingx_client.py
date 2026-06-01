@@ -1,4 +1,5 @@
 from datetime import time
+import time as pytime
 import sys
 import uuid
 
@@ -367,7 +368,7 @@ def execute_trade(symbol, side):
                 "amount": amount,
                 "sl_order_id": sl_order_id,
                 "tp2_order_id": tp2_order_id,
-                "created_at": time.time()
+                "created_at": pytime.time()
             }
 
         # =========================
