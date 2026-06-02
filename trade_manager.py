@@ -4,6 +4,7 @@ import traceback
 import uuid
 import bingx_client
 from telegram_commands import status
+import google_sheet
 
 # Reference main module globals
 main_mod = sys.modules["__main__"]
@@ -329,6 +330,30 @@ def check_trades():
                             signal_id,
                             "WIN"
                         )
+                        
+                        # Google Sheets logging for WIN
+                        try:
+                            entry_price = trade.get('entry', 0)
+                            exit_price = trade.get('tp2', entry_price)
+                            # Calculate PnL (simplified - would need actual position data)
+                            pnl = 0
+                            rr = 1.0
+                            grade = trade.get('grade', 'C')
+                            score = trade.get('score', 0)
+                            
+                            google_sheet.log_trade(
+                                symbol=trade['symbol'],
+                                side=trade['side'],
+                                entry=entry_price,
+                                exit_price=exit_price,
+                                pnl=pnl,
+                                result="WIN",
+                                grade=grade,
+                                score=score,
+                                rr=rr
+                            )
+                        except Exception as e:
+                            print(f"[GOOGLE_SHEETS] Trade log error: {e}", flush=True)
 
                     else:
 
@@ -341,6 +366,30 @@ def check_trades():
                             signal_id,
                             "LOSS"
                         )
+                        
+                        # Google Sheets logging for LOSS
+                        try:
+                            entry_price = trade.get('entry', 0)
+                            exit_price = trade.get('sl', entry_price)
+                            # Calculate PnL (simplified - would need actual position data)
+                            pnl = 0
+                            rr = 1.0
+                            grade = trade.get('grade', 'C')
+                            score = trade.get('score', 0)
+                            
+                            google_sheet.log_trade(
+                                symbol=trade['symbol'],
+                                side=trade['side'],
+                                entry=entry_price,
+                                exit_price=exit_price,
+                                pnl=pnl,
+                                result="LOSS",
+                                grade=grade,
+                                score=score,
+                                rr=rr
+                            )
+                        except Exception as e:
+                            print(f"[GOOGLE_SHEETS] Trade log error: {e}", flush=True)
 
                     with main_mod.state_lock:
 

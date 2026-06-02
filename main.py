@@ -9,6 +9,12 @@ import json
 from telebot import types
 
 # =========================
+# GOOGLE SHEETS - Import google_sheet module
+# =========================
+
+import google_sheet
+
+# =========================
 # CONFIG - Import from config.py
 # =========================
 
@@ -1098,6 +1104,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 
             if last_time and now - last_time < COOLDOWN:
                 set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                # Google Sheets debug logging
+                google_sheet.log_debug(symbol, "Cooldown", score=0, adx=0, atr=0)
                 return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1156,6 +1164,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
             # Track rejected signal (Feature 3)
             rejected_signals.add(symbol)
+            # Google Sheets debug logging
+            google_sheet.log_debug(symbol, "Candle Too Big", score=0, adx=adx_val, atr=atr_val)
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1177,6 +1187,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             set_scan_result(symbol, {"status": "Sideways Market", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
             # Track rejected signal (Feature 3)
             rejected_signals.add(symbol)
+            # Google Sheets debug logging
+            google_sheet.log_debug(symbol, "Sideways Market", score=0, adx=adx_val, atr=atr_val)
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1387,6 +1399,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             set_scan_result(symbol, {"status": "Too Close EMA99", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now})
             # Track rejected signal (Feature 3)
             rejected_signals.add(symbol)
+            # Google Sheets debug logging
+            google_sheet.log_debug(symbol, "Too Close EMA99", score=score, adx=round(m15['adx'], 2), atr=round(atr_percent, 2))
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1621,6 +1635,35 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 "symbol": symbol,
                 "strategy": "TREND",
             }
+            
+            # Google Sheets logging
+            signal_id = google_sheet.log_signal(
+                symbol=symbol,
+                side="LONG",
+                grade=grade,
+                score=long_score,
+                entry=entry,
+                sl=sl,
+                tp=tp2,
+                atr=round(atr_percent, 2),
+                adx=round(m15['adx'], 2),
+                volume=vol_status,
+                btc_trend=btc_trend,
+                status="SIGNAL"
+            )
+            google_sheet.log_fill_analysis(
+                symbol=symbol,
+                side="LONG",
+                current_price=m15['close'],
+                entry_price=entry,
+                grade=grade,
+                score=long_score,
+                atr=round(atr_percent, 2),
+                adx=round(m15['adx'], 2),
+                btc_trend=btc_trend,
+                fill_status="OPEN"
+            )
+            
             return {"symbol": symbol, "result": "signal"}
         
         # =========================
@@ -1787,6 +1830,35 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 "symbol": symbol,
                 "strategy": "TREND",
             }
+            
+            # Google Sheets logging
+            signal_id = google_sheet.log_signal(
+                symbol=symbol,
+                side="SHORT",
+                grade=grade,
+                score=short_score,
+                entry=entry,
+                sl=sl,
+                tp=tp2,
+                atr=round(atr_percent, 2),
+                adx=round(m15['adx'], 2),
+                volume=vol_status,
+                btc_trend=btc_trend,
+                status="SIGNAL"
+            )
+            google_sheet.log_fill_analysis(
+                symbol=symbol,
+                side="SHORT",
+                current_price=m15['close'],
+                entry_price=entry,
+                grade=grade,
+                score=short_score,
+                atr=round(atr_percent, 2),
+                adx=round(m15['adx'], 2),
+                btc_trend=btc_trend,
+                fill_status="OPEN"
+            )
+            
             return {"symbol": symbol, "result": "signal"}
     
     except Exception:
@@ -1811,6 +1883,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
     # Track rejected signal (Feature 3)
     if score > 0:
         rejected_signals.add(symbol)
+    # Google Sheets debug logging
+    google_sheet.log_debug(symbol, f"Score Below MIN_SCORE ({missing_points} points needed)", score=score, adx=round(m15['adx'], 2), atr=round(atr_percent, 2))
     return {"symbol": symbol, "result": "skipped"}
 
 
@@ -2272,6 +2346,52 @@ Time: {current_time}
 
 
 # =========================
+# HOURLY STATS UPDATE
+# =========================
+
+def hourly_stats_update():
+    """Update stats to Google Sheets every 60 minutes."""
+    while True:
+        try:
+            time.sleep(3600)  # 60 minutes
+            
+            # Calculate stats
+            with state_lock:
+                active_count = len([
+                    t for t in active_trades.values()
+                    if t.get("status") in ["PENDING", "OPEN"]
+                ])
+            
+            # Calculate win rate
+            total_trades = scan_counters.get("Wins", 0) + scan_counters.get("Losses", 0)
+            win_rate = (scan_counters.get("Wins", 0) / total_trades * 100) if total_trades > 0 else 0
+            
+            # Get balance (placeholder - would need exchange API call)
+            balance = 0
+            try:
+                balance = exchange.get_balance() if 'exchange' in dir() else 0
+            except:
+                balance = 0
+            
+            # Update Google Sheets
+            google_sheet.update_stats(
+                balance=balance,
+                open_positions=active_count,
+                wins=scan_counters.get("Wins", 0),
+                losses=scan_counters.get("Losses", 0),
+                win_rate=round(win_rate, 2),
+                profit_usdt=0,  # Would need to calculate from trades
+                current_loss_streak=current_loss_streak
+            )
+            
+            print("[HOURLY_STATS] Updated Google Sheets", flush=True)
+            
+        except Exception as e:
+            print(f"[HOURLY_STATS] Error: {e}", flush=True)
+            traceback.print_exc()
+
+
+# =========================
 # MAIN
 # =========================
 
@@ -2317,6 +2437,15 @@ def main():
     ).start()
 
     # =========================
+    # HOURLY STATS UPDATE
+    # =========================
+
+    threading.Thread(
+        target=hourly_stats_update,
+        daemon=True
+    ).start()
+
+    # =========================
     # FEATURE 1: STARTUP MARKET SCAN
     # =========================
     # Flow: load_regime_storage() → startup_market_scan() → immediate_full_rescan() → send_top_candidates() → bot_ready()
@@ -2349,6 +2478,11 @@ def main():
     # =========================
     # MAIN LOOP
     # =========================
+    
+    # Register graceful shutdown handler
+    import atexit
+    atexit.register(google_sheet.shutdown_all)
+    
     while True:
 
         try:
