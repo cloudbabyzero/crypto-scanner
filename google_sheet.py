@@ -159,6 +159,63 @@ def _ensure_sheets_exist():
         return False
 
 
+def ensure_headers():
+    """Ensure header rows exist for all expected worksheets.
+
+    For each known sheet, if the worksheet is completely empty, insert the
+    appropriate header row at row 1. Do not overwrite any existing data.
+    """
+    try:
+        spreadsheet = get_sheet()
+        if not spreadsheet:
+            return False
+
+        sheet_headers = {
+            SHEET_SIGNALS: [
+                "SignalID", "Timestamp", "Symbol", "Side", "Grade", "Score",
+                "Entry", "SL", "TP", "ATR", "ADX", "Volume", "BTCTrend", "Status"
+            ],
+            SHEET_TRADES: [
+                "TradeID", "Timestamp", "Symbol", "Side", "Grade", "Entry",
+                "Exit", "PnL", "Result", "Reason"
+            ],
+            SHEET_STATS: [
+                "Timestamp", "Balance", "Wins", "Losses", "WinRate", "LossStreak", "OpenTrades"
+            ],
+            SHEET_DEBUG: [
+                "Timestamp", "Symbol", "Reason", "Score", "ADX", "ATR"
+            ],
+            SHEET_FILL_ANALYSIS: [
+                "Timestamp", "Symbol", "Side", "CurrentPrice", "EntryPrice",
+                "DistancePercent", "Grade", "Score", "ADX", "BTCTrend", "FillStatus"
+            ],
+            SHEET_CONFIG: ["Key", "Value", "Description"],
+        }
+
+        for name, headers in sheet_headers.items():
+            try:
+                worksheet = spreadsheet.worksheet(name)
+            except Exception:
+                # worksheet may not exist; skip (creation handled elsewhere)
+                continue
+
+            try:
+                # Only add headers when the worksheet is completely empty
+                values = worksheet.row_values(1)
+                if len(values) == 0:
+                    worksheet.insert_row(headers, index=1)
+            except Exception as e:
+                print(f"[GOOGLE_SHEETS] Error initializing headers for {name}: {e}", flush=True)
+                # continue to next sheet without raising
+
+        print("[GOOGLE_SHEETS] Headers initialized", flush=True)
+        return True
+    except Exception as e:
+        print(f"[GOOGLE_SHEETS] ensure_headers error: {e}", flush=True)
+        traceback.print_exc()
+        return False
+
+
 # ==================================================
 # BUFFER MANAGEMENT
 # ==================================================
@@ -594,6 +651,12 @@ def set_config_value(key, value):
 
 # Ensure sheets exist on module load
 _ensure_sheets_exist()
+
+# Initialize headers for any empty sheets (non-fatal)
+try:
+    ensure_headers()
+except Exception as e:
+    print(f"[GOOGLE_SHEETS] ensure_headers call failed: {e}", flush=True)
 
 # Start all background threads
 start_buffer_flush()
