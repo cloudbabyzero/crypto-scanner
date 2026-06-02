@@ -140,3 +140,10 @@ SIGNAL_COOLDOWN = 3600  # seconds (same as COOLDOWN)
 # How many top candidates to show after a regime-change rescan
 
 TOP_CANDIDATES_COUNT = 5
+
+# =========================
+# DEBUG ORDER STATUS
+# =========================
+# If True, the bot will send Telegram messages with order status updates for debugging purposes.
+
+DEBUG_ORDER_STATUS = False

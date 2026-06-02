@@ -5,6 +5,7 @@ import uuid
 import bingx_client
 from telegram_commands import status
 import google_sheet
+from config import DEBUG_ORDER_STATUS
 
 # Reference main module globals
 main_mod = sys.modules["__main__"]
@@ -117,7 +118,10 @@ def check_trades():
 
                     status = str(order_info.get('status', '')).lower()
                     # Temporary debug: report order status via Telegram
-                    main_mod.send_telegram(
+                    
+                    if DEBUG_ORDER_STATUS:
+                    
+                        main_mod.send_telegram(
                         f"🔍 ORDER STATUS\n\n"
                         f"{trade['symbol']}\n"
                         f"status={status}"
