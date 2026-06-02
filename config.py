@@ -50,7 +50,7 @@ symbols = [
     'DOGE/USDT:USDT',
     'INJ/USDT:USDT',
     'LINK/USDT:USDT',
-    'SUI/USDT:USDT',
+    #'SUI/USDT:USDT',
     'AAVE/USDT:USDT',
     'AVAX/USDT:USDT',
     'ADA/USDT:USDT',
