@@ -74,6 +74,13 @@ GRADE_PRIORITY = {
 }
 
 # =========================
+# LOSS STREAK PROTECTION
+# =========================
+
+MAX_CONSECUTIVE_LOSSES = 5  # Pause trading after this many consecutive losses
+LOSS_STREAK_RESET_ON_WIN = True  # Reset loss streak counter when a WIN occurs
+
+# =========================
 # TREND STRATEGY FILTERS
 # =========================
 

@@ -42,6 +42,8 @@ from config import (
     MODE,
     SIGNAL_COOLDOWN,
     TOP_CANDIDATES_COUNT,
+    MAX_CONSECUTIVE_LOSSES,
+    LOSS_STREAK_RESET_ON_WIN,
 )
 
 # =========================
@@ -96,6 +98,15 @@ cycle_counters = {
     "Too Close EMA99": 0,
     "Error": 0,
 }
+
+# =========================
+# LOSS STREAK TRACKING
+# =========================
+
+current_wins = 0
+current_losses = 0
+current_loss_streak = 0
+pause_trading = False
 
 def reset_cycle_counters():
     global cycle_counters
@@ -680,6 +691,7 @@ def update_signal_result(
     signal_id,
     result
 ):
+    global current_wins, current_losses, current_loss_streak, pause_trading
 
     rows = []
 
@@ -710,6 +722,40 @@ def update_signal_result(
         writer = csv.writer(file)
 
         writer.writerows(rows)
+
+    # =========================
+    # LOSS STREAK TRACKING
+    # =========================
+
+    was_paused = pause_trading  # Track previous state
+
+    if result == "WIN":
+        current_wins += 1
+        current_loss_streak = 0  # Reset on win
+    elif result == "LOSS":
+        current_losses += 1
+        current_loss_streak += 1
+
+    # Check if loss streak threshold exceeded
+    if current_loss_streak >= MAX_CONSECUTIVE_LOSSES:
+        pause_trading = True
+        # Send notification only on first trigger (False -> True transition)
+        if not was_paused:
+            send_telegram(
+                f"🛑 LOSS STREAK DETECTED\n\n"
+                f"Consecutive Losses: {current_loss_streak}\n\n"
+                f"Trading Paused"
+            )
+    else:
+        pause_trading = False
+
+    # Send debug message with loss streak status
+    send_telegram(
+        f"📊 LOSS STREAK DEBUG\n\n"
+        f"Current Wins: {current_wins}\n"
+        f"Current Losses: {current_losses}\n"
+        f"Current Loss Streak: {current_loss_streak}"
+    )
 # =========================
 # TELEGRAM COMMANDS HANDLERS
 # =========================
@@ -1028,6 +1074,15 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
 # =========================
 
 def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
+
+    # =========================
+    # PAUSE TRADING CHECK
+    # =========================
+    
+    global pause_trading
+
+    if pause_trading:
+        return {"symbol": symbol, "result": "paused"}
 
     try:
 
@@ -1804,6 +1859,15 @@ Plan:
 
 
 def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
+
+    # =========================
+    # PAUSE TRADING CHECK
+    # =========================
+    
+    global pause_trading
+
+    if pause_trading:
+        return {"symbol": symbol, "result": "paused"}
 
     try:
 
