@@ -2,9 +2,58 @@ from datetime import time
 import time as pytime
 import sys
 import uuid
+import json
 
 # Reference main module globals
 main_mod = sys.modules["__main__"]
+
+# =========================
+# ERROR HANDLING HELPERS
+# =========================
+
+def extract_bingx_error_code(exception):
+    """Extract BingX error code from CCXT exception.
+    
+    CCXT wraps BingX API errors in the exception response.
+    BingX errors are typically in format: {"code": 110406, "msg": "..."}
+    
+    Args:
+        exception: Exception from CCXT exchange call
+        
+    Returns:
+        Tuple (error_code, error_msg) or (None, None) if not a BingX error
+    """
+    try:
+        # CCXT wraps the response in args[0] or response attribute
+        if hasattr(exception, 'args') and exception.args:
+            response = exception.args[0]
+            if isinstance(response, str):
+                # Try to parse as JSON
+                try:
+                    data = json.loads(response)
+                    if isinstance(data, dict):
+                        code = data.get('code')
+                        msg = data.get('msg', '')
+                        return code, msg
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        
+        # Check exception response attribute
+        if hasattr(exception, 'response'):
+            response = exception.response
+            if isinstance(response, dict):
+                code = response.get('code')
+                msg = response.get('msg', '')
+                return code, msg
+        
+        # Last resort: check if error message contains code
+        error_str = str(exception)
+        if '110406' in error_str:
+            return 110406, error_str
+    except Exception:
+        pass
+    
+    return None, None
 
 # =========================
 # EXCHANGE WRAPPERS
@@ -84,6 +133,12 @@ def place_protection_orders(
         
     Returns:
         (sl_order_id, tp2_order_id) tuple
+        
+    Note:
+        - If BingX error 110406 ("Position SL order already exists") occurs,
+          this is treated as SUCCESS (protection already in place) and returns
+          dummy order IDs to prevent retry loops.
+        - Other errors are raised normally.
     """
     # BingX hedge mode rejects reduceOnly on protection orders.
     base_params = {
@@ -91,17 +146,36 @@ def place_protection_orders(
         'closePosition': True
     }
 
-    sl_order = main_mod.exchange.create_order(
-        symbol=symbol,
-        type='STOP_MARKET',
-        side=side_cfg['stop_side'],
-        amount=amount,
-        params={
-            **base_params,
-            'stopPrice': sl_price
-        }
-    )
+    # Place SL order
+    sl_order = None
+    sl_order_id = None
+    try:
+        sl_order = main_mod.exchange.create_order(
+            symbol=symbol,
+            type='STOP_MARKET',
+            side=side_cfg['stop_side'],
+            amount=amount,
+            params={
+                **base_params,
+                'stopPrice': sl_price
+            }
+        )
+        sl_order_id = sl_order['id']
+    except Exception as e:
+        # Check if this is error 110406 (SL already exists)
+        error_code, error_msg = extract_bingx_error_code(e)
+        if error_code == 110406:
+            # Protection already in place - treat as success
+            print(f"[BINGX] SL already exists for {symbol} (code 110406) - OK", flush=True)
+            # Return dummy ID to indicate protection exists (but we don't have order ID)
+            sl_order_id = "existing_sl"
+        else:
+            # Re-raise for other errors
+            raise
 
+    # Place TP order
+    tp2_order = None
+    tp2_order_id = None
     try:
         tp2_order = main_mod.exchange.create_order(
             symbol=symbol,
@@ -113,19 +187,34 @@ def place_protection_orders(
                 'stopPrice': tp2_price
             }
         )
+        tp2_order_id = tp2_order['id']
     except Exception:
-        tp2_order = main_mod.exchange.create_order(
-            symbol=symbol,
-            type='TAKE_PROFIT',
-            side=side_cfg['stop_side'],
-            amount=amount,
-            params={
+        # Fallback: try TAKE_PROFIT instead of TAKE_PROFIT_MARKET
+        try:
+            tp2_order = main_mod.exchange.create_order(
+                symbol=symbol,
+                type='TAKE_PROFIT',
+                side=side_cfg['stop_side'],
+                amount=amount,
+                params={
                 **base_params,
                 'stopPrice': tp2_price
-            }
-        )
+                }
+            )
+            tp2_order_id = tp2_order['id']
+        except Exception as e:
+            # Check if this is error 110406 for TP
+            error_code, error_msg = extract_bingx_error_code(e)
+            if error_code == 110406:
+                # TP already in place - treat as success
+                print(f"[BINGX] TP already exists for {symbol} (code 110406) - OK", flush=True)
+                tp2_order_id = "existing_tp"
+            else:
+                # Re-raise for other errors
+                raise
 
-    return sl_order['id'], tp2_order['id']
+    return sl_order_id, tp2_order_id
+
 
 # =========================
 # TRADE EXECUTION
