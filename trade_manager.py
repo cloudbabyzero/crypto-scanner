@@ -7,6 +7,9 @@ from telegram_commands import status
 import google_sheet
 from config import DEBUG_ORDER_STATUS
 
+# Import custom exception
+from bingx_client import PositionNotExistError
+
 # Reference main module globals
 main_mod = sys.modules["__main__"]
 
@@ -342,6 +345,22 @@ def check_trades():
                                 f"✅ ORDER FILLED\n\n"
                                 f"{trade['symbol']}"
                             )
+                        except PositionNotExistError as e:
+                            # Position no longer exists - TERMINAL condition
+                            main_mod.send_telegram(
+                                f"🚨 POSITION CLOSED MANUALLY\n\n"
+                                f"{trade['symbol']}\n\n"
+                                f"Position no longer exists - removing from active trades"
+                            )
+                            
+                            # Mark trade as closed and remove from active_trades
+                            with main_mod.state_lock:
+                                trade['closed'] = True
+                                trade['status'] = "CLOSED"
+                                main_mod.active_trades.pop(signal_id, None)
+                            
+                            # Continue to next trade - no retry
+                            continue
                         except Exception as e:
                             # Protection order placement failed (real error, not 110406)
                             main_mod.send_telegram(
@@ -349,6 +368,9 @@ def check_trades():
                                 f"{trade['symbol']}\n\n"
                                 f"{str(e)}"
                             )
+                            # Log the actual exception for Railway debugging
+                            print(f"[TRADE_MANAGER] Protection error for {trade['symbol']}: {e}", flush=True)
+                            print(f"[TRADE_MANAGER] Traceback: {traceback.format_exc()}", flush=True)
                             # Don't continue - will retry on next check_trades iteration
                             continue
 

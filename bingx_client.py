@@ -3,9 +3,30 @@ import time as pytime
 import sys
 import uuid
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Reference main module globals
 main_mod = sys.modules["__main__"]
+
+# =========================
+# CUSTOM EXCEPTIONS
+# =========================
+
+class PositionNotExistError(Exception):
+    """Raised when BingX returns code 109420 ('position not exist').
+    
+    This is a TERMINAL condition - the position has been closed (manually,
+    via SL/TP, or liquidation) and protection retries must stop immediately.
+    """
+    BINGX_CODE = 109420
+
+    def __init__(self, symbol, message="Position does not exist on BingX", original_error=None):
+        self.symbol = symbol
+        self.original_error = original_error
+        super().__init__(f"{symbol}: {message} (BingX code {self.BINGX_CODE})")
+
 
 # =========================
 # ERROR HANDLING HELPERS
@@ -50,6 +71,8 @@ def extract_bingx_error_code(exception):
         error_str = str(exception)
         if '110406' in error_str:
             return 110406, error_str
+        if '109420' in error_str:
+            return 109420, error_str
     except Exception:
         pass
     
@@ -134,10 +157,15 @@ def place_protection_orders(
     Returns:
         (sl_order_id, tp2_order_id) tuple
         
+    Raises:
+        PositionNotExistError: If BingX returns code 109420 ("position not exist")
+        
     Note:
         - If BingX error 110406 ("Position SL order already exists") occurs,
           this is treated as SUCCESS (protection already in place) and returns
           dummy order IDs to prevent retry loops.
+        - If BingX error 109420 ("position not exist") occurs, raises PositionNotExistError
+          which is a TERMINAL condition - the position no longer exists.
         - Other errors are raised normally.
     """
     # BingX hedge mode rejects reduceOnly on protection orders.
@@ -162,14 +190,20 @@ def place_protection_orders(
         )
         sl_order_id = sl_order['id']
     except Exception as e:
-        # Check if this is error 110406 (SL already exists)
+        # Check if this is error 109420 (position not exist) - TERMINAL condition
         error_code, error_msg = extract_bingx_error_code(e)
-        if error_code == 110406:
+        if error_code == PositionNotExistError.BINGX_CODE:
+            logger.error(f"Position does not exist for {symbol} (code {error_code}) - protection retry loop will stop")
+            raise PositionNotExistError(symbol, error_msg or "Position does not exist", e)
+        # Check if this is error 110406 (SL already exists)
+        elif error_code == 110406:
             # Protection already in place - treat as success
             print(f"[BINGX] SL already exists for {symbol} (code 110406) - OK", flush=True)
             # Return dummy ID to indicate protection exists (but we don't have order ID)
             sl_order_id = "existing_sl"
         else:
+            # Log other errors for debugging
+            logger.exception(f"SL order placement failed for {symbol}: {e}")
             # Re-raise for other errors
             raise
 
@@ -188,7 +222,12 @@ def place_protection_orders(
             }
         )
         tp2_order_id = tp2_order['id']
-    except Exception:
+    except Exception as e:
+        # Check if this is error 109420 (position not exist) - TERMINAL condition
+        error_code, error_msg = extract_bingx_error_code(e)
+        if error_code == PositionNotExistError.BINGX_CODE:
+            logger.error(f"Position does not exist for {symbol} (code {error_code}) - protection retry loop will stop")
+            raise PositionNotExistError(symbol, error_msg or "Position does not exist", e)
         # Fallback: try TAKE_PROFIT instead of TAKE_PROFIT_MARKET
         try:
             tp2_order = main_mod.exchange.create_order(
@@ -203,13 +242,19 @@ def place_protection_orders(
             )
             tp2_order_id = tp2_order['id']
         except Exception as e:
-            # Check if this is error 110406 for TP
+            # Check if this is error 109420 (position not exist) - TERMINAL condition
             error_code, error_msg = extract_bingx_error_code(e)
-            if error_code == 110406:
+            if error_code == PositionNotExistError.BINGX_CODE:
+                logger.error(f"Position does not exist for {symbol} (code {error_code}) - protection retry loop will stop")
+                raise PositionNotExistError(symbol, error_msg or "Position does not exist", e)
+            # Check if this is error 110406 for TP
+            elif error_code == 110406:
                 # TP already in place - treat as success
                 print(f"[BINGX] TP already exists for {symbol} (code 110406) - OK", flush=True)
                 tp2_order_id = "existing_tp"
             else:
+                # Log other errors for debugging
+                logger.exception(f"TP order placement failed for {symbol}: {e}")
                 # Re-raise for other errors
                 raise
 
@@ -433,6 +478,11 @@ def execute_trade(symbol, side):
                 tp2_price=tp2,
                 amount=amount
             )
+        except PositionNotExistError as e:
+            # Position no longer exists - this shouldn't happen during trade execution
+            # but if it does, log it and continue (trade won't be created)
+            logger.error(f"Position does not exist during trade execution for {symbol}: {e}")
+            return  # Don't create the trade
         except Exception as protect_error:
             main_mod.send_telegram(
                 f"⚠️ Protection pre-set failed for {symbol}\n"
