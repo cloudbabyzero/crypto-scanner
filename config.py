@@ -67,6 +67,8 @@ MAX_LONG_TRADES = 2
 MAX_SHORT_TRADES = 2
 MAX_ACTIVE_TRADES = 2  # Global limit for total active positions (LONG + SHORT)
 
+PULLBACK_MIN_DISTANCE_PCT = 0.15
+
 GRADE_PRIORITY = {
     "A+": 4,
     "A": 3,

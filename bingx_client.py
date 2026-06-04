@@ -426,6 +426,56 @@ def execute_trade(symbol, side):
         amount = float(amount)
 
         # =========================
+        # CURRENT PRICE
+        # =========================
+
+        ticker = main_mod.exchange.fetch_ticker(symbol)
+        current_price = ticker['last']
+
+        # =========================
+        # PULLBACK VALIDATION
+        # =========================
+
+        # 1) Price has already passed the entry (no pullback opportunity)
+        if (
+            (side == "long" and current_price <= entry)
+            or
+            (side != "long" and current_price >= entry)
+        ):
+            logger.info(
+                "Pullback passed %s side=%s current=%.4f entry=%.4f atr=%.4f",
+                symbol, side, current_price, entry, atr
+            )
+            main_mod.send_telegram(
+                f"⚠️ Pullback already passed – skipping order\n\n"
+                f"{symbol}\n"
+                f"Side: {side.upper()}\n"
+                f"Current: {current_price}\n"
+                f"Entry: {entry}\n"
+                f"ATR: {atr:.4f}"
+            )
+            return
+
+        # 2) Distance too small — avoid instant fill / Telegram spam
+        distance_pct = abs(current_price - entry) / current_price * 100
+        min_dist = main_mod.PULLBACK_MIN_DISTANCE_PCT
+        if distance_pct < min_dist:
+            logger.info(
+                "Pullback shallow %s side=%s dist=%.2f%% min=%.2f%% atr=%.4f",
+                symbol, side, distance_pct, min_dist, atr
+            )
+            main_mod.send_telegram(
+                f"⚠️ Pullback too shallow – skipping order\n\n"
+                f"{symbol}\n"
+                f"Side: {side.upper()}\n"
+                f"Current: {current_price}\n"
+                f"Entry: {entry}\n"
+                f"Distance: {distance_pct:.2f}% (min: {min_dist}%)\n"
+                f"ATR: {atr:.4f}"
+            )
+            return
+
+        # =========================
         # LONG
         # =========================
 

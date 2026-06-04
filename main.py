@@ -51,6 +51,7 @@ from config import (
     TOP_CANDIDATES_COUNT,
     MAX_CONSECUTIVE_LOSSES,
     LOSS_STREAK_RESET_ON_WIN,
+    PULLBACK_MIN_DISTANCE_PCT,
 )
 
 # =========================
