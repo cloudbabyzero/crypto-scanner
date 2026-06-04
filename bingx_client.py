@@ -491,10 +491,15 @@ def execute_trade(symbol, side):
                 amount=amount
             )
         except PositionNotExistError as e:
-            # Position no longer exists - this shouldn't happen during trade execution
-            # but if it does, log it and continue (trade won't be created)
-            logger.error(f"Position does not exist during trade execution for {symbol}: {e}")
-            return  # Don't create the trade
+            # Position does not exist yet because the limit order has not been
+            # filled. This is EXPECTED — BingX rejects protection orders when
+            # there is no open position. Save as PENDING; protection will be
+            # placed after fill detection in check_trades().
+            logger.warning(f"Position not exist for {symbol}: {e} (expected for limit orders before fill)")
+            main_mod.send_telegram(
+                f"⚠️ Protection pre-set delayed for {symbol}\n"
+                f"Limit order pending — protection will be applied after fill."
+            )
         except Exception as protect_error:
             main_mod.send_telegram(
                 f"⚠️ Protection pre-set failed for {symbol}\n"
