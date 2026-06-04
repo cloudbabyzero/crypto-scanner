@@ -247,10 +247,10 @@ def place_protection_orders(
             if error_code == PositionNotExistError.BINGX_CODE:
                 logger.error(f"Position does not exist for {symbol} (code {error_code}) - protection retry loop will stop")
                 raise PositionNotExistError(symbol, error_msg or "Position does not exist", e)
-            # Check if this is error 110406 for TP
-            elif error_code == 110406:
+            # Check if this is error 110406 or 110407 for TP
+            elif error_code in [110406, 110407]:
                 # TP already in place - treat as success
-                print(f"[BINGX] TP already exists for {symbol} (code 110406) - OK", flush=True)
+                print(f"[BINGX] TP already exists for {symbol} (code {error_code}) - OK", flush=True)
                 tp2_order_id = "existing_tp"
             else:
                 # Log other errors for debugging
