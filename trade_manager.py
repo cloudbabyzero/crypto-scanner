@@ -708,9 +708,17 @@ def restore_open_positions():
             protection = _fetch_protection_orders_for_position(symbol, side)
             
             # Determine SL and TP prices
-            # Preference: use fetched prices if available, otherwise entry_price as fallback
-            sl_price = protection['sl_price'] if protection['sl_price'] is not None else entry_price
-            tp_price = protection['tp_price'] if protection['tp_price'] is not None else entry_price
+            # Use None if protection orders not found (displayed as N/A in /trades)
+            sl_price = protection['sl_price']
+            tp_price = protection['tp_price']
+            
+            # Log when protection orders are not found
+            if sl_price is None and tp_price is None:
+                print(f"[RESTORE] Protection orders not found for {symbol}", flush=True)
+            elif sl_price is None:
+                print(f"[RESTORE] SL order not found for {symbol} (TP found: {tp_price})", flush=True)
+            elif tp_price is None:
+                print(f"[RESTORE] TP order not found for {symbol} (SL found: {sl_price})", flush=True)
 
             # Create trade object with all required fields for consistency
             # This ensures restored trades have the same structure as non-restored trades
@@ -748,6 +756,15 @@ def restore_open_positions():
             "restore_open_positions: no open positions found",
             flush=True
         )
+    
+    # Log position limit status after restore for debugging
+    with main_mod.state_lock:
+        trade_items = list(main_mod.active_trades.values())
+    active_longs = sum(1 for t in trade_items if t.get("status") in ["PENDING", "OPEN"] and t.get("side") == "LONG")
+    active_shorts = sum(1 for t in trade_items if t.get("status") in ["PENDING", "OPEN"] and t.get("side") == "SHORT")
+    total_active = active_longs + active_shorts
+    print(f"[POSITION_LIMIT] Startup: Restored positions counted: {restored_count}", flush=True)
+    print(f"[POSITION_LIMIT] Startup: Active positions: {total_active}/{main_mod.MAX_ACTIVE_TRADES} (LONG: {active_longs}, SHORT: {active_shorts})", flush=True)
 
 
 # =========================

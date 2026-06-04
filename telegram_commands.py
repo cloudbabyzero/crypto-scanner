@@ -80,8 +80,20 @@ def trades(message):
     
     text = "📊 ACTIVE TRADES\n\n"
     for trade in trade_items:
-        sl_val = trade.get('sl', 'N/A')
-        tp2_val = trade.get('tp2', 'N/A')
+        def _fmt(val):
+            if val is None:
+                return "N/A"
+            # Format floats cleanly
+            try:
+                fval = float(val)
+                if fval == 0:
+                    return "N/A"
+                return str(fval)
+            except (TypeError, ValueError):
+                return str(val)
+        
+        sl_val = _fmt(trade.get('sl'))
+        tp2_val = _fmt(trade.get('tp2'))
         text += f"""
 {trade['symbol']}
 {trade['side']}
@@ -1064,6 +1076,9 @@ Max Longs:
 
 Max Shorts:
 {main_mod.MAX_SHORT_TRADES}
+
+Max Total:
+{main_mod.MAX_ACTIVE_TRADES}
 """
     bot.reply_to(message, text)
 
@@ -1135,7 +1150,7 @@ Active Shorts:
 {active_shorts} / {main_mod.MAX_SHORT_TRADES}
 
 Total Active:
-{len([t for t in trade_items if t.get('status') in ['PENDING', 'OPEN']])}
+{active_longs + active_shorts} / {main_mod.MAX_ACTIVE_TRADES}
 """
     bot.reply_to(message, text)
 

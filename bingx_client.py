@@ -317,6 +317,18 @@ def execute_trade(symbol, side):
                 return
 
         # =========================
+        # CHECK GLOBAL POSITION LIMIT
+        # =========================
+
+        if not main_mod.can_open_trade(side.upper()):
+            main_mod.send_telegram(
+                f"❌ GLOBAL POSITION LIMIT REACHED\n\n"
+                f"{symbol}\n\n"
+                f"Max {main_mod.MAX_ACTIVE_TRADES} active trades"
+            )
+            return
+
+        # =========================
         # GET SIGNAL
         # =========================
 

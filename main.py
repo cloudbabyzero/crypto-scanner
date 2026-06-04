@@ -1626,7 +1626,10 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     )
                 else:
                     vol_status = "HIGH" if volume_high else "NORMAL"
-                    pos_status = f"{len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])} / {MAX_LONG_TRADES}"
+                    active_longs = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])
+                    active_shorts = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])
+                    total_active = active_longs + active_shorts
+                    pos_status = f"{total_active}/{MAX_ACTIVE_TRADES} (L:{active_longs}, S:{active_shorts})"
                     
                     send_telegram(
                         f"🤖 AUTO TRADE DECISION\n\n"
@@ -1794,7 +1797,10 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 # Execute if no skip reason
                 if not skip_reason:
                     vol_status = "HIGH" if volume_high else "NORMAL"
-                    pos_status = f"{len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])} / {MAX_SHORT_TRADES}"
+                    active_longs = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])
+                    active_shorts = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])
+                    total_active = active_longs + active_shorts
+                    pos_status = f"{total_active}/{MAX_ACTIVE_TRADES} (L:{active_longs}, S:{active_shorts})"
                     
                     send_telegram(
                         f"🤖 AUTO TRADE DECISION\n\n"
@@ -1805,7 +1811,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                         f"ATR: {round(atr_percent, 2)}%\n"
                         f"ADX: {round(m15['adx'], 2)}\n"
                         f"Volume: {vol_status}\n"
-                        f"Shorts: {pos_status}"
+                        f"Positions: {pos_status}"
                     )
                     
                     threading.Thread(
@@ -1821,7 +1827,10 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     )
                 else:
                     vol_status = "HIGH" if volume_high else "NORMAL"
-                    pos_status = f"{len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])} / {MAX_SHORT_TRADES}"
+                    active_longs = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])
+                    active_shorts = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])
+                    total_active = active_longs + active_shorts
+                    pos_status = f"{total_active}/{MAX_ACTIVE_TRADES} (L:{active_longs}, S:{active_shorts})"
                     
                     send_telegram(
                         f"🤖 AUTO TRADE DECISION\n\n"
@@ -1833,7 +1842,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                         f"ATR: {round(atr_percent, 2)}%\n"
                         f"ADX: {round(m15['adx'], 2)}\n"
                         f"Volume: {vol_status}\n"
-                        f"Shorts: {pos_status}"
+                        f"Positions: {pos_status}"
                     )
 
             vol_status = "HIGH" if volume_high else "NORMAL"
@@ -2163,7 +2172,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # Check position limit (only if all other filters passed)
             if not skip_reason:
                 if not can_open_trade(side):
-                    skip_reason = f"Max {'LONG' if side == 'LONG' else 'SHORT'} {'longs' if side == 'LONG' else 'shorts'} positions reached"
+                    skip_reason = f"Max {MAX_ACTIVE_TRADES} positions reached"
 
             # Check market regime (only if all other filters passed)
             if not skip_reason:
