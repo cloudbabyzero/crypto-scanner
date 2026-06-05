@@ -52,13 +52,23 @@ from config import (
     MAX_CONSECUTIVE_LOSSES,
     LOSS_STREAK_RESET_ON_WIN,
     PULLBACK_MIN_DISTANCE_PCT,
+    MOMENTUM_MIN_ADX,
+    MOMENTUM_MIN_PRICE_DISTANCE,
+    MOMENTUM_MIN_CANDLES,
+    MOMENTUM_ENTRY_ATR_MULT,
+    MOMENTUM_SL_ATR_MULT,
+    MOMENTUM_TP_RR,
+    MOMENTUM_AUTO_TRADE,
+    MOMENTUM_MIN_GRADE,
+    MOMENTUM_MIN_SCORE,
+    MOMENTUM_MAX_TRADES,
 )
 
 # =========================
 # INDICATORS - Import from indicators.py
 # =========================
 
-from indicators import get_dataframe, get_btc_trend
+from indicators import get_dataframe, get_btc_trend, detect_momentum
 
 # =========================
 # EXCHANGE CLIENT
@@ -424,6 +434,19 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
         )
         CURRENT_REGIME = new_regime
         return
+
+    if CONTROL_MODE == "FORCE_MOMENTUM":
+        print(f"Regime changed to {new_regime}, but FORCE_MOMENTUM override active", flush=True)
+        send_telegram(
+            f"🚨 MARKET REGIME CHANGED\n\n"
+            f"{old_regime} → {new_regime}\n\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%\n\n"
+            f"🔒 FORCE_MOMENTUM override active\n"
+            f"No mode switch applied."
+        )
+        CURRENT_REGIME = new_regime
+        return
     
     # Determine the new market mode based on regime
     new_mode = determine_mode_from_regime(new_regime)
@@ -456,7 +479,14 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
     send_top_candidates()
     
     # Build notification message
-    regime_icon = "📈" if new_regime == "TRENDING" else ("📉" if new_regime == "SIDEWAYS" else "⚡")
+    if new_regime == "TRENDING":
+        regime_icon = "📈"
+    elif new_regime == "SIDEWAYS":
+        regime_icon = "📉"
+    elif new_regime == "MOMENTUM":
+        regime_icon = "🚀"
+    else:
+        regime_icon = "⚡"
     mode_text = f"{regime_icon} Auto Switched To {new_mode} Mode"
     
     notification = (
@@ -479,12 +509,15 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
 def determine_mode_from_regime(regime):
     """Map a market regime to the corresponding strategy mode.
     
-    TRENDING -> TRENDING strategy
-    SIDEWAYS -> SIDEWAYS strategy
-    VOLATILE -> TRENDING strategy (trend following for volatility breakout)
+    TRENDING  -> TRENDING strategy
+    SIDEWAYS  -> SIDEWAYS strategy
+    VOLATILE  -> TRENDING strategy (trend following for volatility breakout)
+    MOMENTUM  -> MOMENTUM strategy
     """
     if regime == "SIDEWAYS":
         return "SIDEWAYS"
+    if regime == "MOMENTUM":
+        return "MOMENTUM"
     # TRENDING, VOLATILE, and default all use TREND mode
     return "TRENDING"
 
@@ -1028,7 +1061,9 @@ def get_latest_signal(symbol):
 # =========================
 
 def detect_market_regime():
-    """Detect current BTC market regime: TRENDING, SIDEWAYS, or VOLATILE.
+    """Detect current BTC market regime: MOMENTUM, TRENDING, SIDEWAYS, or VOLATILE.
+
+    Priority: MOMENTUM > VOLATILE > TRENDING > SIDEWAYS
 
     Returns:
         (regime, btc_adx, btc_atr_percent) tuple
@@ -1040,7 +1075,12 @@ def detect_market_regime():
         btc_adx = round(btc['adx'], 2)
         btc_atr_percent = round((btc['atr'] / btc['close']) * 100, 2)
 
-        # VOLATILE has highest priority
+        # MOMENTUM: strongest trend, price far from EMA7, consecutive candles
+        momentum_info = detect_momentum('BTC/USDT:USDT')
+        if momentum_info['is_momentum']:
+            return "MOMENTUM", btc_adx, btc_atr_percent
+
+        # VOLATILE has next priority
         if btc_atr_percent >= MARKET_REGIME_ATR_VOLATILE:
             return "VOLATILE", btc_adx, btc_atr_percent
 
@@ -1083,10 +1123,309 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
         effective_mode = "TRENDING"
     elif CONTROL_MODE == "FORCE_SIDEWAY":
         effective_mode = "SIDEWAYS"
-    
+
     if effective_mode == "SIDEWAYS":
         return analyze_sideways(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
+    if effective_mode == "MOMENTUM":
+        return analyze_momentum(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
     return analyze_trend(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
+
+
+# =========================
+# ANALYZE MOMENTUM
+# =========================
+
+def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
+    """Momentum regime analysis — entry near current price, no pullback wait."""
+
+    global pause_trading
+
+    if pause_trading:
+        return {"symbol": symbol, "result": "paused"}
+
+    try:
+        now = time.time()
+
+        # =========================
+        # COOLDOWN
+        # =========================
+
+        if not bypass_cooldown and not ignore_cooldown_once:
+            with state_lock:
+                last_time = last_alert.get(symbol)
+            if last_time and now - last_time < COOLDOWN:
+                set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                google_sheet.log_debug(symbol, "Cooldown", score=0, adx=0, atr=0)
+                return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # GET DATA
+        # =========================
+
+        df_4h = get_dataframe(symbol, '4h')
+        df_1h = get_dataframe(symbol, '1h')
+        df_15m = get_dataframe(symbol, '15m')
+
+        h4  = df_4h.iloc[-2]
+        h1  = df_1h.iloc[-2]
+        m15 = df_15m.iloc[-2]
+
+        now_ts = time.time()
+        signal_id = str(uuid.uuid4())[:8]
+
+        atr_percent = (m15['atr'] / m15['close']) * 100
+        volume_high = m15['volume'] > m15['vol_avg'] * 1.3
+        vol_status  = "HIGH" if volume_high else "NORMAL"
+        adx_val     = round(m15['adx'], 2)
+        atr_val     = round(atr_percent, 2)
+
+        # =========================
+        # SCORE
+        # =========================
+
+        long_score  = 0
+        short_score = 0
+        btc_trend   = get_btc_trend()
+
+        # 4H EMA alignment (35pts)
+        if h4['ema25'] > h4['ema99']:
+            long_score += 35
+        else:
+            short_score += 35
+
+        # 1H EMA alignment (25pts)
+        if h1['ema7'] > h1['ema25']:
+            long_score += 25
+        else:
+            short_score += 25
+
+        # MACD 1H (20pts)
+        if h1['macd'] > h1['macd_signal'] and h1['macd'] > 0:
+            long_score += 20
+        elif h1['macd'] < h1['macd_signal'] and h1['macd'] < 0:
+            short_score += 20
+
+        # ADX strength (10pts)
+        if m15['adx'] >= MOMENTUM_MIN_ADX:
+            if h1['ema7'] > h1['ema25']:
+                long_score += 10
+            else:
+                short_score += 10
+
+        # Volume confirmation (10pts)
+        if volume_high:
+            long_score  += 10
+            short_score += 10
+
+        # BTC filter
+        if symbol != 'BTC/USDT:USDT' and btc_trend == "bearish":
+            long_score -= 20
+
+        long_score  = min(long_score, 100)
+        short_score = min(short_score, 100)
+
+        # =========================
+        # GRADE
+        # =========================
+
+        score = max(long_score, short_score)
+        grade = "C"
+        if score >= 95:
+            grade = "A+"
+        elif score >= 85:
+            grade = "A"
+        elif score >= 75:
+            grade = "B"
+
+        # =========================
+        # SCORE FILTER
+        # =========================
+
+        if score < MOMENTUM_MIN_SCORE:
+            set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, "Score Below MIN_SCORE", score=score, adx=adx_val, atr=atr_val)
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # DETERMINE SIDE
+        # =========================
+
+        if long_score >= short_score and long_score >= MOMENTUM_MIN_SCORE and btc_trend == "bullish":
+            side  = "LONG"
+            entry = round(m15['close'] - (m15['atr'] * MOMENTUM_ENTRY_ATR_MULT), 4)
+        elif short_score > long_score and short_score >= MOMENTUM_MIN_SCORE:
+            side  = "SHORT"
+            entry = round(m15['close'] + (m15['atr'] * MOMENTUM_ENTRY_ATR_MULT), 4)
+        else:
+            set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # SL / TP
+        # =========================
+
+        atr = m15['atr']
+        if side == "LONG":
+            sl   = round(entry - atr * MOMENTUM_SL_ATR_MULT, 4)
+            risk = entry - sl
+            tp2  = round(entry + risk * MOMENTUM_TP_RR, 4)
+            tp1  = round(entry + risk, 4)
+            rr   = round((tp2 - entry) / (entry - sl), 2)
+        else:
+            sl   = round(entry + atr * MOMENTUM_SL_ATR_MULT, 4)
+            risk = sl - entry
+            tp2  = round(entry - risk * MOMENTUM_TP_RR, 4)
+            tp1  = round(entry - risk, 4)
+            rr   = round((entry - tp2) / (sl - entry), 2)
+
+        # =========================
+        # DISTANCE LOG
+        # =========================
+
+        current_price = m15['close']
+        distance_pct  = abs(current_price - entry) / current_price * 100
+
+        print(
+            f"[MOMENTUM_FILTER] {symbol} | side={side} | current={current_price} "
+            f"| entry={entry} | distance={round(distance_pct, 3)}%",
+            flush=True
+        )
+
+        # =========================
+        # BUILD MESSAGE
+        # =========================
+
+        icon = "🚀" if side == "LONG" else "🔻"
+        momentum_info = detect_momentum(symbol)
+        strength = "STRONG" if momentum_info['adx'] >= 35 else "MODERATE"
+
+        message = f"""
+{icon} {side} SIGNAL
+
+{symbol}
+
+Strategy:
+MOMENTUM
+
+Grade:
+{grade}
+
+Score:
+{score}/100
+
+Entry:
+{entry}
+
+SL:
+{sl}
+
+TP2:
+{tp2}
+
+RR:
+1:{rr}
+
+ADX:
+{round(m15['adx'], 2)}
+
+ATR %:
+{round(atr_percent, 2)}
+
+Volume:
+{vol_status}
+
+BTC Trend:
+{btc_trend}
+
+Momentum Strength:
+{strength} ({momentum_info['consecutive_candles']} candles)
+
+Distance from price:
+{round(distance_pct, 3)}%
+
+Plan:
+- Full TP2 target
+- Fixed SL
+- No partial close
+"""
+
+        print(message, flush=True)
+
+        if not silent_mode:
+            send_telegram(message)
+
+        if not signal_only:
+            save_signal(signal_id, symbol, side, grade, score, entry, sl, tp1, tp2)
+
+            signal_regime = CURRENT_REGIME
+
+            with state_lock:
+                active_trades[signal_id] = {
+                    "symbol": symbol,
+                    "status": "SIGNAL",
+                    "side": side,
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "signal_regime": signal_regime,
+                    "created_at": time.time()
+                }
+                last_alert[symbol] = now_ts
+
+        set_scan_result(symbol, {
+            "status": "Signal Generated",
+            "score": score,
+            "adx": adx_val,
+            "atr": atr_val,
+            "volume": vol_status,
+            "timestamp": now_ts
+        })
+
+        # =========================
+        # AUTO TRADE
+        # =========================
+
+        if MOMENTUM_AUTO_TRADE and not signal_only:
+
+            skip_reason = None
+
+            # Grade must be A+
+            if grade != MOMENTUM_MIN_GRADE:
+                skip_reason = f"Momentum Grade: {grade} < {MOMENTUM_MIN_GRADE}"
+
+            # Max 1 active position for momentum
+            if not skip_reason:
+                with state_lock:
+                    active_count = sum(
+                        1 for t in active_trades.values()
+                        if t.get("status") in ["PENDING", "OPEN"]
+                    )
+                if active_count >= MOMENTUM_MAX_TRADES:
+                    skip_reason = f"Momentum max {MOMENTUM_MAX_TRADES} position reached"
+
+            # Regime still valid
+            if not skip_reason and CURRENT_REGIME != signal_regime:
+                skip_reason = "MARKET_REGIME_CHANGED"
+
+            if not skip_reason:
+                print(f"[MOMENTUM_AUTO_TRADE] {symbol} {side} — executing", flush=True)
+                try:
+                    bingx_client.execute_trade(symbol, side, skip_pullback_check=True)
+                except Exception:
+                    print(f"[MOMENTUM_AUTO_TRADE] execute_trade error", flush=True)
+                    print(traceback.format_exc(), flush=True)
+            else:
+                print(f"[MOMENTUM_AUTO_TRADE] {symbol} skipped — {skip_reason}", flush=True)
+
+        return {"symbol": symbol, "result": "signal", "side": side, "score": score}
+
+    except Exception:
+        print(f"[MOMENTUM ERROR] {symbol}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        google_sheet.log_debug(symbol, "Error", score=0, adx=0, atr=0)
+        return {"symbol": symbol, "result": "error"}
 
 
 # =========================

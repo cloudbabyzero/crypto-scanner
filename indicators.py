@@ -127,6 +127,84 @@ def get_dataframe(symbol, timeframe):
     return df
 
 # =========================
+# MOMENTUM DETECTION
+# =========================
+
+def detect_momentum(symbol='BTC/USDT:USDT'):
+    """Detect if a symbol is in Momentum regime (strong directional move, no pullback).
+
+    Returns:
+        dict with keys:
+            is_momentum (bool)
+            direction   ('LONG' | 'SHORT' | None)
+            adx         (float)
+            price_distance_pct (float)  -- % distance of close from EMA7
+            consecutive_candles (int)
+    """
+    from config import (
+        MOMENTUM_MIN_ADX,
+        MOMENTUM_MIN_PRICE_DISTANCE,
+        MOMENTUM_MIN_CANDLES,
+    )
+
+    df = get_dataframe(symbol, '4h')
+
+    # Use confirmed (closed) candles only — skip last (forming) candle
+    recent = df.iloc[-MOMENTUM_MIN_CANDLES - 1 : -1]
+    last   = df.iloc[-2]
+
+    adx = last['adx']
+
+    # --- Condition 1: ADX strong enough ---
+    if adx < MOMENTUM_MIN_ADX:
+        return {
+            'is_momentum': False,
+            'direction': None,
+            'adx': round(adx, 2),
+            'price_distance_pct': 0,
+            'consecutive_candles': 0,
+        }
+
+    # --- Condition 2: Price far from EMA7 ---
+    price_distance_pct = abs(last['close'] - last['ema7']) / last['close'] * 100
+    if price_distance_pct < MOMENTUM_MIN_PRICE_DISTANCE:
+        return {
+            'is_momentum': False,
+            'direction': None,
+            'adx': round(adx, 2),
+            'price_distance_pct': round(price_distance_pct, 3),
+            'consecutive_candles': 0,
+        }
+
+    # --- Condition 3: Consecutive candles in same direction ---
+    bull_count = sum(1 for _, row in recent.iterrows() if row['close'] > row['open'])
+    bear_count = sum(1 for _, row in recent.iterrows() if row['close'] < row['open'])
+
+    if bull_count >= MOMENTUM_MIN_CANDLES and last['close'] > last['ema7']:
+        direction = 'LONG'
+        consecutive = bull_count
+    elif bear_count >= MOMENTUM_MIN_CANDLES and last['close'] < last['ema7']:
+        direction = 'SHORT'
+        consecutive = bear_count
+    else:
+        return {
+            'is_momentum': False,
+            'direction': None,
+            'adx': round(adx, 2),
+            'price_distance_pct': round(price_distance_pct, 3),
+            'consecutive_candles': max(bull_count, bear_count),
+        }
+
+    return {
+        'is_momentum': True,
+        'direction': direction,
+        'adx': round(adx, 2),
+        'price_distance_pct': round(price_distance_pct, 3),
+        'consecutive_candles': consecutive,
+    }
+
+
+# =========================
 # BTC TREND
 # =========================
 

@@ -265,12 +265,15 @@ def place_protection_orders(
 # TRADE EXECUTION
 # =========================
 
-def execute_trade(symbol, side):
+def execute_trade(symbol, side, skip_pullback_check=False):
     """Execute a trade entry with protection orders.
     
     Args:
         symbol: Trading symbol (e.g., 'BTC/USDT:USDT')
         side: 'long' or 'short'
+        skip_pullback_check: If True, bypass pullback distance validation.
+                             Use for Momentum mode where entry is intentionally
+                             close to current price.
     """
 
     try:
@@ -457,9 +460,10 @@ def execute_trade(symbol, side):
             return
 
         # 2) Distance too small — avoid instant fill / Telegram spam
+        # Skipped for Momentum mode (entry is intentionally close to price)
         distance_pct = abs(current_price - entry) / current_price * 100
         min_dist = main_mod.PULLBACK_MIN_DISTANCE_PCT
-        if distance_pct < min_dist:
+        if not skip_pullback_check and distance_pct < min_dist:
             logger.info(
                 "Pullback shallow %s side=%s dist=%.2f%% min=%.2f%% atr=%.4f",
                 symbol, side, distance_pct, min_dist, atr

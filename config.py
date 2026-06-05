@@ -150,3 +150,27 @@ TOP_CANDIDATES_COUNT = 5
 # If True, the bot will send Telegram messages with order status updates for debugging purposes.
 
 DEBUG_ORDER_STATUS = False
+
+# =========================
+# MOMENTUM STRATEGY CONFIG
+# =========================
+
+# Detection thresholds (checked on 4h BTC candles)
+MOMENTUM_MIN_ADX = 30               # ADX must be stronger than TREND (22)
+MOMENTUM_MIN_PRICE_DISTANCE = 0.5   # Price must be >= 0.5% away from EMA7
+MOMENTUM_MIN_CANDLES = 3            # Consecutive 4h candles in same direction
+
+# Entry: entry = close ± atr * mult  (closer than Trend's ema7 ± atr*0.2)
+MOMENTUM_ENTRY_ATR_MULT = 0.3
+
+# SL: tighter than Trend (1.5) — momentum reverses fast
+MOMENTUM_SL_ATR_MULT = 1.2
+
+# TP: higher RR than Trend (2.0) — momentum can run far
+MOMENTUM_TP_RR = 2.5
+
+# Auto trade — ON but with stricter filters below
+MOMENTUM_AUTO_TRADE = True
+MOMENTUM_MIN_GRADE = "A+"           # Only A+ (Trend uses "A")
+MOMENTUM_MIN_SCORE = 90             # Only score >= 90 (Trend uses 85)
+MOMENTUM_MAX_TRADES = 1             # Max 1 position at a time (Trend uses 2)

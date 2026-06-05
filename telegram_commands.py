@@ -815,6 +815,19 @@ def set_auto_mode(message):
                 f"Old: {old}\n"
                 f"Auto regime switching disabled."
             )
+
+        elif mode_arg == "momentum":
+            old = main_mod.CONTROL_MODE
+            main_mod.CONTROL_MODE = "FORCE_MOMENTUM"
+            main_mod.MARKET_MODE = "MOMENTUM"
+            main_mod.save_regime_storage()
+
+            bot.reply_to(
+                message,
+                f"🚀 Control Mode: FORCE_MOMENTUM\n\n"
+                f"Old: {old}\n"
+                f"Auto regime switching disabled."
+            )
             
         else:
             bot.reply_to(
@@ -823,7 +836,8 @@ def set_auto_mode(message):
                 f"Usage:\n"
                 f"/setauto auto      - Auto regime switching\n"
                 f"/setauto trend     - Force trend mode\n"
-                f"/setauto sideways  - Force sideways mode"
+                f"/setauto sideways  - Force sideways mode\n"
+                f"/setauto momentum  - Force momentum mode"
             )
             
     except Exception as e:
