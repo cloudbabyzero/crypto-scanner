@@ -47,7 +47,7 @@ symbols = [
     'ETH/USDT:USDT',
     'SOL/USDT:USDT',
     'XRP/USDT:USDT',
-    'DOGE/USDT:USDT',
+    #'DOGE/USDT:USDT',
     'INJ/USDT:USDT',
     'LINK/USDT:USDT',
     'SUI/USDT:USDT',
