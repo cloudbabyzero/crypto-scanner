@@ -326,6 +326,35 @@ AUTO_TRADE:
 AUTO_TRADE_MIN_GRADE:
 {main_mod.AUTO_TRADE_MIN_GRADE}
 
+🚀 MOMENTUM STRATEGY
+
+MOMENTUM_MIN_ADX:
+{main_mod.MOMENTUM_MIN_ADX}
+
+MOMENTUM_MIN_PRICE_DISTANCE:
+{main_mod.MOMENTUM_MIN_PRICE_DISTANCE}%
+
+MOMENTUM_ENTRY_ATR_MULT:
+{main_mod.MOMENTUM_ENTRY_ATR_MULT}
+
+MOMENTUM_SL_ATR_MULT:
+{main_mod.MOMENTUM_SL_ATR_MULT}
+
+MOMENTUM_TP_RR:
+{main_mod.MOMENTUM_TP_RR}
+
+MOMENTUM_AUTO_TRADE:
+{"ON" if main_mod.MOMENTUM_AUTO_TRADE else "OFF"}
+
+MOMENTUM_MIN_GRADE:
+{main_mod.MOMENTUM_MIN_GRADE}
+
+MOMENTUM_MIN_SCORE:
+{main_mod.MOMENTUM_MIN_SCORE}
+
+MOMENTUM_MAX_TRADES:
+{main_mod.MOMENTUM_MAX_TRADES}
+
 🎮 CONTROL MODE
 
 CONTROL_MODE:
@@ -637,10 +666,13 @@ Control Mode:
     btn_sideways = types.InlineKeyboardButton(
         "🔄 Switch to Sideways Mode", callback_data="mode_sideways"
     )
+    btn_momentum = types.InlineKeyboardButton(
+        "🚀 Switch to Momentum Mode", callback_data="mode_momentum"
+    )
     btn_auto = types.InlineKeyboardButton(
         "🤖 Auto Mode", callback_data="mode_auto"
     )
-    markup.add(btn_trend, btn_sideways, btn_auto)
+    markup.add(btn_trend, btn_sideways, btn_momentum, btn_auto)
 
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
@@ -697,6 +729,25 @@ def market_mode_callback(call):
         main_mod.send_telegram(
             "🔒 CONTROL MODE CHANGED\n\n"
             "Mode: FORCE_SIDEWAY\n"
+            "Auto regime switching disabled.\n"
+            "Use /setauto to re-enable."
+        )
+
+    elif action == "momentum":
+        main_mod.CONTROL_MODE = "FORCE_MOMENTUM"
+        main_mod.MARKET_MODE = "MOMENTUM"
+        main_mod.save_regime_storage()
+
+        bot.answer_callback_query(call.id, "🚀 FORCE_MOMENTUM Override Active")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"{call.message.text}\n\n🔒 FORCE_MOMENTUM Override Active\nAuto switching disabled"
+        )
+
+        main_mod.send_telegram(
+            "🔒 CONTROL MODE CHANGED\n\n"
+            "Mode: FORCE_MOMENTUM\n"
             "Auto regime switching disabled.\n"
             "Use /setauto to re-enable."
         )
@@ -948,6 +999,19 @@ MIN ATR: {main_mod.TREND_MIN_ATR}%
 
 MAX ADX: {main_mod.SIDEWAYS_MAX_ADX}
 MIN ATR: {main_mod.SIDEWAYS_MIN_ATR}%
+
+🚀 MOMENTUM
+
+MIN ADX: {main_mod.MOMENTUM_MIN_ADX}
+MIN Price Distance: {main_mod.MOMENTUM_MIN_PRICE_DISTANCE}%
+Min Consecutive Candles: {main_mod.MOMENTUM_MIN_CANDLES}
+Entry ATR Mult: {main_mod.MOMENTUM_ENTRY_ATR_MULT}
+SL ATR Mult: {main_mod.MOMENTUM_SL_ATR_MULT}
+TP RR: {main_mod.MOMENTUM_TP_RR}
+Min Grade: {main_mod.MOMENTUM_MIN_GRADE}
+Min Score: {main_mod.MOMENTUM_MIN_SCORE}
+Max Trades: {main_mod.MOMENTUM_MAX_TRADES}
+Auto Trade: {"ON" if main_mod.MOMENTUM_AUTO_TRADE else "OFF"}
 """
     bot.reply_to(message, text)
 
