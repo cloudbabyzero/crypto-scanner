@@ -1152,7 +1152,7 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         if not bypass_cooldown and not ignore_cooldown_once:
             with state_lock:
-                last_time = last_alert.get(symbol)
+                last_time = last_alert.get((symbol, "MOMENTUM"))
             if last_time and now - last_time < COOLDOWN:
                 set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
                 google_sheet.log_debug(symbol, "Cooldown", score=0, adx=0, atr=0)
@@ -1371,7 +1371,7 @@ Plan:
                     "signal_regime": signal_regime,
                     "created_at": time.time()
                 }
-                last_alert[symbol] = now_ts
+                last_alert[(symbol, "MOMENTUM")] = now_ts
 
         set_scan_result(symbol, {
             "status": "Signal Generated",
@@ -1453,7 +1453,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 
         if not bypass_cooldown and not ignore_cooldown_once:
             with state_lock:
-                last_time = last_alert.get(symbol)
+                last_time = last_alert.get((symbol, "TREND"))
 
             if last_time and now - last_time < COOLDOWN:
                 set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
@@ -1899,7 +1899,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     "created_at": time.time()
                 }
                 # Update last_alert after storing the signal
-                last_alert[symbol] = now
+                last_alert[(symbol, "TREND")] = now
 
             # =========================
             # AUTO TRADE LOGIC
@@ -2100,7 +2100,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     "created_at": time.time()
                 }
                 # Update last_alert after storing the signal
-                last_alert[symbol] = now
+                last_alert[(symbol, "TREND")] = now
 
             # =========================
             # AUTO TRADE LOGIC
@@ -2318,7 +2318,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         if not bypass_cooldown and not ignore_cooldown_once:
             with state_lock:
-                last_time = last_alert.get(symbol)
+                last_time = last_alert.get((symbol, "SIDEWAYS"))
 
                 if last_time and now - last_time < COOLDOWN:
                     set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
@@ -2489,7 +2489,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 "created_at": time.time()
             }
             # Update last_alert after storing the signal
-            last_alert[symbol] = now
+            last_alert[(symbol, "SIDEWAYS")] = now
 
         # =========================
         # AUTO TRADE LOGIC

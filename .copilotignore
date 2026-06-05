@@ -1,0 +1,11 @@
+**/*.md
+
+__pycache__/**
+.git/**
+.vscode/**
+
+FILE_CHANGES.md
+IMPLEMENTATION_*.md
+*_SUMMARY.md
+*_CHECKLIST.md
+*_REFERENCE.md
