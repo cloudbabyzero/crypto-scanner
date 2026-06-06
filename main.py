@@ -2374,15 +2374,20 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 # ANALYZE SIDEWAYS
 # =========================
 
-def build_sideways_message(symbol, side, entry, sl, tp, rr, rsi, adx, atr_percent, volume_high):
+def build_sideways_message(symbol, grade, score, side, entry, sl, tp, rr, rsi, adx, atr_percent, volume_high):
     icon = "🚀" if side == "LONG" else "🔻"
     return f"""
 {icon} {side} SIGNAL
-
 {symbol}
 
 Strategy:
 SIDEWAYS
+
+Grade:
+{grade}
+
+Score:
+{score}/100
 
 Mean Reversion Entry:
 {entry}
@@ -2604,8 +2609,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 "tp2": tp,
                 "signal_regime": signal_regime,
                 "created_at": time.time(),
-                "grade": grade,
-                "score": score
+                "grade": grade
             }
             # Update last_alert after storing the signal
             last_alert[(symbol, "SIDEWAYS")] = now
@@ -2648,13 +2652,12 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                             if t.get("grade") == "A":
                                 target_tid, target_trade = tid, t
                                 break
-                        # Priority 2: kick a Grade A+ pending only if score gap is wide enough
+                        # Priority 2: kick a Grade A+ pending (no score comparison for SIDEWAYS)
                         if not target_tid:
                             for tid, t in pending_trades:
                                 if t.get("grade") == "A+":
-                                    if score - t.get("score", 0) >= config.MIN_SCORE_GAP_TO_OVERRIDE:
-                                        target_tid, target_trade = tid, t
-                                        break
+                                    target_tid, target_trade = tid, t
+                                    break
                         if target_tid and target_trade:
                             try:
                                 bingx_client.cancel_order(target_trade["order_id"], target_trade["symbol"])
@@ -2663,15 +2666,14 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                                 send_telegram(
                                     f"🔄 A+ OVERRIDE\n\n"
                                     f"Kicked: {target_trade['symbol']} "
-                                    f"[{target_trade.get('grade','?')} score={target_trade.get('score',0)}]\n"
-                                    f"New: {symbol} [A+ score={score}]"
+                                    f"[{target_trade.get('grade','?')}]\n"
+                                    f"New: {symbol} [A+]"
                                 )
                                 # TASK 3: Log A+ Override event to Debug sheet
                                 google_sheet.log_aplus_override(
                                     symbol=symbol,
                                     strategy="SIDEWAYS",
                                     grade=grade,
-                                    score=score,
                                     cancelled_symbol=target_trade["symbol"],
                                     cancelled_grade=target_trade.get("grade", "?"),
                                     cancelled_score=target_trade.get("score", 0),

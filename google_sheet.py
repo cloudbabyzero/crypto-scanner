@@ -554,7 +554,7 @@ def log_fill_analysis(symbol, side, current_price, entry_price, grade, score, at
         print(f"[GOOGLE_SHEETS] log_fill_analysis error: {e}", flush=True)
 
 
-def log_aplus_override(symbol, strategy, grade, score, cancelled_symbol, cancelled_grade, cancelled_score, adx=0, atr=0):
+def log_aplus_override(symbol, strategy, grade, cancelled_symbol, cancelled_grade, cancelled_score, score=0, adx=0, atr=0):
     """
     Log an A+ Override event to the Debug sheet.
 
@@ -565,10 +565,10 @@ def log_aplus_override(symbol, strategy, grade, score, cancelled_symbol, cancell
         symbol: New A+ signal symbol
         strategy: Strategy (TREND, MOMENTUM, SIDEWAYS)
         grade: Grade of the new signal (always A+)
-        score: Score of the new signal
         cancelled_symbol: Symbol of the cancelled pending order
         cancelled_grade: Grade of the cancelled order
         cancelled_score: Score of the cancelled order
+        score: Score of the new signal (default 0 for SIDEWAYS)
         adx: ADX value of the new signal
         atr: ATR value of the new signal
     """
