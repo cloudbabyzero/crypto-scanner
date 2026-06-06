@@ -388,6 +388,61 @@ def startup_market_scan():
         send_telegram("⚠️ Startup regime detection failed, defaulting to TRENDING")
 
 
+def startup_cleanup():
+    """Cancel stale pending limit orders and report open positions.
+
+    Steps:
+    1. Fetch all open orders from BingX.
+    2. Cancel any pending LIMIT orders.
+    3. Count how many were cancelled and send a Telegram notification.
+    4. Fetch open positions and report them via Telegram (do not close).
+    5. Log a debug entry to Google Sheet.
+    """
+    try:
+        # 1. Fetch open orders
+        open_orders = exchange.fetch_open_orders()
+        cancelled_count = 0
+        for order in open_orders:
+            # Identify pending limit orders (type == 'limit' and not filled)
+            order_type = (order.get('type') or '').lower()
+            status = (order.get('status') or '').lower()
+            if order_type == 'limit' and status in ['open', 'new', 'active']:
+                try:
+                    exchange.cancel_order(order['id'], order['symbol'])
+                    cancelled_count += 1
+                except Exception as cancel_err:
+                    print(f"Failed to cancel order {order.get('id')}: {cancel_err}", flush=True)
+
+        # 3. Send Telegram notification about cancelled orders
+        send_telegram(f"🧹 STARTUP CLEANUP\n\nCancelled {cancelled_count} stale pending orders.")
+
+        # 4. Check for open positions (do not close them)
+        positions = exchange.fetch_positions()
+        open_positions = []
+        for pos in positions:
+            try:
+                contracts = float(pos.get('contracts') or 0)
+            except (TypeError, ValueError):
+                contracts = 0
+            if contracts > 0:
+                symbol = pos.get('symbol') or 'UNKNOWN'
+                side_raw = (pos.get('side') or pos.get('positionSide') or '').upper()
+                side = 'LONG' if side_raw in ['LONG', 'BUY'] else ('SHORT' if side_raw in ['SHORT', 'SELL'] else side_raw)
+                open_positions.append(f"{symbol} {side}")
+        if open_positions:
+            positions_msg = "\n".join(open_positions)
+            send_telegram(f"⚠️ OPEN POSITIONS DETECTED\n\n{positions_msg}\n\nManual review required.")
+
+        # 5. Log debug entry to Google Sheet
+        google_sheet.log_debug(
+            "STARTUP_CLEANUP",
+            f"Cancelled {cancelled_count} orders, {len(open_positions)} open positions"
+        )
+    except Exception as e:
+        print(f"Startup cleanup error: {e}", flush=True)
+        traceback.print_exc()
+
+
 # =========================
 # AUTO REGIME SWITCHING (Feature 2)
 # =========================
@@ -2956,6 +3011,9 @@ def main():
     # =========================
 
     trade_manager.restore_open_positions()
+
+    # Perform startup cleanup: cancel stale pending limit orders and report open positions
+    startup_cleanup()
 
     threading.Thread(
         target=trade_manager.check_trades,
