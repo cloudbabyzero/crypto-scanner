@@ -2618,6 +2618,8 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         message = build_sideways_message(
             symbol=symbol,
+            grade=grade,
+            score=0,
             side=side,
             entry=entry,
             sl=sl,
