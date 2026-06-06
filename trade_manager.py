@@ -490,6 +490,7 @@ def check_trades():
                             rr = 1.0
                             grade = trade.get('grade', 'C')
                             score = trade.get('score', 0)
+                            strategy = trade.get('strategy', '')
                             
                             google_sheet.log_trade(
                                 symbol=trade['symbol'],
@@ -500,7 +501,8 @@ def check_trades():
                                 result="WIN",
                                 grade=grade,
                                 score=score,
-                                rr=rr
+                                rr=rr,
+                                strategy=strategy
                             )
                         except Exception as e:
                             print(f"[GOOGLE_SHEETS] Trade log error: {e}", flush=True)
@@ -525,6 +527,7 @@ def check_trades():
                             rr = 1.0
                             grade = trade.get('grade', 'C')
                             score = trade.get('score', 0)
+                            strategy = trade.get('strategy', '')
                             
                             google_sheet.log_trade(
                                 symbol=trade['symbol'],
@@ -535,7 +538,8 @@ def check_trades():
                                 result="LOSS",
                                 grade=grade,
                                 score=score,
-                                rr=rr
+                                rr=rr,
+                                strategy=strategy
                             )
                         except Exception as e:
                             print(f"[GOOGLE_SHEETS] Trade log error: {e}", flush=True)

@@ -1968,6 +1968,18 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                                         f"[{target_trade.get('grade','?')} score={target_trade.get('score',0)}]\\n"
                                         f"New: {symbol} [A+ score={long_score}]"
                                     )
+                                    # TASK 3: Log A+ Override event to Debug sheet
+                                    google_sheet.log_aplus_override(
+                                        symbol=symbol,
+                                        strategy="TREND",
+                                        grade=grade,
+                                        score=long_score,
+                                        cancelled_symbol=target_trade["symbol"],
+                                        cancelled_grade=target_trade.get("grade", "?"),
+                                        cancelled_score=target_trade.get("score", 0),
+                                        adx=round(m15['adx'], 2),
+                                        atr=round(atr_percent, 2),
+                                    )
                                     override_executed = True
                                 except Exception as ov_err:
                                     send_telegram(f"⚠️ Override cancel failed: {ov_err}")
@@ -2054,7 +2066,10 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 adx=round(m15['adx'], 2),
                 volume=vol_status,
                 btc_trend=btc_trend,
-                status="SIGNAL"
+                status="SIGNAL",
+                strategy="TREND",
+                allocation_decision="ALLOCATED",
+                skip_reason=""
             )
             google_sheet.log_fill_analysis(
                 symbol=symbol,
@@ -2210,6 +2225,18 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                                         f"[{target_trade.get('grade','?')} score={target_trade.get('score',0)}]\n"
                                         f"New: {symbol} [A+ score={short_score}]"
                                     )
+                                    # TASK 3: Log A+ Override event to Debug sheet
+                                    google_sheet.log_aplus_override(
+                                        symbol=symbol,
+                                        strategy="TREND",
+                                        grade=grade,
+                                        score=short_score,
+                                        cancelled_symbol=target_trade["symbol"],
+                                        cancelled_grade=target_trade.get("grade", "?"),
+                                        cancelled_score=target_trade.get("score", 0),
+                                        adx=round(m15['adx'], 2),
+                                        atr=round(atr_percent, 2),
+                                    )
                                     override_executed = True
                                 except Exception as ov_err:
                                     send_telegram(f"⚠️ Override cancel failed: {ov_err}")
@@ -2296,7 +2323,10 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 adx=round(m15['adx'], 2),
                 volume=vol_status,
                 btc_trend=btc_trend,
-                status="SIGNAL"
+                status="SIGNAL",
+                strategy="TREND",
+                allocation_decision="ALLOCATED",
+                skip_reason=""
             )
             google_sheet.log_fill_analysis(
                 symbol=symbol,
@@ -2635,6 +2665,16 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                                     f"Kicked: {target_trade['symbol']} "
                                     f"[{target_trade.get('grade','?')} score={target_trade.get('score',0)}]\n"
                                     f"New: {symbol} [A+ score={score}]"
+                                )
+                                # TASK 3: Log A+ Override event to Debug sheet
+                                google_sheet.log_aplus_override(
+                                    symbol=symbol,
+                                    strategy="SIDEWAYS",
+                                    grade=grade,
+                                    score=score,
+                                    cancelled_symbol=target_trade["symbol"],
+                                    cancelled_grade=target_trade.get("grade", "?"),
+                                    cancelled_score=target_trade.get("score", 0),
                                 )
                                 override_executed = True
                             except Exception as ov_err:

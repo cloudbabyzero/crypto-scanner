@@ -124,24 +124,26 @@ def _ensure_sheets_exist():
         
         sheet_configs = [
             (SHEET_SIGNALS, [
-                "SignalID", "Timestamp", "Symbol", "Side", "Grade", "Score", 
-                "Entry", "SL", "TP", "ATR", "ADX", "Volume", "BTCTrend", "Status"
+                "SignalID", "Timestamp", "Symbol", "Side", "Grade", "Score",
+                "Entry", "SL", "TP", "ATR", "ADX", "Volume", "BTCTrend", "Status",
+                "Strategy", "AllocationDecision", "SkipReason"
             ]),
             (SHEET_TRADES, [
-                "Timestamp", "Symbol", "Side", "Entry", "Exit", "PnL", 
-                "Result", "Grade", "Score", "RR"
+                "Timestamp", "Symbol", "Side", "Entry", "Exit", "PnL",
+                "Result", "Grade", "Score", "RR", "Strategy"
             ]),
             (SHEET_STATS, [
-                "Timestamp", "Balance", "OpenPositions", "Wins", "Losses", 
+                "Timestamp", "Balance", "OpenPositions", "Wins", "Losses",
                 "WinRate", "ProfitUSDT", "CurrentLossStreak"
             ]),
             (SHEET_CONFIG, ["Key", "Value"]),
             (SHEET_DEBUG, [
-                "Timestamp", "Symbol", "Reason", "Score", "ADX", "ATR", "ExtraData"
+                "Timestamp", "Symbol", "Strategy", "Reason", "Grade", "Score", "ADX", "ATR", "Details"
             ]),
             (SHEET_FILL_ANALYSIS, [
-                "Timestamp", "Symbol", "Side", "CurrentPrice", "EntryPrice", 
-                "DistancePercent", "Grade", "Score", "ATR", "ADX", "BTCTrend", "FillStatus"
+                "Timestamp", "Symbol", "Side", "CurrentPrice", "EntryPrice",
+                "DistancePercent", "Grade", "Score", "ATR", "ADX", "BTCTrend", "FillStatus",
+                "PendingMinutes", "ExpiredReason"
             ]),
             (SHEET_DASHBOARD, ["Metric", "Value"]),
         ]
@@ -173,21 +175,24 @@ def ensure_headers():
         sheet_headers = {
             SHEET_SIGNALS: [
                 "SignalID", "Timestamp", "Symbol", "Side", "Grade", "Score",
-                "Entry", "SL", "TP", "ATR", "ADX", "Volume", "BTCTrend", "Status"
+                "Entry", "SL", "TP", "ATR", "ADX", "Volume", "BTCTrend", "Status",
+                "Strategy", "AllocationDecision", "SkipReason"
             ],
             SHEET_TRADES: [
-                "TradeID", "Timestamp", "Symbol", "Side", "Grade", "Entry",
-                "Exit", "PnL", "Result", "Reason"
+                "Timestamp", "Symbol", "Side", "Entry", "Exit", "PnL",
+                "Result", "Grade", "Score", "RR", "Strategy"
             ],
             SHEET_STATS: [
-                "Timestamp", "Balance", "Wins", "Losses", "WinRate", "LossStreak", "OpenTrades"
+                "Timestamp", "Balance", "OpenPositions", "Wins", "Losses",
+                "WinRate", "ProfitUSDT", "CurrentLossStreak"
             ],
             SHEET_DEBUG: [
-                "Timestamp", "Symbol", "Reason", "Score", "ADX", "ATR"
+                "Timestamp", "Symbol", "Strategy", "Reason", "Grade", "Score", "ADX", "ATR", "Details"
             ],
             SHEET_FILL_ANALYSIS: [
                 "Timestamp", "Symbol", "Side", "CurrentPrice", "EntryPrice",
-                "DistancePercent", "Grade", "Score", "ADX", "BTCTrend", "FillStatus"
+                "DistancePercent", "Grade", "Score", "ATR", "ADX", "BTCTrend", "FillStatus",
+                "PendingMinutes", "ExpiredReason"
             ],
             SHEET_CONFIG: ["Key", "Value", "Description"],
         }
@@ -307,7 +312,7 @@ def _log_health_check():
         reason = "HEALTH_CHECK"
         extra_data = f"BufferSize={buffer_size},Connected=True"
         
-        row = [timestamp, "", reason, "", "", "", extra_data]
+        row = [timestamp, "", "", reason, "", "", "", "", extra_data]
         _add_to_buffer(SHEET_DEBUG, row)
         print(f"[GOOGLE_SHEETS] Health check logged (buffer={buffer_size})", flush=True)
     except Exception as e:
@@ -409,10 +414,11 @@ def shutdown_all(flush_timeout=10, other_timeout=5):
 # PUBLIC API FUNCTIONS
 # ==================================================
 
-def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status="SIGNAL"):
+def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status="SIGNAL",
+               strategy="", allocation_decision="ALLOCATED", skip_reason=""):
     """
     Log a signal to the Signals sheet with unique SignalID.
-    
+
     Args:
         symbol: Trading pair symbol
         side: LONG or SHORT
@@ -426,14 +432,18 @@ def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_
         volume: Volume status (HIGH/NORMAL)
         btc_trend: BTC trend direction
         status: Signal status (SIGNAL, FILLED, EXPIRED, SKIPPED)
-    
+        strategy: Strategy used (TREND, MOMENTUM, SIDEWAYS)
+        allocation_decision: ALLOCATED, SKIPPED, or OVERRIDE
+        skip_reason: Reason for skipping (e.g. "Position Full", "Replaced By A+ Override")
+
     Returns:
         SignalID for tracking
     """
     try:
         signal_id = str(uuid.uuid4())
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-        row = [signal_id, timestamp, symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status]
+        row = [signal_id, timestamp, symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status,
+               strategy, allocation_decision, skip_reason]
         _add_to_buffer(SHEET_SIGNALS, row)
         return signal_id
     except Exception as e:
@@ -441,10 +451,10 @@ def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_
         return None
 
 
-def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr):
+def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy=""):
     """
     Log a trade result to the Trades sheet.
-    
+
     Args:
         symbol: Trading pair symbol
         side: LONG or SHORT
@@ -455,10 +465,11 @@ def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr):
         grade: Signal grade
         score: Signal score
         rr: Risk-reward ratio
+        strategy: Strategy used (TREND, MOMENTUM, SIDEWAYS)
     """
     try:
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-        row = [timestamp, symbol, side, entry, exit_price, pnl, result, grade, score, rr]
+        row = [timestamp, symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy]
         _add_to_buffer(SHEET_TRADES, row)
     except Exception as e:
         print(f"[GOOGLE_SHEETS] log_trade error: {e}", flush=True)
@@ -491,30 +502,33 @@ def update_signal_status(signal_id, status):
         print(f"[GOOGLE_SHEETS] update_signal_status error: {e}", flush=True)
 
 
-def log_debug(symbol, reason, score=0, adx=0, atr=0, extra_data=""):
+def log_debug(symbol, reason, score=0, adx=0, atr=0, extra_data="", strategy="", grade=""):
     """
     Log a debug/rejection reason to the Debug sheet.
-    
+
     Args:
         symbol: Trading pair symbol
-        reason: Rejection reason
+        reason: Rejection reason (Cooldown, Position Full, A+ Override, Pending Expired, Allocation Skip, etc.)
         score: Signal score at rejection
         adx: ADX value
         atr: ATR value
-        extra_data: Additional debug information
+        extra_data: Additional debug details (mapped to Details column)
+        strategy: Strategy context (TREND, MOMENTUM, SIDEWAYS)
+        grade: Signal grade at time of event
     """
     try:
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-        row = [timestamp, symbol, reason, score, adx, atr, extra_data]
+        row = [timestamp, symbol, strategy, reason, grade, score, adx, atr, extra_data]
         _add_to_buffer(SHEET_DEBUG, row)
     except Exception as e:
         print(f"[GOOGLE_SHEETS] log_debug error: {e}", flush=True)
 
 
-def log_fill_analysis(symbol, side, current_price, entry_price, grade, score, atr, adx, btc_trend, fill_status):
+def log_fill_analysis(symbol, side, current_price, entry_price, grade, score, atr, adx, btc_trend, fill_status,
+                      pending_minutes=0, expired_reason=""):
     """
     Log fill analysis data to the FillAnalysis sheet.
-    
+
     Args:
         symbol: Trading pair symbol
         side: LONG or SHORT
@@ -526,18 +540,49 @@ def log_fill_analysis(symbol, side, current_price, entry_price, grade, score, at
         adx: ADX value
         btc_trend: BTC trend direction
         fill_status: OPEN, FILLED, or EXPIRED
+        pending_minutes: Minutes the order was pending before fill/expiry
+        expired_reason: Why it expired (e.g. "Not Filled", "Replaced By A+ Override", "Filled")
     """
     try:
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         distance_percent = abs(entry_price - current_price) / current_price * 100
-        row = [timestamp, symbol, side, current_price, entry_price, round(distance_percent, 2), 
-               grade, score, atr, adx, btc_trend, fill_status]
+        row = [timestamp, symbol, side, current_price, entry_price, round(distance_percent, 2),
+               grade, score, atr, adx, btc_trend, fill_status,
+               pending_minutes, expired_reason]
         _add_to_buffer(SHEET_FILL_ANALYSIS, row)
     except Exception as e:
         print(f"[GOOGLE_SHEETS] log_fill_analysis error: {e}", flush=True)
 
 
-def update_stats(balance, open_positions, wins, losses, win_rate, profit_usdt, current_loss_streak):
+def log_aplus_override(symbol, strategy, grade, score, cancelled_symbol, cancelled_grade, cancelled_score, adx=0, atr=0):
+    """
+    Log an A+ Override event to the Debug sheet.
+
+    Called whenever an A+ override kicks a pending order to make room
+    for a higher-priority signal.
+
+    Args:
+        symbol: New A+ signal symbol
+        strategy: Strategy (TREND, MOMENTUM, SIDEWAYS)
+        grade: Grade of the new signal (always A+)
+        score: Score of the new signal
+        cancelled_symbol: Symbol of the cancelled pending order
+        cancelled_grade: Grade of the cancelled order
+        cancelled_score: Score of the cancelled order
+        adx: ADX value of the new signal
+        atr: ATR value of the new signal
+    """
+    try:
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        details = f"Cancelled {cancelled_symbol} {cancelled_grade} Pending | Inserted {symbol} A+ score={score}"
+        row = [timestamp, symbol, strategy, "A+ Override", grade, score, adx, atr, details]
+        _add_to_buffer(SHEET_DEBUG, row)
+        print(f"[GOOGLE_SHEETS] A+ Override logged: {symbol} replaced {cancelled_symbol}", flush=True)
+    except Exception as e:
+        print(f"[GOOGLE_SHEETS] log_aplus_override error: {e}", flush=True)
+
+
+
     """
     Update stats to the Stats sheet.
     
