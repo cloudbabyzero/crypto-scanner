@@ -566,6 +566,14 @@ def execute_trade(symbol, side, skip_pullback_check=False):
         # =========================
         trade_id = str(uuid.uuid4())[:8]
 
+        # Fetch grade/score from the signal so A+ override logic can compare later
+        _signal_for_grade = main_mod.get_latest_signal(symbol)
+        _signal_grade = "C"
+        _signal_score = 0
+        if _signal_for_grade:
+            _signal_grade = _signal_for_grade.get("grade", "C")
+            _signal_score = _signal_for_grade.get("score", 0)
+
         with main_mod.state_lock:
             main_mod.active_trades[trade_id] = {
                 "symbol": symbol,
@@ -578,7 +586,9 @@ def execute_trade(symbol, side, skip_pullback_check=False):
                 "amount": amount,
                 "sl_order_id": sl_order_id,
                 "tp2_order_id": tp2_order_id,
-                "created_at": pytime.time()
+                "created_at": pytime.time(),
+                "grade": _signal_grade,
+                "score": _signal_score
             }
 
         # =========================

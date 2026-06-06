@@ -77,6 +77,13 @@ GRADE_PRIORITY = {
 }
 
 # =========================
+# A+ PENDING OVERRIDE CONFIGURATION
+# =========================
+
+ALLOW_PENDING_OVERRIDE = True   # Toggle the pending order override system
+MIN_SCORE_GAP_TO_OVERRIDE = 3   # New A+ score must beat the pending trade's score by at least this amount
+
+# =========================
 # LOSS STREAK PROTECTION
 # =========================
 

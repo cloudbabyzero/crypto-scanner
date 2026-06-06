@@ -62,7 +62,10 @@ from config import (
     MOMENTUM_MIN_GRADE,
     MOMENTUM_MIN_SCORE,
     MOMENTUM_MAX_TRADES,
+    ALLOW_PENDING_OVERRIDE,
+    MIN_SCORE_GAP_TO_OVERRIDE,
 )
+import config
 
 # =========================
 # INDICATORS - Import from indicators.py
@@ -1048,7 +1051,9 @@ def get_latest_signal(symbol):
                 "atr": abs(
                     trade['entry'] - trade['sl']
                 ) / 1.5,
-                "signal_regime": trade.get("signal_regime", "UNKNOWN")
+                "signal_regime": trade.get("signal_regime", "UNKNOWN"),
+                "grade": trade.get("grade", "C"),
+                "score": trade.get("score", 0)
             }
 
     return None
@@ -1896,7 +1901,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     "tp1": tp1,
                     "tp2": tp2,
                     "signal_regime": signal_regime,
-                    "created_at": time.time()
+                    "created_at": time.time(),
+                    "grade": grade,
+                    "score": long_score
                 }
                 # Update last_alert after storing the signal
                 last_alert[(symbol, "TREND")] = now
@@ -1926,7 +1933,46 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 # Check position limit (only if all other filters passed)
                 if not skip_reason:
                     if not can_open_trade("LONG"):
-                        skip_reason = f"Max {MAX_ACTIVE_TRADES} positions reached"
+                        # =========================
+                        # A+ PENDING OVERRIDE LOGIC
+                        # =========================
+                        override_executed = False
+                        if grade == "A+" and config.ALLOW_PENDING_OVERRIDE:
+                            with state_lock:
+                                pending_trades = [
+                                    (tid, t) for tid, t in active_trades.items()
+                                    if t.get("status") == "PENDING"
+                                ]
+                            target_tid = None
+                            target_trade = None
+                            # Priority 1: kick any Grade A pending
+                            for tid, t in pending_trades:
+                                if t.get("grade") == "A":
+                                    target_tid, target_trade = tid, t
+                                    break
+                            # Priority 2: kick a Grade A+ pending only if score gap is wide enough
+                            if not target_tid:
+                                for tid, t in pending_trades:
+                                    if t.get("grade") == "A+":
+                                        if long_score - t.get("score", 0) >= config.MIN_SCORE_GAP_TO_OVERRIDE:
+                                            target_tid, target_trade = tid, t
+                                            break
+                            if target_tid and target_trade:
+                                try:
+                                    bingx_client.cancel_order(target_trade["order_id"], target_trade["symbol"])
+                                    with state_lock:
+                                        active_trades.pop(target_tid, None)
+                                    send_telegram(
+                                        f"🔄 A+ OVERRIDE\\n\\n"
+                                        f"Kicked: {target_trade['symbol']} "
+                                        f"[{target_trade.get('grade','?')} score={target_trade.get('score',0)}]\\n"
+                                        f"New: {symbol} [A+ score={long_score}]"
+                                    )
+                                    override_executed = True
+                                except Exception as ov_err:
+                                    send_telegram(f"⚠️ Override cancel failed: {ov_err}")
+                        if not override_executed:
+                            skip_reason = f"Max {MAX_ACTIVE_TRADES} positions reached"
 
                 # Check market regime (only if all other filters passed)
                 if not skip_reason:
@@ -2097,7 +2143,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     "tp1": tp1,
                     "tp2": tp2,
                     "signal_regime": signal_regime,
-                    "created_at": time.time()
+                    "created_at": time.time(),
+                    "grade": grade,
+                    "score": short_score
                 }
                 # Update last_alert after storing the signal
                 last_alert[(symbol, "TREND")] = now
@@ -2127,7 +2175,46 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 # Check position limit (only if all other filters passed)
                 if not skip_reason:
                     if not can_open_trade("SHORT"):
-                        skip_reason = f"Max {MAX_ACTIVE_TRADES} positions reached"
+                        # =========================
+                        # A+ PENDING OVERRIDE LOGIC
+                        # =========================
+                        override_executed = False
+                        if grade == "A+" and config.ALLOW_PENDING_OVERRIDE:
+                            with state_lock:
+                                pending_trades = [
+                                    (tid, t) for tid, t in active_trades.items()
+                                    if t.get("status") == "PENDING"
+                                ]
+                            target_tid = None
+                            target_trade = None
+                            # Priority 1: kick any Grade A pending
+                            for tid, t in pending_trades:
+                                if t.get("grade") == "A":
+                                    target_tid, target_trade = tid, t
+                                    break
+                            # Priority 2: kick a Grade A+ pending only if score gap is wide enough
+                            if not target_tid:
+                                for tid, t in pending_trades:
+                                    if t.get("grade") == "A+":
+                                        if short_score - t.get("score", 0) >= config.MIN_SCORE_GAP_TO_OVERRIDE:
+                                            target_tid, target_trade = tid, t
+                                            break
+                            if target_tid and target_trade:
+                                try:
+                                    bingx_client.cancel_order(target_trade["order_id"], target_trade["symbol"])
+                                    with state_lock:
+                                        active_trades.pop(target_tid, None)
+                                    send_telegram(
+                                        f"🔄 A+ OVERRIDE\n\n"
+                                        f"Kicked: {target_trade['symbol']} "
+                                        f"[{target_trade.get('grade','?')} score={target_trade.get('score',0)}]\n"
+                                        f"New: {symbol} [A+ score={short_score}]"
+                                    )
+                                    override_executed = True
+                                except Exception as ov_err:
+                                    send_telegram(f"⚠️ Override cancel failed: {ov_err}")
+                        if not override_executed:
+                            skip_reason = f"Max {MAX_ACTIVE_TRADES} positions reached"
 
                 # Check market regime (only if all other filters passed)
                 if not skip_reason:
@@ -2486,7 +2573,9 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 "tp1": tp,
                 "tp2": tp,
                 "signal_regime": signal_regime,
-                "created_at": time.time()
+                "created_at": time.time(),
+                "grade": grade,
+                "score": score
             }
             # Update last_alert after storing the signal
             last_alert[(symbol, "SIDEWAYS")] = now
@@ -2512,7 +2601,46 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # Check position limit (only if all other filters passed)
             if not skip_reason:
                 if not can_open_trade(side):
-                    skip_reason = f"Max {MAX_ACTIVE_TRADES} positions reached"
+                    # =========================
+                    # A+ PENDING OVERRIDE LOGIC
+                    # =========================
+                    override_executed = False
+                    if grade == "A+" and config.ALLOW_PENDING_OVERRIDE:
+                        with state_lock:
+                            pending_trades = [
+                                (tid, t) for tid, t in active_trades.items()
+                                if t.get("status") == "PENDING"
+                            ]
+                        target_tid = None
+                        target_trade = None
+                        # Priority 1: kick any Grade A pending
+                        for tid, t in pending_trades:
+                            if t.get("grade") == "A":
+                                target_tid, target_trade = tid, t
+                                break
+                        # Priority 2: kick a Grade A+ pending only if score gap is wide enough
+                        if not target_tid:
+                            for tid, t in pending_trades:
+                                if t.get("grade") == "A+":
+                                    if score - t.get("score", 0) >= config.MIN_SCORE_GAP_TO_OVERRIDE:
+                                        target_tid, target_trade = tid, t
+                                        break
+                        if target_tid and target_trade:
+                            try:
+                                bingx_client.cancel_order(target_trade["order_id"], target_trade["symbol"])
+                                with state_lock:
+                                    active_trades.pop(target_tid, None)
+                                send_telegram(
+                                    f"🔄 A+ OVERRIDE\n\n"
+                                    f"Kicked: {target_trade['symbol']} "
+                                    f"[{target_trade.get('grade','?')} score={target_trade.get('score',0)}]\n"
+                                    f"New: {symbol} [A+ score={score}]"
+                                )
+                                override_executed = True
+                            except Exception as ov_err:
+                                send_telegram(f"⚠️ Override cancel failed: {ov_err}")
+                    if not override_executed:
+                        skip_reason = f"Max {MAX_ACTIVE_TRADES} positions reached"
 
             # Check market regime (only if all other filters passed)
             if not skip_reason:
