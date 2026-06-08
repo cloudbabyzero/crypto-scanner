@@ -46,15 +46,16 @@ symbols = [
     'BTC/USDT:USDT',
     'ETH/USDT:USDT',
     'SOL/USDT:USDT',
-    'XRP/USDT:USDT',
     'DOGE/USDT:USDT',
     'INJ/USDT:USDT',
     'LINK/USDT:USDT',
     'SUI/USDT:USDT',
     'AAVE/USDT:USDT',
     'AVAX/USDT:USDT',
-    'ADA/USDT:USDT',
     'NEAR/USDT:USDT',
+    'HYPE/USDT:USDT',
+    'FET/USDT:USDT',
+    'TAO/USDT:USDT',
   ]
 
 # =========================
