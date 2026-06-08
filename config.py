@@ -21,7 +21,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 # =========================
 
 SCAN_INTERVAL = 300  # seconds
-COOLDOWN = 3600  # seconds
+COOLDOWN = 1800  # seconds
 
 # =========================
 # TRADING CONFIGURATION
@@ -35,7 +35,7 @@ MARGIN_PER_TRADE = 0.84
 # =========================
 
 ADX_FILTER = 20
-MIN_SCORE = 85
+MIN_SCORE = 75
 ATR_FILTER = 0.4
 
 # =========================
@@ -142,7 +142,7 @@ MODE = "AUTO"
 # Cache of signal IDs/symbols that have been previously processed.
 # These caches persist across scan cycles.
 
-SIGNAL_COOLDOWN = 3600  # seconds (same as COOLDOWN)
+SIGNAL_COOLDOWN = 1800  # seconds (same as COOLDOWN)
 
 # =========================
 # TOP CANDIDATES
