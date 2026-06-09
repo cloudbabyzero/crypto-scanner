@@ -1150,8 +1150,8 @@ def detect_market_regime():
         if btc_adx < MARKET_REGIME_ADX_SIDEWAYS:
             return "SIDEWAYS", btc_adx, btc_atr_percent
 
-        # Default to TRENDING if between thresholds
-        return "TRENDING", btc_adx, btc_atr_percent
+        # Default to SIDEWAYS if between thresholds (safer than TRENDING)
+        return "SIDEWAYS", btc_adx, btc_atr_percent
 
     except Exception:
         print("Market regime detection error", flush=True)
@@ -1874,14 +1874,14 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 
         long_pullback = (
             m15['ema7']
-            +
-            (m15['atr'] * 0.2)
+            -
+            (m15['atr'] * 0.3)
         )
 
         short_pullback = (
             m15['ema7']
-            -
-            (m15['atr'] * 0.2)
+            +
+            (m15['atr'] * 0.3)
         )
 
         # =========================
@@ -2602,18 +2602,18 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # SIDEWAYS CONDITION CHECK
         # =========================
 
-        # LONG: RSI < 35, Close <= BB Lower, ADX < 20
+        # LONG: RSI < 35, Close <= BB Lower, ADX < 28
         long_condition = (
             rsi < 35
             and close <= bb_lower
-            and adx < 20
+            and adx < 28
         )
 
-        # SHORT: RSI > 65, Close >= BB Upper, ADX < 20
+        # SHORT: RSI > 65, Close >= BB Upper, ADX < 28
         short_condition = (
             rsi > 65
             and close >= bb_upper
-            and adx < 20
+            and adx < 28
         )
 
         if not long_condition and not short_condition:
