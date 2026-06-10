@@ -1086,10 +1086,22 @@ def check_sideways_filters(atr_percent, adx, volume_high):
 # TRADING FUNCTIONS
 # =========================
 
-def get_latest_signal(symbol):
-
+def get_latest_signal(symbol, side=None):
+    """Get the latest signal for a symbol.
+    
+    Bug Fix: เพิ่ม side parameter เพื่อหา signal ที่ตรงกับ side ที่ขอ
+    ป้องกันกรณีที่มีทั้ง LONG และ SHORT signal อยู่พร้อมกัน
+    แล้วบอทเลือก signal ผิด side ทำให้ execute_trade fail
+    
+    Args:
+        symbol: Trading symbol
+        side: 'LONG' or 'SHORT' (optional) — ถ้าระบุจะหาเฉพาะ side นี้
+    """
     with state_lock:
         trade_items = list(active_trades.values())
+
+    # เรียงตาม created_at ล่าสุดก่อน
+    trade_items.sort(key=lambda t: t.get('created_at', 0), reverse=True)
 
     for trade in trade_items:
 
@@ -1097,6 +1109,9 @@ def get_latest_signal(symbol):
             trade['symbol'] == symbol
             and trade['status'] == "SIGNAL"
         ):
+            # ถ้าระบุ side ให้ตรวจว่าตรงกัน
+            if side and trade.get('side', '').upper() != side.upper():
+                continue
 
             return {
                 "signal": trade['side'],
@@ -1156,7 +1171,10 @@ def detect_market_regime():
     except Exception:
         print("Market regime detection error", flush=True)
         print(traceback.format_exc(), flush=True)
-        return "TRENDING", 0, 0
+        # Bug fix: เปลี่ยน fallback จาก TRENDING → SIDEWAYS
+        # TRENDING fallback อันตราย เพราะทำให้บอทส่ง signal สวนตลาดได้
+        # SIDEWAYS ปลอดภัยกว่า รอสัญญาณชัดก่อนเข้า
+        return "SIDEWAYS", 0, 0
 
 
 # =========================
@@ -2602,18 +2620,30 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # SIDEWAYS CONDITION CHECK
         # =========================
 
+        # =========================
+        # TREND FILTER (Bug Fix: ป้องกัน LONG ในตลาดที่ downtrend ชัดเจน)
+        # =========================
+        ema7 = m15['ema7']
+        ema25 = m15['ema25']
+
         # LONG: RSI < 35, Close <= BB Lower, ADX < 28
+        # + ต้องไม่ downtrend ชัด: ema7 ต้องไม่ต่ำกว่า ema25 มากเกิน 1%
+        long_trend_ok = ema7 >= ema25 * 0.99  # ยอมให้ต่ำกว่าได้นิดหน่อย แต่ไม่ downtrend ชัด
         long_condition = (
             rsi < 35
             and close <= bb_lower
             and adx < 28
+            and long_trend_ok
         )
 
         # SHORT: RSI > 65, Close >= BB Upper, ADX < 28
+        # + ต้องไม่ uptrend ชัด: ema7 ต้องไม่สูงกว่า ema25 มากเกิน 1%
+        short_trend_ok = ema7 <= ema25 * 1.01
         short_condition = (
             rsi > 65
             and close >= bb_upper
             and adx < 28
+            and short_trend_ok
         )
 
         if not long_condition and not short_condition:
@@ -2661,13 +2691,27 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             grade = "C"
 
         # =========================
+        # SCORE (Bug Fix: คำนวณจาก RSI extremity + RR แทน hardcode 0)
+        # =========================
+        # RSI component: ยิ่ง oversold/overbought มาก ยิ่งดี (max 60 pts)
+        if side == "LONG":
+            rsi_score = max(0, min(60, int((35 - rsi) * 3)))  # RSI 35→0pts, 15→60pts
+        else:
+            rsi_score = max(0, min(60, int((rsi - 65) * 3)))  # RSI 65→0pts, 85→60pts
+
+        # RR component: max 40 pts
+        rr_score = max(0, min(40, int((rr - 1.0) * 20)))
+
+        sideways_score = rsi_score + rr_score
+
+        # =========================
         # SIGNAL MESSAGE
         # =========================
 
         message = build_sideways_message(
             symbol=symbol,
             grade=grade,
-            score=0,
+            score=sideways_score,
             side=side,
             entry=entry,
             sl=sl,
@@ -2694,7 +2738,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 symbol,
                 side,
                 grade,
-                0,
+                sideways_score,
                 entry,
                 sl,
                 tp,
@@ -2862,7 +2906,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 )
 
         vol_status = "HIGH" if volume_high else "NORMAL"
-        set_scan_result(symbol, {"status": "Signal Generated", "score": 0, "adx": round(adx, 2), "atr": atr_percent, "volume": vol_status, "timestamp": now, "strategy": "SIDEWAYS"})
+        set_scan_result(symbol, {"status": "Signal Generated", "score": sideways_score, "adx": round(adx, 2), "atr": atr_percent, "volume": vol_status, "timestamp": now, "strategy": "SIDEWAYS"})
         # Track candidate signal for top candidates (Feature 6)
         candidate_signals[symbol] = {
             "side": side,
@@ -3084,7 +3128,14 @@ def main():
     # STARTUP
     # =========================
 
+    # snapshot trades before restore เพื่อ reconcile ที่ปิดระหว่าง downtime
+    with state_lock:
+        pre_restart_snapshot = dict(active_trades)
+
     trade_manager.restore_open_positions()
+
+    # Reconcile trades ที่ปิดระหว่าง bot downtime (Bug Fix: restart bug)
+    trade_manager.reconcile_closed_trades_on_restart(pre_restart_snapshot)
 
     # Perform startup cleanup: cancel stale pending limit orders and report open positions
     startup_cleanup()

@@ -345,6 +345,29 @@ def check_trades():
                                 f"✅ ORDER FILLED\n\n"
                                 f"{trade['symbol']}"
                             )
+
+                            # Bug Fix: log fill status = FILLED
+                            try:
+                                ticker = main_mod.exchange.fetch_ticker(trade['symbol'])
+                                current_price = ticker['last']
+                                created_at = trade.get('created_at', time.time())
+                                pending_minutes = round((time.time() - created_at) / 60, 1)
+                                google_sheet.log_fill_analysis(
+                                    symbol=trade['symbol'],
+                                    side=trade.get('side', ''),
+                                    current_price=current_price,
+                                    entry_price=trade.get('entry', 0),
+                                    grade=trade.get('grade', 'C'),
+                                    score=trade.get('score', 0),
+                                    atr=0,
+                                    adx=0,
+                                    btc_trend='',
+                                    fill_status='FILLED',
+                                    pending_minutes=pending_minutes,
+                                    expired_reason='Filled'
+                                )
+                            except Exception as fe:
+                                print(f"[FILL_LOG] FILLED log error: {fe}", flush=True)
                         except PositionNotExistError as e:
                             # Position no longer exists - TERMINAL condition
                             main_mod.send_telegram(
@@ -412,6 +435,27 @@ def check_trades():
                                 f"Reason:\n"
                                 f"Pending more than 30 minutes"
                             )
+
+                            # Bug Fix: log fill status = EXPIRED
+                            try:
+                                ticker = main_mod.exchange.fetch_ticker(trade['symbol'])
+                                current_price = ticker['last']
+                                google_sheet.log_fill_analysis(
+                                    symbol=trade['symbol'],
+                                    side=trade.get('side', ''),
+                                    current_price=current_price,
+                                    entry_price=trade.get('entry', 0),
+                                    grade=trade.get('grade', 'C'),
+                                    score=trade.get('score', 0),
+                                    atr=0,
+                                    adx=0,
+                                    btc_trend='',
+                                    fill_status='EXPIRED',
+                                    pending_minutes=30,
+                                    expired_reason='Timeout 30min'
+                                )
+                            except Exception as fe:
+                                print(f"[FILL_LOG] EXPIRED log error: {fe}", flush=True)
 
                             # Remove the trade only when it has been expired
                             with main_mod.state_lock:
@@ -769,6 +813,73 @@ def restore_open_positions():
     total_active = active_longs + active_shorts
     print(f"[POSITION_LIMIT] Startup: Restored positions counted: {restored_count}", flush=True)
     print(f"[POSITION_LIMIT] Startup: Active positions: {total_active}/{main_mod.MAX_ACTIVE_TRADES} (LONG: {active_longs}, SHORT: {active_shorts})", flush=True)
+
+
+# =========================
+# RECONCILE CLOSED TRADES ON RESTART (Bug Fix: restart bug)
+# =========================
+
+def reconcile_closed_trades_on_restart(pre_restart_trades):
+    """ตรวจสอบ trades ที่ปิดระหว่าง bot downtime แล้ว log ผลที่ถูกต้อง
+    
+    เรียกหลัง restore_open_positions() เพื่อหา trades ที่:
+    1. มีอยู่ใน active_trades ก่อน restart (จาก persistent storage)
+    2. แต่ตอนนี้ position ปิดไปแล้วใน BingX
+    3. ยังไม่มีผล WIN/LOSS ใน google sheet
+    """
+    if not pre_restart_trades:
+        return
+
+    try:
+        for trade_id, trade in pre_restart_trades.items():
+            symbol = trade.get('symbol')
+            if not symbol:
+                continue
+
+            # ถ้า trade นี้ถูก restore เป็น OPEN แล้ว = ยังเปิดอยู่ ข้ามไป
+            with main_mod.state_lock:
+                still_active = trade_id in main_mod.active_trades
+
+            if still_active:
+                continue
+
+            # trade หายไปจาก active_trades = ปิดระหว่าง downtime
+            # หาผล WIN/LOSS จาก exchange
+            try:
+                result = _determine_trade_result(trade, symbol)
+                entry_price = trade.get('entry', 0)
+                exit_price = trade.get('tp2', entry_price) if result == "WIN" else trade.get('sl', entry_price)
+
+                print(
+                    f"[RECONCILE] {symbol} closed during downtime → {result}",
+                    flush=True
+                )
+
+                main_mod.send_telegram(
+                    f"🔄 RECONCILE\\n\\n"
+                    f"{symbol}\\n"
+                    f"ปิดระหว่าง downtime\\n"
+                    f"Result: {result}"
+                )
+
+                google_sheet.log_trade(
+                    symbol=symbol,
+                    side=trade.get('side', ''),
+                    entry=entry_price,
+                    exit_price=exit_price,
+                    pnl=0,
+                    result=result,
+                    grade=trade.get('grade', 'C'),
+                    score=trade.get('score', 0),
+                    rr=1.0,
+                    strategy=trade.get('strategy', '')
+                )
+
+            except Exception as e:
+                print(f"[RECONCILE] Error for {symbol}: {e}", flush=True)
+
+    except Exception as e:
+        print(f"[RECONCILE] reconcile_closed_trades_on_restart error: {e}", flush=True)
 
 
 # =========================

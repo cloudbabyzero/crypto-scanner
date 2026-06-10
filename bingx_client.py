@@ -335,7 +335,7 @@ def execute_trade(symbol, side, skip_pullback_check=False):
         # GET SIGNAL
         # =========================
 
-        signal = main_mod.get_latest_signal(symbol)
+        signal = main_mod.get_latest_signal(symbol, side=side)
 
         # =========================
         # CHECK SIGNAL BEFORE ENTRY
@@ -440,6 +440,10 @@ def execute_trade(symbol, side, skip_pullback_check=False):
         # =========================
 
         # 1) Price has already passed the entry (no pullback opportunity)
+        # LONG: entry ต้องอยู่ต่ำกว่า current_price (รอราคาลงมา)
+        #       ถ้า current_price <= entry = ราคาลงเลย entry แล้ว = พลาด
+        # SHORT: entry ต้องอยู่สูงกว่า current_price (รอราคาขึ้นมา)
+        #        ถ้า current_price >= entry = ราคาขึ้นเลย entry แล้ว = พลาด
         if (
             (side == "long" and current_price <= entry)
             or
