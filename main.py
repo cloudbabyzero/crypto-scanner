@@ -2678,22 +2678,9 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         )
 
         # =========================
-        # GRADE
-        # =========================
-
-        if rr >= 2.0:
-            grade = "A+"
-        elif rr >= 1.5:
-            grade = "A"
-        elif rr >= 1.2:
-            grade = "B"
-        else:
-            grade = "C"
-
-        # =========================
-        # SCORE (Bug Fix: คำนวณจาก RSI extremity + RR แทน hardcode 0)
-        # =========================
+        # SCORE (คำนวณก่อน grade เพราะ grade ต้องใช้ score)
         # RSI component: ยิ่ง oversold/overbought มาก ยิ่งดี (max 60 pts)
+        # =========================
         if side == "LONG":
             rsi_score = max(0, min(60, int((35 - rsi) * 3)))  # RSI 35→0pts, 15→60pts
         else:
@@ -2703,6 +2690,19 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         rr_score = max(0, min(40, int((rr - 1.0) * 20)))
 
         sideways_score = rsi_score + rr_score
+
+        # =========================
+        # GRADE (ขึ้นกับ score รวม ไม่ใช่แค่ RR)
+        # A+ ต้องการ RSI extreme + RR ดีพร้อมกัน
+        # =========================
+        if sideways_score >= 80:
+            grade = "A+"
+        elif sideways_score >= 60:
+            grade = "A"
+        elif sideways_score >= 40:
+            grade = "B"
+        else:
+            grade = "C"
 
         # =========================
         # SIGNAL MESSAGE
