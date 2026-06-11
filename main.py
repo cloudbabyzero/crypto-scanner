@@ -2771,6 +2771,10 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
             skip_reason = None
 
+            # Check grade filter FIRST (Bug Fix: sideways ไม่เคย check grade filter)
+            if not passes_grade_filter(grade):
+                skip_reason = f"Grade: {grade} < {AUTO_TRADE_MIN_GRADE}"
+
             # Check execution filters (only if grade passed)
             if not skip_reason:
                 passes_exec, exec_reason = check_sideways_filters(
