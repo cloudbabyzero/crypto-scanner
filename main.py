@@ -1688,16 +1688,29 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             short_score += 15
 
         # =========================
-        # RSI
+        # RSI MOMENTUM CONFIRMATION
         # =========================
+        # SHORT: RSI ต้องสูง (momentum bearish) — RSI 55-70 = ยังไม่แรงพอ
+        # LONG:  RSI ต้องต่ำ (momentum bullish) — RSI 30-45 = ยังไม่แรงพอ
+        # เพิ่ม RSI filter เป็น hard gate: ถ้า RSI สวนทาง signal = หัก score
 
-        if 55 < m15['rsi'] < 70:
+        rsi_val = m15['rsi']
 
-            long_score += 15
-
-        elif 30 < m15['rsi'] < 45:
-
+        # SHORT confirmation: RSI > 55 = momentum ยังไม่ bearish ชัด
+        if rsi_val > 55:
             short_score += 15
+        elif rsi_val > 45:
+            pass  # neutral ไม่ให้ไม่หัก
+        else:
+            short_score -= 10  # RSI ต่ำ = สวนทาง SHORT
+
+        # LONG confirmation: RSI < 45 = momentum ยังไม่ bullish ชัด
+        if rsi_val < 45:
+            long_score += 15
+        elif rsi_val < 55:
+            pass  # neutral
+        else:
+            long_score -= 10  # RSI สูง = สวนทาง LONG
 
         # =========================
         # ADX FILTER
@@ -2679,12 +2692,14 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         # =========================
         # SCORE (คำนวณก่อน grade เพราะ grade ต้องใช้ score)
-        # RSI component: ยิ่ง oversold/overbought มาก ยิ่งดี (max 60 pts)
+        # RSI rescale สำหรับ sideways range จริงๆ
+        # SHORT: RSI 65=0pts, 70=30pts, 75+=60pts(max)
+        # LONG:  RSI 35=0pts, 30=30pts, 25-=60pts(max)
         # =========================
         if side == "LONG":
-            rsi_score = max(0, min(60, int((35 - rsi) * 3)))  # RSI 35→0pts, 15→60pts
+            rsi_score = max(0, min(60, int((35 - rsi) * 6)))
         else:
-            rsi_score = max(0, min(60, int((rsi - 65) * 3)))  # RSI 65→0pts, 85→60pts
+            rsi_score = max(0, min(60, int((rsi - 65) * 6)))
 
         # RR component: max 40 pts
         rr_score = max(0, min(40, int((rr - 1.0) * 20)))
@@ -2692,14 +2707,17 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         sideways_score = rsi_score + rr_score
 
         # =========================
-        # GRADE (ขึ้นกับ score รวม ไม่ใช่แค่ RR)
-        # A+ ต้องการ RSI extreme + RR ดีพร้อมกัน
+        # GRADE (ขึ้นกับ score รวม)
+        # A+ = RSI extreme มาก + RR ดี (score 70+)
+        # A  = RSI overbought/oversold ชัด + RR ดี (score 50+)
+        # B  = RSI พอใช้ หรือ RR ดีมาก (score 35+)
+        # C  = RSI แค่แตะ threshold
         # =========================
-        if sideways_score >= 80:
+        if sideways_score >= 70:
             grade = "A+"
-        elif sideways_score >= 60:
+        elif sideways_score >= 50:
             grade = "A"
-        elif sideways_score >= 40:
+        elif sideways_score >= 35:
             grade = "B"
         else:
             grade = "C"
