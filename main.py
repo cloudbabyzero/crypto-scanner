@@ -86,6 +86,7 @@ exchange = get_exchange()
 import bingx_client
 import telegram_commands
 import trade_manager
+import backtest
 
 last_alert = {}
 
@@ -2193,7 +2194,21 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 btc_trend=btc_trend,
                 fill_status="OPEN"
             )
-            
+
+            # BACKTEST: บันทึก signal สำหรับ evaluate ผล 4h ทีหลัง
+            if signal_id:
+                backtest.record_signal(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    side="LONG",
+                    entry=entry,
+                    sl=sl,
+                    tp=tp2,
+                    grade=grade,
+                    score=long_score,
+                    strategy="TREND"
+                )
+
             return {"symbol": symbol, "result": "signal"}
         
         # =========================
@@ -2474,7 +2489,21 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 btc_trend=btc_trend,
                 fill_status="OPEN"
             )
-            
+
+            # BACKTEST: บันทึก signal สำหรับ evaluate ผล 4h ทีหลัง
+            if signal_id:
+                backtest.record_signal(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    side="SHORT",
+                    entry=entry,
+                    sl=sl,
+                    tp=tp2,
+                    grade=grade,
+                    score=short_score,
+                    strategy="TREND"
+                )
+
             return {"symbol": symbol, "result": "signal"}
     
     except Exception:
@@ -2933,10 +2962,24 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         candidate_signals[symbol] = {
             "side": side,
             "grade": grade,
-            "score": 0,
+            "score": sideways_score,
             "symbol": symbol,
             "strategy": "SIDEWAYS",
         }
+
+        # BACKTEST: บันทึก signal สำหรับ evaluate ผล 4h ทีหลัง
+        backtest.record_signal(
+            signal_id=signal_id,
+            symbol=symbol,
+            side=side,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            grade=grade,
+            score=sideways_score,
+            strategy="SIDEWAYS"
+        )
+
         return {"symbol": symbol, "result": "signal"}
 
     except Exception:
@@ -3267,6 +3310,9 @@ def main():
                 analyze(symbol)
 
                 time.sleep(2)
+
+            # BACKTEST: ตรวจสอบ signals ที่ครบ 4h แล้ว
+            backtest.check_pending()
 
             # Reset candidate_signals at the end of each normal scan cycle
             # (not after regime-change rescans, which keep them for top candidates)

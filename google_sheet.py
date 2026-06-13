@@ -49,6 +49,7 @@ SHEET_CONFIG = "Config"
 SHEET_DEBUG = "Debug"
 SHEET_FILL_ANALYSIS = "FillAnalysis"
 SHEET_DASHBOARD = "Dashboard"
+SHEET_BACKTEST = "BacktestResults"
 
 # ==================================================
 # GLOBAL STATE
@@ -146,6 +147,11 @@ def _ensure_sheets_exist():
                 "PendingMinutes", "ExpiredReason"
             ]),
             (SHEET_DASHBOARD, ["Metric", "Value"]),
+            (SHEET_BACKTEST, [
+                "Timestamp", "SignalID", "Symbol", "Side", "Strategy",
+                "Grade", "Score", "Entry", "SL", "TP",
+                "Result", "PnL%", "RR", "Note"
+            ]),
         ]
         
         for sheet_name, headers in sheet_configs:
