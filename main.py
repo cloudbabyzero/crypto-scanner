@@ -1851,13 +1851,19 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # =========================
         # BTC FILTER
         # =========================
+        # ถ้า BTC ไม่ bullish (bearish หรือ neutral) = หัก long_score
+        # ถ้า BTC ไม่ bearish (bullish หรือ neutral) = หัก short_score
+        if (
+            symbol != 'BTC/USDT:USDT'
+            and btc_trend != "bullish"
+        ):
+            long_score -= 20
 
         if (
             symbol != 'BTC/USDT:USDT'
-            and btc_trend == "bearish"
+            and btc_trend != "bearish"
         ):
-
-            long_score -= 20
+            short_score -= 20
 
         # =========================
         # LIMIT SCORE
@@ -2668,21 +2674,21 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         ema7 = m15['ema7']
         ema25 = m15['ema25']
 
-        # LONG: RSI < 35, Close <= BB Lower, ADX < 28
+        # LONG: RSI < 30, Close <= BB Lower, ADX < 28
         # + ต้องไม่ downtrend ชัด: ema7 ต้องไม่ต่ำกว่า ema25 มากเกิน 1%
         long_trend_ok = ema7 >= ema25 * 0.99  # ยอมให้ต่ำกว่าได้นิดหน่อย แต่ไม่ downtrend ชัด
         long_condition = (
-            rsi < 35
+            rsi < 30
             and close <= bb_lower
             and adx < 28
             and long_trend_ok
         )
 
-        # SHORT: RSI > 65, Close >= BB Upper, ADX < 28
+        # SHORT: RSI > 70, Close >= BB Upper, ADX < 28
         # + ต้องไม่ uptrend ชัด: ema7 ต้องไม่สูงกว่า ema25 มากเกิน 1%
         short_trend_ok = ema7 <= ema25 * 1.01
         short_condition = (
-            rsi > 65
+            rsi > 70
             and close >= bb_upper
             and adx < 28
             and short_trend_ok
@@ -2726,9 +2732,9 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # LONG:  RSI 35=0pts, 30=30pts, 25-=60pts(max)
         # =========================
         if side == "LONG":
-            rsi_score = max(0, min(60, int((35 - rsi) * 6)))
+            rsi_score = max(0, min(60, int((30 - rsi) * 6)))  # RSI 30→0pts, 20→60pts
         else:
-            rsi_score = max(0, min(60, int((rsi - 65) * 6)))
+            rsi_score = max(0, min(60, int((rsi - 70) * 6)))  # RSI 70→0pts, 80→60pts
 
         # RR component: max 40 pts
         rr_score = max(0, min(40, int((rr - 1.0) * 20)))
