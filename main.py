@@ -1916,19 +1916,25 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # เพื่อเพิ่ม fill rate โดยยังรอ pullback นิดนึง
         # =========================
 
-        # Pullback entry (เดิม) — รอ pullback มาที่ ema7
-        long_pullback_deep  = round(m15['ema7'] - (m15['atr'] * 0.3), 4)
-        short_pullback_deep = round(m15['ema7'] + (m15['atr'] * 0.3), 4)
+        # =========================
+        # ADAPTIVE ENTRY
+        # LONG:  entry ต้องต่ำกว่า current price = รอราคาลงมา (pullback)
+        # SHORT: entry ต้องสูงกว่า current price = รอราคาขึ้นมา (pullback)
+        # =========================
 
-        # Shallow entry — ใกล้ราคาปัจจุบันมากขึ้น (atr*0.1)
+        # Deep entry — รอ pullback มาที่ ema7
+        long_pullback_deep   = round(m15['ema7'] - (m15['atr'] * 0.3), 4)
+        short_pullback_deep  = round(m15['ema7'] + (m15['atr'] * 0.3), 4)
+
+        # Shallow entry — ใกล้ราคาปัจจุบันมากขึ้น
         long_pullback_shallow  = round(m15['close'] - (m15['atr'] * 0.1), 4)
         short_pullback_shallow = round(m15['close'] + (m15['atr'] * 0.1), 4)
 
-        # เลือก entry ที่ใกล้ current price มากกว่า = fill ได้เร็วกว่า
-        # LONG: entry ที่สูงกว่า (ใกล้ current price มากกว่า)
-        long_pullback  = max(long_pullback_deep, long_pullback_shallow)
-        # SHORT: entry ที่ต่ำกว่า (ใกล้ current price มากกว่า)
-        short_pullback = min(short_pullback_deep, short_pullback_shallow)
+        # LONG: เลือก entry ที่ต่ำกว่า close เสมอ (รอราคาลงมา)
+        long_pullback = min(long_pullback_deep, long_pullback_shallow)
+
+        # SHORT: เลือก entry ที่สูงกว่า close เสมอ (รอราคาขึ้นมา)
+        short_pullback = max(short_pullback_deep, short_pullback_shallow)
 
         # =========================
         # LONG SIGNAL
