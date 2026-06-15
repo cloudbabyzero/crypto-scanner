@@ -1635,28 +1635,28 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         signal_id = str(uuid.uuid4())[:8]
 
         # =========================
-        # DAILY TREND
+        # DAILY TREND (ลด weight เพราะ lagging มาก)
         # =========================
 
         if d1['ema25'] > d1['ema99']:
 
-            long_score += 10
+            long_score += 5   # เดิม 10
 
         else:
 
-            short_score += 10
+            short_score += 5  # เดิม 10
 
         # =========================
-        # 4H TREND
+        # 4H TREND (ลด weight เพราะ lagging)
         # =========================
 
         if h4['ema25'] > h4['ema99']:
 
-            long_score += 25
+            long_score += 15  # เดิม 25
 
         else:
 
-            short_score += 25
+            short_score += 15  # เดิม 25
 
         # =========================
         # 1H EMA
@@ -1689,29 +1689,29 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             short_score += 15
 
         # =========================
-        # RSI MOMENTUM CONFIRMATION
+        # RSI MOMENTUM CONFIRMATION (gradient scoring)
         # =========================
-        # SHORT: RSI ต้องสูง (momentum bearish) — RSI 55-70 = ยังไม่แรงพอ
-        # LONG:  RSI ต้องต่ำ (momentum bullish) — RSI 30-45 = ยังไม่แรงพอ
-        # เพิ่ม RSI filter เป็น hard gate: ถ้า RSI สวนทาง signal = หัก score
-
         rsi_val = m15['rsi']
 
-        # SHORT confirmation: RSI > 55 = momentum ยังไม่ bearish ชัด
-        if rsi_val > 55:
-            short_score += 15
-        elif rsi_val > 45:
-            pass  # neutral ไม่ให้ไม่หัก
-        else:
-            short_score -= 10  # RSI ต่ำ = สวนทาง SHORT
+        # SHORT: RSI gradient — ยิ่ง overbought มาก ยิ่งได้คะแนนมาก
+        if rsi_val >= 70:
+            short_score += 15    # overbought จริงๆ
+        elif rsi_val >= 60:
+            short_score += 10    # ค่อนข้าง overbought
+        elif rsi_val >= 55:
+            short_score += 5     # แค่แตะ threshold
+        elif rsi_val < 45:
+            short_score -= 10    # สวนทาง SHORT
 
-        # LONG confirmation: RSI < 45 = momentum ยังไม่ bullish ชัด
-        if rsi_val < 45:
-            long_score += 15
-        elif rsi_val < 55:
-            pass  # neutral
-        else:
-            long_score -= 10  # RSI สูง = สวนทาง LONG
+        # LONG: RSI gradient — ยิ่ง oversold มาก ยิ่งได้คะแนนมาก
+        if rsi_val <= 30:
+            long_score += 15     # oversold จริงๆ
+        elif rsi_val <= 40:
+            long_score += 10     # ค่อนข้าง oversold
+        elif rsi_val <= 45:
+            long_score += 5      # แค่แตะ threshold
+        elif rsi_val > 55:
+            long_score -= 10     # สวนทาง LONG
 
         # =========================
         # ADX FILTER
@@ -1748,7 +1748,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 short_score += 10
         
         # =========================
-        # VOLUME
+        # VOLUME (ให้ตาม price direction ไม่ใช่ให้ทั้งคู่)
         # =========================
 
         volume_high = (
@@ -1758,10 +1758,10 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         )
 
         if volume_high:
-
-            long_score += 15
-
-            short_score += 15
+            if h1['ema7'] > h1['ema25']:
+                long_score += 15   # volume + price ขึ้น = ยืนยัน LONG
+            else:
+                short_score += 15  # volume + price ลง = ยืนยัน SHORT
 
         # =========================
         # BOLLINGER FILTER
@@ -1910,17 +1910,25 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # PULLBACK ENTRY
         # =========================
 
-        long_pullback = (
-            m15['ema7']
-            -
-            (m15['atr'] * 0.3)
-        )
+        # =========================
+        # ADAPTIVE ENTRY
+        # คำนวณ entry 2 แบบแล้วเลือกแบบที่ใกล้ current price มากกว่า
+        # เพื่อเพิ่ม fill rate โดยยังรอ pullback นิดนึง
+        # =========================
 
-        short_pullback = (
-            m15['ema7']
-            +
-            (m15['atr'] * 0.3)
-        )
+        # Pullback entry (เดิม) — รอ pullback มาที่ ema7
+        long_pullback_deep  = round(m15['ema7'] - (m15['atr'] * 0.3), 4)
+        short_pullback_deep = round(m15['ema7'] + (m15['atr'] * 0.3), 4)
+
+        # Shallow entry — ใกล้ราคาปัจจุบันมากขึ้น (atr*0.1)
+        long_pullback_shallow  = round(m15['close'] - (m15['atr'] * 0.1), 4)
+        short_pullback_shallow = round(m15['close'] + (m15['atr'] * 0.1), 4)
+
+        # เลือก entry ที่ใกล้ current price มากกว่า = fill ได้เร็วกว่า
+        # LONG: entry ที่สูงกว่า (ใกล้ current price มากกว่า)
+        long_pullback  = max(long_pullback_deep, long_pullback_shallow)
+        # SHORT: entry ที่ต่ำกว่า (ใกล้ current price มากกว่า)
+        short_pullback = min(short_pullback_deep, short_pullback_shallow)
 
         # =========================
         # LONG SIGNAL
