@@ -1689,29 +1689,71 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             short_score += 15
 
         # =========================
-        # RSI MOMENTUM CONFIRMATION (gradient scoring)
+        # ANTI-FOMO SCORING ENGINE
+        # หลักการ: ยิ่งวิ่งไปไกล ยิ่งต้องเกรดตก
+        # Golden Zone = momentum เพิ่งเริ่ม (ต้นน้ำ)
+        # Danger Zone = momentum extended ไปแล้ว (ปลายน้ำ/ดอย)
         # =========================
         rsi_val = m15['rsi']
 
-        # SHORT: RSI gradient — ยิ่ง overbought มาก ยิ่งได้คะแนนมาก
-        if rsi_val >= 70:
-            short_score += 15    # overbought จริงๆ
-        elif rsi_val >= 60:
-            short_score += 10    # ค่อนข้าง overbought
-        elif rsi_val >= 55:
-            short_score += 5     # แค่แตะ threshold
-        elif rsi_val < 45:
-            short_score -= 10    # สวนทาง SHORT
+        # คำนวณระยะห่างของราคากับเส้นฐาน EMA25
+        long_stretch_pct  = ((m15['close'] - m15['ema25']) / m15['ema25']) * 100
+        short_stretch_pct = ((m15['ema25'] - m15['close']) / m15['ema25']) * 100
 
-        # LONG: RSI gradient — ยิ่ง oversold มาก ยิ่งได้คะแนนมาก
-        if rsi_val <= 30:
-            long_score += 15     # oversold จริงๆ
-        elif rsi_val <= 40:
-            long_score += 10     # ค่อนข้าง oversold
-        elif rsi_val <= 45:
-            long_score += 5      # แค่แตะ threshold
-        elif rsi_val > 55:
-            long_score -= 10     # สวนทาง LONG
+        if CURRENT_REGIME == "TRENDING":
+
+            # --- TREND LONG ---
+            if m15['close'] > m15['ema25']:
+                if rsi_val > 75:
+                    long_score -= 30   # ดอยจัด ไล่ราคาสูง
+                elif rsi_val > 70:
+                    long_score -= 15   # เริ่มตึง
+                elif 53 <= rsi_val <= 67:
+                    long_score += 20   # GOLDEN ZONE ต้นน้ำ momentum ชัด
+                elif 45 <= rsi_val <= 52:
+                    long_score += 10   # PRE-GOLDEN momentum เริ่มสะสม
+
+                # Price stretch: ใช้ 3.5% แทน 2.5% เพราะ crypto volatile สูง
+                if long_stretch_pct > 3.5:
+                    long_score -= 25   # บินหนีเส้นฐานมากเกินไป
+                elif long_stretch_pct <= 1.2:
+                    long_score += 10   # เกาะเส้นฐานสวย ปลอดภัย
+
+            # --- TREND SHORT ---
+            if m15['close'] < m15['ema25']:
+                if rsi_val < 25:
+                    short_score -= 30  # Oversold จัด เสี่ยง short squeeze
+                elif rsi_val < 32:
+                    short_score -= 15  # เริ่มตึงฝั่งลง
+                elif 35 <= rsi_val <= 48:
+                    short_score += 20  # GOLDEN ZONE ต้นน้ำขาลง
+                elif 49 <= rsi_val <= 55:
+                    short_score += 10  # PRE-GOLDEN momentum ขาลงเริ่มสะสม
+
+                if short_stretch_pct > 3.5:
+                    short_score -= 25  # ดิ่งลึกเกินไป เสี่ยงดีดกลับ
+                elif short_stretch_pct <= 1.2:
+                    short_score += 10  # เพิ่งหลุดเส้นฐาน ปลอดภัย
+
+        elif CURRENT_REGIME == "SIDEWAYS":
+
+            # --- SIDEWAYS LONG (ซื้อขอบล่างกรอบ) ---
+            if 40 <= rsi_val <= 49:
+                long_score += 25       # GOLDEN ZONE ช้อนซื้อแนวรับล่าง
+            elif rsi_val >= 58:
+                long_score -= 30       # อันตราย ราคาจ่อขอบบนแล้ว
+
+            if long_stretch_pct > 1.5:
+                long_score -= 20       # ดีดห่างเส้นฐานในไซด์เวย์ = ใกล้จบรอบ
+
+            # --- SIDEWAYS SHORT (ขายขอบบนกรอบ) ---
+            if 51 <= rsi_val <= 60:
+                short_score += 25      # GOLDEN ZONE เปิด SHORT ที่แนวต้านบน
+            elif rsi_val <= 42:
+                short_score -= 30      # อันตราย ราคาจ่อแนวรับล่างแล้ว
+
+            if short_stretch_pct > 1.5:
+                short_score -= 20      # ลงลึกเกินในไซด์เวย์ เสี่ยงดีดกลับ
 
         # =========================
         # ADX FILTER
