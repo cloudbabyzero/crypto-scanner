@@ -1893,19 +1893,28 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # =========================
         # BTC FILTER
         # =========================
-        # ถ้า BTC ไม่ bullish (bearish หรือ neutral) = หัก long_score
-        # ถ้า BTC ไม่ bearish (bullish หรือ neutral) = หัก short_score
-        if (
-            symbol != 'BTC/USDT:USDT'
-            and btc_trend != "bullish"
-        ):
-            long_score -= 20
+        # bullish  → หัก short_score 20 (ไม่ควร short ตอน BTC ขึ้น)
+        # bearish  → หัก long_score  20 (ไม่ควร long ตอน BTC ลง)
+        # neutral  → หัก ทั้ง long และ short 20 (market reversal zone — strict penalty)
+        if symbol != 'BTC/USDT:USDT':
 
-        if (
-            symbol != 'BTC/USDT:USDT'
-            and btc_trend != "bearish"
-        ):
-            short_score -= 20
+            if btc_trend == "bullish":
+                # BTC bullish: penalize SHORT only
+                short_score -= 20
+
+            elif btc_trend == "bearish":
+                # BTC bearish: penalize LONG only
+                long_score -= 20
+
+            elif btc_trend == "neutral":
+                # BTC neutral: market reversal / conflicting signals
+                # Apply strict -20 penalty to BOTH directions
+                print(
+                    "BTC Trend is neutral. Applying -20 score penalty.",
+                    flush=True
+                )
+                long_score  -= 20
+                short_score -= 20
 
         # =========================
         # LIMIT SCORE

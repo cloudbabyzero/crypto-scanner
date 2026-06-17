@@ -414,12 +414,13 @@ def check_trades():
                         continue
 
                     else:
-                        # Pending order still open – check expiration (>30 minutes)
+                        # Pending order still open – check expiration (>60 minutes)
+                        # Updated from 30 min → 60 min to align with 1H timeframe structure
                         now = time.time()
                         created_at = trade.get('created_at', now)
                         age = now - created_at
 
-                        if age > 1800:  # 30 minutes = 1800 seconds
+                        if age > 3600:  # 60 minutes = 3600 seconds
                             # Cancel the stale pending order
                             try:
                                 main_mod.exchange.cancel_order(
@@ -433,7 +434,7 @@ def check_trades():
                                 f"⚠️ PENDING ORDER EXPIRED\n\n"
                                 f"{trade['symbol']}\n\n"
                                 f"Reason:\n"
-                                f"Pending more than 30 minutes"
+                                f"Pending more than 60 minutes"
                             )
 
                             # Bug Fix: log fill status = EXPIRED
@@ -451,8 +452,8 @@ def check_trades():
                                     adx=0,
                                     btc_trend='',
                                     fill_status='EXPIRED',
-                                    pending_minutes=30,
-                                    expired_reason='Timeout 30min'
+                                    pending_minutes=60,
+                                    expired_reason='Timeout 60min'
                                 )
                             except Exception as fe:
                                 print(f"[FILL_LOG] EXPIRED log error: {fe}", flush=True)

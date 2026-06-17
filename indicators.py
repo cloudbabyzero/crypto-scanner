@@ -209,47 +209,48 @@ def detect_momentum(symbol='BTC/USDT:USDT'):
 # =========================
 
 def get_btc_trend():
-    """Determine BTC trend using multi-timeframe confirmation.
-    
-    Bug Fix: เดิมใช้แค่ EMA25 > EMA99 บน 4h ซึ่ง lagging มาก
-    ทำให้ยังบอกว่า bearish ทั้งที่ราคาขึ้นไปแล้วหลายวัน
-    
-    แก้เป็น multi-confirmation:
-    1. Price vs EMA25 (1h) — fast, responsive
-    2. EMA7 vs EMA25 (1h) — medium
-    3. EMA25 vs EMA99 (4h) — slow, structural
-    
-    ต้องผ่านอย่างน้อย 2/3 ถึงจะนับเป็น bullish/bearish
-    ถ้าผ่านแค่ 1/3 = neutral
+    """Determine BTC trend using Hybrid Macro-Micro scoring system.
+
+    Scoring System (Max 4 points):
+    - Macro  (4H): EMA25 > EMA99  → +2 pts  (structural, high weight)
+    - Micro  (1H): EMA7  > EMA25  → +1 pt   (short-term momentum)
+    - Micro  (1H): Close > EMA25  → +1 pt   (price vs structure)
+
+    Result:
+    - Score >= 3 → "bullish"   (strong confirmation)
+    - Score <= 1 → "bearish"   (strong reversal)
+    - Score == 2 → "neutral"   (conflict / market reversal zone)
+
+    Uses last CLOSED candle (iloc[-2]) to avoid repainting signals.
     """
 
-    # 4h for structural trend
+    # 4h for macro/structural trend
     df_4h = get_dataframe('BTC/USDT:USDT', '4h')
-    btc_4h = df_4h.iloc[-2]
+    btc_4h = df_4h.iloc[-2]  # last closed candle
 
-    # 1h for faster response
+    # 1h for micro/fast response
     df_1h = get_dataframe('BTC/USDT:USDT', '1h')
-    btc_1h = df_1h.iloc[-2]
+    btc_1h = df_1h.iloc[-2]  # last closed candle
 
-    # === Signals ===
-    # 1. Structural: EMA25 vs EMA99 on 4h (lagging แต่ reliable)
-    structural_bull = btc_4h['ema25'] > btc_4h['ema99']
+    score = 0
 
-    # 2. Medium: EMA7 vs EMA25 on 1h (faster)
-    medium_bull = btc_1h['ema7'] > btc_1h['ema25']
+    # === Macro Signal (4H) — weight 2 pts ===
+    if btc_4h['ema25'] > btc_4h['ema99']:
+        score += 2  # Bullish structural trend
 
-    # 3. Fast: close vs EMA25 on 1h (most responsive)
-    fast_bull = btc_1h['close'] > btc_1h['ema25']
+    # === Micro Signal (1H) — weight 1 pt ===
+    if btc_1h['ema7'] > btc_1h['ema25']:
+        score += 1  # Short-term momentum bullish
 
-    # 4. Momentum: RSI on 1h (> 50 = bullish momentum)
-    rsi_bull = btc_1h['rsi'] > 50
+    # === Micro Price Signal (1H) — weight 1 pt ===
+    if btc_1h['close'] > btc_1h['ema25']:
+        score += 1  # Price above mid-term structure
 
-    bull_count = sum([structural_bull, medium_bull, fast_bull, rsi_bull])
-
-    if bull_count >= 3:
+    # === Evaluate Score (Max 4) ===
+    if score >= 3:
         return "bullish"
-    elif bull_count <= 1:
+    elif score <= 1:
         return "bearish"
     else:
-        # bull_count == 2 = neutral (mixed signals)
+        # score == 2: signals conflict → potential market reversal
         return "neutral"
