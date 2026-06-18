@@ -100,6 +100,13 @@ TREND_MIN_ATR = 0.45
 TREND_HIGH_VOLUME_ONLY = False
 
 # =========================
+# ADX CEILING & STRETCH LIMIT FILTERS
+# =========================
+
+ADX_CEILING_LIMIT = 55         # Maximum allowed ADX. If higher, trend is overextended.
+STRETCH_MAX_DISTANCE_PCT = 1.5 # Maximum allowed distance (%) between current price and entry EMA.
+
+# =========================
 # SIDEWAYS STRATEGY FILTERS
 # =========================
 

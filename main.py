@@ -64,6 +64,8 @@ from config import (
     MOMENTUM_MAX_TRADES,
     ALLOW_PENDING_OVERRIDE,
     MIN_SCORE_GAP_TO_OVERRIDE,
+    ADX_CEILING_LIMIT,
+    STRETCH_MAX_DISTANCE_PCT,
 )
 import config
 
@@ -1624,6 +1626,40 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
+        # ADX CEILING & STRETCH LIMIT FILTERS
+        # Prevent chasing overextended trends and buying at absolute top
+        # =========================
+
+        adx_val = round(m15['adx'], 2)
+        current_price = m15['close']
+        entry_ema = m15['ema25']  # Entry EMA reference
+
+        # ADX Ceiling Check - apply penalty if ADX is overextended
+        adx_ceiling_penalty = False
+        if adx_val > ADX_CEILING_LIMIT:
+            print(
+                f"[SKIP] ADX is overextended ({adx_val:.2f} > {ADX_CEILING_LIMIT}). Applying -25 penalty.",
+                flush=True
+            )
+            adx_ceiling_penalty = True
+
+        # Stretch Limit Check - calculate distance from entry EMA
+        # LONG: price too far ABOVE EMA (overextended upside)
+        # SHORT: price too far BELOW EMA (overextended downside)
+        long_stretch_penalty = False
+        short_stretch_penalty = False
+        distance_pct = abs(current_price - entry_ema) / entry_ema * 100
+        if distance_pct > STRETCH_MAX_DISTANCE_PCT:
+            print(
+                f"[SKIP] Price is too stretched from EMA ({distance_pct:.2f}% > {STRETCH_MAX_DISTANCE_PCT}%). Applying -25 penalty.",
+                flush=True
+            )
+            if current_price > entry_ema:
+                long_stretch_penalty = True  # Price above EMA - penalize LONG
+            else:
+                short_stretch_penalty = True  # Price below EMA - penalize SHORT
+
+        # =========================
         # SCORE
         # =========================
 
@@ -1633,6 +1669,15 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 
         btc_trend = get_btc_trend()
         signal_id = str(uuid.uuid4())[:8]
+
+        # Apply ADX ceiling and stretch penalties
+        if adx_ceiling_penalty:
+            long_score -= 25
+            short_score -= 25
+        if long_stretch_penalty:
+            long_score -= 25
+        if short_stretch_penalty:
+            short_score -= 25
 
         # =========================
         # DAILY TREND (ลด weight เพราะ lagging มาก)
