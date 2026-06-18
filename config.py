@@ -107,6 +107,15 @@ ADX_CEILING_LIMIT = 55         # Maximum allowed ADX. If higher, trend is overex
 STRETCH_MAX_DISTANCE_PCT = 1.5 # Maximum allowed distance (%) between current price and entry EMA.
 
 # =========================
+# RSI SAFE ZONE FILTERS
+# =========================
+TREND_SHORT_MIN_RSI = 45      # ห้าม SHORT ใน Trend Mode หาก RSI 15m ต่ำกว่านี้
+TREND_LONG_MAX_RSI = 55       # ห้าม LONG ใน Trend Mode หาก RSI 15m สูงกว่านี้
+
+MOMENTUM_SHORT_MIN_RSI = 45   # ห้าม SHORT ใน Momentum Mode หาก RSI 15m ต่ำกว่านี้
+MOMENTUM_LONG_MAX_RSI = 55    # ห้าม LONG ใน Momentum Mode หาก RSI 15m สูงกว่านี้
+
+# =========================
 # SIDEWAYS STRATEGY FILTERS
 # =========================
 

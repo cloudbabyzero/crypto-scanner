@@ -1331,10 +1331,19 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # DETERMINE SIDE
         # =========================
 
+        rsi_val = m15['rsi']
         if long_score >= short_score and long_score >= MOMENTUM_MIN_SCORE and btc_trend == "bullish":
+            if rsi_val > config.MOMENTUM_LONG_MAX_RSI:
+                set_scan_result(symbol, {"status": "RSI Too High", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"RSI Too High ({round(rsi_val, 2)} > {config.MOMENTUM_LONG_MAX_RSI})", score=score, adx=adx_val, atr=atr_val)
+                return {"symbol": symbol, "result": "skipped"}
             side  = "LONG"
             entry = round(m15['close'] - (m15['atr'] * MOMENTUM_ENTRY_ATR_MULT), 4)
         elif short_score > long_score and short_score >= MOMENTUM_MIN_SCORE:
+            if rsi_val < config.MOMENTUM_SHORT_MIN_RSI:
+                set_scan_result(symbol, {"status": "RSI Too Low", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"RSI Too Low ({round(rsi_val, 2)} < {config.MOMENTUM_SHORT_MIN_RSI})", score=score, adx=adx_val, atr=atr_val)
+                return {"symbol": symbol, "result": "skipped"}
             side  = "SHORT"
             entry = round(m15['close'] + (m15['atr'] * MOMENTUM_ENTRY_ATR_MULT), 4)
         else:
@@ -1749,14 +1758,16 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 
             # --- TREND LONG ---
             if m15['close'] > m15['ema25']:
-                if rsi_val > 75:
-                    long_score -= 30   # ดอยจัด ไล่ราคาสูง
-                elif rsi_val > 70:
-                    long_score -= 15   # เริ่มตึง
-                elif 53 <= rsi_val <= 67:
-                    long_score += 20   # GOLDEN ZONE ต้นน้ำ momentum ชัด
-                elif 45 <= rsi_val <= 52:
-                    long_score += 10   # PRE-GOLDEN momentum เริ่มสะสม
+                if rsi_val > 70:
+                    long_score -= 40   # ดอยจัด ไล่ราคาสูงมาก
+                elif 65 <= rsi_val <= 70:
+                    long_score -= 20   # เริ่มตึง
+                elif 53 <= rsi_val < 65:
+                    long_score += 5    # Neutral/high
+                elif 42 <= rsi_val <= 52:
+                    long_score += 20   # GOLDEN ZONE - pullback สวยงามในแนวโน้มขาขึ้น
+                elif 35 <= rsi_val <= 41:
+                    long_score += 10   # PRE-GOLDEN - pullback ลึก
 
                 # Price stretch: ใช้ 3.5% แทน 2.5% เพราะ crypto volatile สูง
                 if long_stretch_pct > 3.5:
@@ -1766,14 +1777,16 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 
             # --- TREND SHORT ---
             if m15['close'] < m15['ema25']:
-                if rsi_val < 25:
-                    short_score -= 30  # Oversold จัด เสี่ยง short squeeze
-                elif rsi_val < 32:
-                    short_score -= 15  # เริ่มตึงฝั่งลง
-                elif 35 <= rsi_val <= 48:
-                    short_score += 20  # GOLDEN ZONE ต้นน้ำขาลง
-                elif 49 <= rsi_val <= 55:
-                    short_score += 10  # PRE-GOLDEN momentum ขาลงเริ่มสะสม
+                if rsi_val < 40:
+                    short_score -= 40  # ต่ำเกินไป เสี่ยงดีดกลับ (Squeeze)
+                elif 40 <= rsi_val < 45:
+                    short_score -= 20  # ค่อนข้างต่ำ เสี่ยงสะสม
+                elif 45 <= rsi_val < 48:
+                    short_score += 5    # Neutral/low
+                elif 48 <= rsi_val <= 58:
+                    short_score += 20  # GOLDEN ZONE - pullback ดีดกลับมาที่แนวต้านกลางของขาลง
+                elif 59 <= rsi_val <= 65:
+                    short_score += 10  # PRE-GOLDEN - pullback สูงขึ้น ปลอดภัยขึ้น
 
                 if short_stretch_pct > 3.5:
                     short_score -= 25  # ดิ่งลึกเกินไป เสี่ยงดีดกลับ
@@ -2039,6 +2052,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         if (
             long_score >= MIN_SCORE
             and btc_trend == "bullish"
+            and m15['rsi'] <= config.TREND_LONG_MAX_RSI
         ):
 
             entry = round(
@@ -2334,6 +2348,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         elif (
             short_score >= MIN_SCORE
             and btc_trend == "bearish"
+            and m15['rsi'] >= config.TREND_SHORT_MIN_RSI
         ):
 
             entry = round(
