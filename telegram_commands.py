@@ -295,6 +295,14 @@ def set_atr(message):
 
 @bot.message_handler(commands=['config'])
 def config(message):
+    from config import SCALPING_SYMBOLS, SCALPING_SCAN_INTERVAL, SCALPING_COOLDOWN
+    from config import SCALPING_SL_ATR_MULT, SCALPING_TP_RR, SCALPING_MIN_SCORE
+    from config import SCALPING_MIN_GRADE, SCALPING_MAX_TRADES, SCALPING_AUTO_TRADE
+    from config import SCALPING_LEVERAGE, SCALPING_MARGIN_PER_TRADE
+    from config import PAUSE_MAX_ADX, PAUSE_MAX_ATR
+
+    scalp_symbols_str = ", ".join([s.split('/')[0] for s in SCALPING_SYMBOLS])
+
     text = f"""
 📈 TREND STRATEGY
 
@@ -354,6 +362,49 @@ MOMENTUM_MIN_SCORE:
 
 MOMENTUM_MAX_TRADES:
 {main_mod.MOMENTUM_MAX_TRADES}
+
+⚡ SCALPING STRATEGY
+
+SCALPING_SYMBOLS:
+{scalp_symbols_str}
+
+SCALPING_SCAN_INTERVAL:
+{SCALPING_SCAN_INTERVAL}s
+
+SCALPING_COOLDOWN:
+{SCALPING_COOLDOWN}s
+
+SCALPING_SL_ATR_MULT:
+{SCALPING_SL_ATR_MULT}
+
+SCALPING_TP_RR:
+{SCALPING_TP_RR}
+
+SCALPING_LEVERAGE:
+x{SCALPING_LEVERAGE}
+
+SCALPING_MARGIN:
+{SCALPING_MARGIN_PER_TRADE} USDT
+
+SCALPING_AUTO_TRADE:
+{"ON" if SCALPING_AUTO_TRADE else "OFF"}
+
+SCALPING_MIN_GRADE:
+{SCALPING_MIN_GRADE}
+
+SCALPING_MIN_SCORE:
+{SCALPING_MIN_SCORE}
+
+SCALPING_MAX_TRADES:
+{SCALPING_MAX_TRADES}
+
+⏸ PAUSE PROTECTION
+
+PAUSE_MAX_ADX:
+{PAUSE_MAX_ADX}
+
+PAUSE_MAX_ATR:
+{PAUSE_MAX_ATR}%
 
 🎮 CONTROL MODE
 
@@ -669,10 +720,16 @@ Control Mode:
     btn_momentum = types.InlineKeyboardButton(
         "🚀 Switch to Momentum Mode", callback_data="mode_momentum"
     )
+    btn_scalping = types.InlineKeyboardButton(
+        "⚡ Switch to Scalping Mode", callback_data="mode_scalping"
+    )
+    btn_pause = types.InlineKeyboardButton(
+        "⏸ Pause Bot", callback_data="mode_pause"
+    )
     btn_auto = types.InlineKeyboardButton(
         "🤖 Auto Mode", callback_data="mode_auto"
     )
-    markup.add(btn_trend, btn_sideways, btn_momentum, btn_auto)
+    markup.add(btn_trend, btn_sideways, btn_momentum, btn_scalping, btn_pause, btn_auto)
 
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
@@ -749,6 +806,45 @@ def market_mode_callback(call):
             "🔒 CONTROL MODE CHANGED\n\n"
             "Mode: FORCE_MOMENTUM\n"
             "Auto regime switching disabled.\n"
+            "Use /setauto to re-enable."
+        )
+
+    elif action == "scalping":
+        main_mod.CONTROL_MODE = "FORCE_SCALPING"
+        main_mod.MARKET_MODE = "SCALPING"
+        main_mod.save_regime_storage()
+
+        bot.answer_callback_query(call.id, "⚡ FORCE_SCALPING Override Active")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"{call.message.text}\n\n🔒 FORCE_SCALPING Override Active\nAuto switching disabled\nScan interval: 60s"
+        )
+
+        main_mod.send_telegram(
+            "🔒 CONTROL MODE CHANGED\n\n"
+            "Mode: FORCE_SCALPING\n"
+            "Auto regime switching disabled.\n"
+            "Scan interval: 60s\n"
+            "Use /setauto to re-enable."
+        )
+
+    elif action == "pause":
+        main_mod.CONTROL_MODE = "FORCE_PAUSE"
+        main_mod.MARKET_MODE = "PAUSE"
+        main_mod.save_regime_storage()
+
+        bot.answer_callback_query(call.id, "⏸ FORCE_PAUSE Override Active")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"{call.message.text}\n\n🔒 FORCE_PAUSE Override Active\nBot is now paused and will not scan."
+        )
+
+        main_mod.send_telegram(
+            "🔒 CONTROL MODE CHANGED\n\n"
+            "Mode: FORCE_PAUSE\n"
+            "Trading is paused.\n"
             "Use /setauto to re-enable."
         )
 

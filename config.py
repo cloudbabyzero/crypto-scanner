@@ -198,3 +198,58 @@ MOMENTUM_AUTO_TRADE = True
 MOMENTUM_MIN_GRADE = "A+"           # Only A+ (Trend uses "A")
 MOMENTUM_MIN_SCORE = 90             # Only score >= 90 (Trend uses 85)
 MOMENTUM_MAX_TRADES = 1             # Max 1 position at a time (Trend uses 2)
+
+# =========================
+# SCALPING STRATEGY CONFIG
+# =========================
+
+# Symbols — เริ่มจาก BTC เท่านั้น (high liquidity, tight spread)
+# เพิ่มเหรียญอื่นได้ภายหลังเช่น ETH, SOL
+SCALPING_SYMBOLS = [
+    'BTC/USDT:USDT',
+]
+
+# Scan & Timing
+SCALPING_SCAN_INTERVAL = 60        # Scan ทุก 1 นาที (ปกติ 300s)
+SCALPING_COOLDOWN = 300            # Cooldown 5 นาที (ปกติ 1800s)
+SCALPING_PENDING_EXPIRY = 300      # Pending expire 5 นาที (ปกติ 3600s)
+
+# Entry
+SCALPING_ENTRY_TYPE = "MARKET"     # Market order (fill ทันที ไม่รอ pullback)
+
+# Risk Management
+SCALPING_SL_ATR_MULT = 0.8        # SL = ATR * 0.8 (tight — scalping)
+SCALPING_TP_RR = 1.5              # TP = risk * 1.5 (modest RR, high WR target)
+SCALPING_LEVERAGE = 25             # Leverage x25
+SCALPING_MARGIN_PER_TRADE = 0.84   # ขั้นต่ำ BingX
+
+# Filters
+SCALPING_MIN_ADX = 20             # ต้องมี direction พอสมควร
+SCALPING_MIN_ATR_PCT = 0.15       # ATR% ขั้นต่ำ (ต้องมี volatility)
+SCALPING_MAX_ADX = 50             # ADX สูงเกินหมายถึง overextended
+SCALPING_MIN_SCORE = 75           # Score ขั้นต่ำ
+SCALPING_MIN_GRADE = "A"          # Grade ขั้นต่ำสำหรับ auto trade
+
+# RSI Safe Zone
+SCALPING_LONG_MAX_RSI = 65        # ห้าม LONG ถ้า RSI > 65
+SCALPING_SHORT_MIN_RSI = 35       # ห้าม SHORT ถ้า RSI < 35
+
+# Position Limits
+SCALPING_MAX_TRADES = 1           # Max 1 scalping position
+SCALPING_AUTO_TRADE = True        # Auto trade ON by default
+
+# Auto-Detection Thresholds (BTC 5m)
+# Scalping regime = moderate activity zone (between trend and sideways)
+SCALPING_DETECT_ADX_MIN = 15      # ADX ขั้นต่ำ (ต้องไม่ dead)
+SCALPING_DETECT_ADX_MAX = 28      # ADX สูงสุด (ถ้าสูงกว่านี้ = trending)
+SCALPING_DETECT_ATR_MIN = 0.15    # ATR% ขั้นต่ำ (ต้องมี movement)
+SCALPING_DETECT_ATR_MAX = 0.50    # ATR% สูงสุด (ถ้าสูงกว่านี้ = volatile)
+
+# =========================
+# PAUSE REGIME CONFIG
+# =========================
+
+# Dead Market Protection: When ADX and ATR drop below these levels,
+# the market is considered too quiet to trade safely.
+PAUSE_MAX_ADX = 15
+PAUSE_MAX_ATR = 0.15

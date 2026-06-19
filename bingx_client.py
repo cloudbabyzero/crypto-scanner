@@ -630,3 +630,292 @@ Margin:
         main_mod.send_telegram(
             f"❌ ORDER ERROR\n\n{str(e)}"
         )
+
+
+# =========================
+# SCALPING TRADE EXECUTION
+# =========================
+
+def execute_scalp_trade(symbol, side):
+    """Execute scalping trade with market order + immediate protection.
+
+    Key differences from execute_trade():
+    - Market order (instant fill, no pullback wait)
+    - Uses SCALPING-specific leverage and margin
+    - Places SL/TP immediately after market fill
+    - Shorter pending expiry (5 min vs 60 min)
+
+    Args:
+        symbol: Trading symbol (e.g., 'BTC/USDT:USDT')
+        side: 'long' or 'short'
+    """
+    try:
+        # =========================
+        # FORMAT SYMBOL
+        # =========================
+
+        symbol = symbol.upper()
+        if ":USDT" not in symbol:
+            symbol = f"{symbol}/USDT:USDT"
+
+        # =========================
+        # CHECK SYMBOL (must be in scalping list)
+        # =========================
+
+        from config import SCALPING_SYMBOLS
+        if symbol not in SCALPING_SYMBOLS:
+            main_mod.send_telegram(f"❌ {symbol} not in SCALPING_SYMBOLS")
+            return
+
+        # =========================
+        # PREVENT DUPLICATE
+        # =========================
+
+        with main_mod.state_lock:
+            trade_items = list(main_mod.active_trades.values())
+
+        for trade in trade_items:
+            if (
+                trade['symbol'] == symbol
+                and trade.get('status') in ["PENDING", "OPEN"]
+                and trade.get('strategy') == "SCALPING"
+            ):
+                main_mod.send_telegram(f"⚠️ {symbol} scalp already active")
+                return
+
+        # =========================
+        # CHECK SCALPING POSITION LIMIT
+        # =========================
+
+        from config import SCALPING_MAX_TRADES
+        with main_mod.state_lock:
+            scalp_count = sum(
+                1 for t in main_mod.active_trades.values()
+                if t.get("status") in ["PENDING", "OPEN"]
+                and t.get("strategy") == "SCALPING"
+            )
+        if scalp_count >= SCALPING_MAX_TRADES:
+            main_mod.send_telegram(
+                f"❌ SCALPING POSITION LIMIT\n\n"
+                f"{symbol}\n"
+                f"Max {SCALPING_MAX_TRADES} scalping trades"
+            )
+            return
+
+        # =========================
+        # GET SIGNAL
+        # =========================
+
+        signal = main_mod.get_latest_signal(symbol, side=side)
+
+        if not signal:
+            main_mod.send_telegram(f"❌ No scalping signal found for {symbol}")
+            return
+
+        signal_type = signal.get("signal", "").upper()
+        if signal_type != side.upper():
+            main_mod.send_telegram(
+                f"❌ No {side.upper()} scalp signal for {symbol}\n"
+                f"Current Signal: {signal_type}"
+            )
+            return
+
+        # =========================
+        # MARKET REGIME SAFETY
+        # =========================
+
+        signal_regime = signal.get("signal_regime", "UNKNOWN")
+        if main_mod.CURRENT_REGIME != signal_regime:
+            main_mod.send_telegram(
+                f"⚠️ Scalp Signal Expired\n\n"
+                f"Reason: Market Regime Changed\n"
+                f"Signal: {signal_regime}\n"
+                f"Current: {main_mod.CURRENT_REGIME}"
+            )
+            return
+
+        entry = signal["entry"]
+        atr   = signal["atr"]
+
+        # =========================
+        # MARGIN MODE + LEVERAGE (scalping-specific)
+        # =========================
+
+        from config import SCALPING_LEVERAGE, SCALPING_MARGIN_PER_TRADE
+
+        try:
+            main_mod.exchange.set_margin_mode("isolated", symbol)
+        except Exception:
+            pass
+
+        leverage_side = "LONG" if side == "long" else "SHORT"
+        main_mod.exchange.set_leverage(
+            SCALPING_LEVERAGE,
+            symbol,
+            {"side": leverage_side}
+        )
+
+        # =========================
+        # AMOUNT
+        # =========================
+
+        raw_amount = (SCALPING_MARGIN_PER_TRADE * SCALPING_LEVERAGE) / entry
+        amount = main_mod.exchange.amount_to_precision(symbol, raw_amount)
+        amount = float(amount)
+
+        # =========================
+        # SL / TP
+        # =========================
+
+        from config import SCALPING_SL_ATR_MULT, SCALPING_TP_RR
+
+        if side == "long":
+            sl   = round(entry - atr * SCALPING_SL_ATR_MULT, 4)
+            risk = entry - sl
+            tp2  = round(entry + risk * SCALPING_TP_RR, 4)
+        else:
+            sl   = round(entry + atr * SCALPING_SL_ATR_MULT, 4)
+            risk = sl - entry
+            tp2  = round(entry - risk * SCALPING_TP_RR, 4)
+
+        # =========================
+        # MARKET ORDER (instant fill)
+        # =========================
+
+        position_side = "LONG" if side == "long" else "SHORT"
+        order_side    = "buy"  if side == "long" else "sell"
+
+        order = main_mod.exchange.create_order(
+            symbol=symbol,
+            type='market',
+            side=order_side,
+            amount=amount,
+            params={
+                'positionSide': position_side,
+                'tradeSide': 'OPEN',
+                'marginMode': 'isolated'
+            }
+        )
+
+        # =========================
+        # Get actual fill price from market order
+        # =========================
+
+        filled_entry = float(
+            order.get('average')
+            or order.get('price')
+            or entry
+        )
+
+        # Recalculate SL/TP based on actual fill price
+        if side == "long":
+            sl   = round(filled_entry - atr * SCALPING_SL_ATR_MULT, 4)
+            risk = filled_entry - sl
+            tp2  = round(filled_entry + risk * SCALPING_TP_RR, 4)
+        else:
+            sl   = round(filled_entry + atr * SCALPING_SL_ATR_MULT, 4)
+            risk = sl - filled_entry
+            tp2  = round(filled_entry - risk * SCALPING_TP_RR, 4)
+
+        # =========================
+        # PLACE PROTECTION ORDERS IMMEDIATELY
+        # (market order = position already exists)
+        # =========================
+
+        side_cfg = main_mod.get_side_config(
+            "LONG" if side == "long" else "SHORT"
+        )
+
+        sl_order_id = None
+        tp2_order_id = None
+
+        try:
+            sl_order_id, tp2_order_id = place_protection_orders(
+                symbol=symbol,
+                side_cfg=side_cfg,
+                sl_price=sl,
+                tp2_price=tp2,
+                amount=amount
+            )
+        except PositionNotExistError as e:
+            logger.error(f"Scalp position not exist for {symbol}: {e}")
+            main_mod.send_telegram(
+                f"🚨 SCALP POSITION NOT EXIST\n\n"
+                f"{symbol}\n"
+                f"Market order may have failed"
+            )
+            return
+        except Exception as protect_error:
+            main_mod.send_telegram(
+                f"⚠️ SCALP PROTECTION FAILED\n\n"
+                f"{symbol}\n"
+                f"{str(protect_error)}\n"
+                f"Bot will retry via check_trades."
+            )
+
+        # =========================
+        # SAVE TRADE
+        # =========================
+
+        trade_id = str(uuid.uuid4())[:8]
+
+        _signal_for_grade = main_mod.get_latest_signal(symbol)
+        _signal_grade = "C"
+        _signal_score = 0
+        if _signal_for_grade:
+            _signal_grade = _signal_for_grade.get("grade", "C")
+            _signal_score = _signal_for_grade.get("score", 0)
+
+        with main_mod.state_lock:
+            main_mod.active_trades[trade_id] = {
+                "symbol": symbol,
+                "side": side.upper(),
+                "entry": filled_entry,
+                "sl": sl,
+                "tp2": tp2,
+                "status": "OPEN",  # Market order = already filled = OPEN
+                "order_id": order['id'],
+                "amount": amount,
+                "sl_order_id": sl_order_id,
+                "tp2_order_id": tp2_order_id,
+                "created_at": pytime.time(),
+                "grade": _signal_grade,
+                "score": _signal_score,
+                "strategy": "SCALPING",
+            }
+
+        # =========================
+        # TELEGRAM
+        # =========================
+
+        message = f"""
+⚡ SCALP ORDER FILLED
+
+{symbol}
+
+Side:
+{side.upper()}
+
+Entry (Fill):
+{filled_entry}
+
+SL:
+{sl}
+
+TP:
+{tp2}
+
+Leverage:
+x{SCALPING_LEVERAGE}
+
+Margin:
+{SCALPING_MARGIN_PER_TRADE} USDT
+"""
+
+        main_mod.send_telegram(message)
+
+    except Exception as e:
+        main_mod.send_telegram(
+            f"❌ SCALP ORDER ERROR\n\n{str(e)}"
+        )
+

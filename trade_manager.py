@@ -414,13 +414,22 @@ def check_trades():
                         continue
 
                     else:
-                        # Pending order still open – check expiration (>60 minutes)
-                        # Updated from 30 min → 60 min to align with 1H timeframe structure
+                        # Pending order still open – check expiration
+                        # Scalping trades expire after 5 min; others after 60 min
                         now = time.time()
                         created_at = trade.get('created_at', now)
                         age = now - created_at
 
-                        if age > 3600:  # 60 minutes = 3600 seconds
+                        is_scalping = trade.get('strategy') == 'SCALPING'
+                        if is_scalping:
+                            from config import SCALPING_PENDING_EXPIRY
+                            expiry_seconds = SCALPING_PENDING_EXPIRY  # 300s (5 min)
+                            expiry_label = f"{SCALPING_PENDING_EXPIRY // 60} minutes (SCALPING)"
+                        else:
+                            expiry_seconds = 3600  # 60 minutes
+                            expiry_label = "60 minutes"
+
+                        if age > expiry_seconds:
                             # Cancel the stale pending order
                             try:
                                 main_mod.exchange.cancel_order(
@@ -434,7 +443,7 @@ def check_trades():
                                 f"⚠️ PENDING ORDER EXPIRED\n\n"
                                 f"{trade['symbol']}\n\n"
                                 f"Reason:\n"
-                                f"Pending more than 60 minutes"
+                                f"Pending more than {expiry_label}"
                             )
 
                             # Bug Fix: log fill status = EXPIRED
@@ -452,8 +461,8 @@ def check_trades():
                                     adx=0,
                                     btc_trend='',
                                     fill_status='EXPIRED',
-                                    pending_minutes=60,
-                                    expired_reason='Timeout 60min'
+                                    pending_minutes=round(age / 60, 1),
+                                    expired_reason=f'Timeout {expiry_label}'
                                 )
                             except Exception as fe:
                                 print(f"[FILL_LOG] EXPIRED log error: {fe}", flush=True)

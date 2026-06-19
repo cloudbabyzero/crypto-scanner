@@ -66,6 +66,29 @@ from config import (
     MIN_SCORE_GAP_TO_OVERRIDE,
     ADX_CEILING_LIMIT,
     STRETCH_MAX_DISTANCE_PCT,
+    SCALPING_SYMBOLS,
+    SCALPING_SCAN_INTERVAL,
+    SCALPING_COOLDOWN,
+    SCALPING_PENDING_EXPIRY,
+    SCALPING_SL_ATR_MULT,
+    SCALPING_TP_RR,
+    SCALPING_LEVERAGE,
+    SCALPING_MARGIN_PER_TRADE,
+    SCALPING_MIN_ADX,
+    SCALPING_MIN_ATR_PCT,
+    SCALPING_MAX_ADX,
+    SCALPING_MIN_SCORE,
+    SCALPING_MIN_GRADE,
+    SCALPING_LONG_MAX_RSI,
+    SCALPING_SHORT_MIN_RSI,
+    SCALPING_MAX_TRADES,
+    SCALPING_AUTO_TRADE,
+    SCALPING_DETECT_ADX_MIN,
+    SCALPING_DETECT_ADX_MAX,
+    SCALPING_DETECT_ATR_MIN,
+    SCALPING_DETECT_ATR_MAX,
+    PAUSE_MAX_ADX,
+    PAUSE_MAX_ATR,
 )
 import config
 
@@ -508,6 +531,25 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
         )
         CURRENT_REGIME = new_regime
         return
+
+    if CONTROL_MODE == "FORCE_SCALPING":
+        print(f"Regime changed to {new_regime}, but FORCE_SCALPING override active", flush=True)
+        send_telegram(
+            f"🚨 MARKET REGIME CHANGED\n\n"
+            f"{old_regime} → {new_regime}\n\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%\n\n"
+            f"🔒 FORCE_SCALPING override active\n"
+            f"No mode switch applied."
+        )
+        CURRENT_REGIME = new_regime
+        return
+        
+    if CONTROL_MODE == "FORCE_PAUSE":
+        print(f"Regime changed to {new_regime}, but FORCE_PAUSE override active", flush=True)
+        # Suppress notifications if it's dead, unless user specifically asks
+        CURRENT_REGIME = new_regime
+        return
     
     # Determine the new market mode based on regime
     new_mode = determine_mode_from_regime(new_regime)
@@ -574,11 +616,16 @@ def determine_mode_from_regime(regime):
     SIDEWAYS  -> SIDEWAYS strategy
     VOLATILE  -> TRENDING strategy (trend following for volatility breakout)
     MOMENTUM  -> MOMENTUM strategy
+    SCALPING  -> SCALPING strategy
     """
     if regime == "SIDEWAYS":
         return "SIDEWAYS"
     if regime == "MOMENTUM":
         return "MOMENTUM"
+    if regime == "SCALPING":
+        return "SCALPING"
+    if regime == "PAUSE":
+        return "PAUSE"
     # TRENDING, VOLATILE, and default all use TREND mode
     return "TRENDING"
 
@@ -1142,9 +1189,14 @@ def get_latest_signal(symbol, side=None):
 # =========================
 
 def detect_market_regime():
-    """Detect current BTC market regime: MOMENTUM, TRENDING, SIDEWAYS, or VOLATILE.
+    """Detect current BTC market regime: MOMENTUM, TRENDING, SCALPING, PAUSE, SIDEWAYS, or VOLATILE.
 
-    Priority: MOMENTUM > VOLATILE > TRENDING > SIDEWAYS
+    Priority: MOMENTUM > VOLATILE > TRENDING > SCALPING > PAUSE > SIDEWAYS
+
+    SCALPING regime = moderate activity zone:
+    - ADX between SCALPING_DETECT_ADX_MIN and SCALPING_DETECT_ADX_MAX
+    - ATR% between SCALPING_DETECT_ATR_MIN and SCALPING_DETECT_ATR_MAX
+    - Not too trending, not too dead — price oscillating enough for scalps
 
     Returns:
         (regime, btc_adx, btc_atr_percent) tuple
@@ -1167,6 +1219,17 @@ def detect_market_regime():
 
         if btc_adx >= MARKET_REGIME_ADX_TRENDING:
             return "TRENDING", btc_adx, btc_atr_percent
+
+        # SCALPING: moderate activity zone (between TRENDING and SIDEWAYS)
+        # ADX shows some directional movement but not a strong trend
+        # ATR% shows enough volatility for small scalp profits
+        if (SCALPING_DETECT_ADX_MIN <= btc_adx < SCALPING_DETECT_ADX_MAX
+            and SCALPING_DETECT_ATR_MIN <= btc_atr_percent <= SCALPING_DETECT_ATR_MAX):
+            return "SCALPING", btc_adx, btc_atr_percent
+
+        # PAUSE: Dead market zone (Too tight for scalping or anything)
+        if btc_adx < PAUSE_MAX_ADX and btc_atr_percent < PAUSE_MAX_ATR:
+            return "PAUSE", btc_adx, btc_atr_percent
 
         if btc_adx < MARKET_REGIME_ADX_SIDEWAYS:
             return "SIDEWAYS", btc_adx, btc_atr_percent
@@ -1207,12 +1270,414 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
         effective_mode = "TRENDING"
     elif CONTROL_MODE == "FORCE_SIDEWAY":
         effective_mode = "SIDEWAYS"
+    elif CONTROL_MODE == "FORCE_SCALPING":
+        effective_mode = "SCALPING"
+    elif CONTROL_MODE == "FORCE_PAUSE":
+        effective_mode = "PAUSE"
+
+    if effective_mode == "PAUSE":
+        set_scan_result(symbol, {"status": "Market Paused", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        return {"symbol": symbol, "result": "paused"}
 
     if effective_mode == "SIDEWAYS":
         return analyze_sideways(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
     if effective_mode == "MOMENTUM":
         return analyze_momentum(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
+    if effective_mode == "SCALPING":
+        return analyze_scalping(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
     return analyze_trend(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
+
+
+# =========================
+# ANALYZE SCALPING
+# =========================
+
+def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
+    """Scalping regime analysis — fast entry via market order on 5m timeframe.
+
+    Key differences from other strategies:
+    - Uses 5m as primary TF (15m for confirmation only)
+    - Market order entry (no pullback wait)
+    - Tight SL: ATR(5m) * 0.8
+    - TP: risk * 1.5 (modest RR, high win-rate target)
+    - Cooldown: 300s (vs 1800s for Trend)
+    - Max 1 position
+    """
+
+    global pause_trading
+
+    if pause_trading:
+        return {"symbol": symbol, "result": "paused"}
+
+    # Only scalp symbols from the dedicated list
+    if symbol not in SCALPING_SYMBOLS:
+        return {"symbol": symbol, "result": "skipped"}
+
+    try:
+        now = time.time()
+
+        # =========================
+        # COOLDOWN
+        # =========================
+
+        if not bypass_cooldown and not ignore_cooldown_once:
+            with state_lock:
+                last_time = last_alert.get((symbol, "SCALPING"))
+            if last_time and now - last_time < SCALPING_COOLDOWN:
+                set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                google_sheet.log_debug(symbol, "Cooldown (SCALPING)", score=0, adx=0, atr=0)
+                return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # GET DATA (5m primary, 15m confirmation)
+        # =========================
+
+        df_5m = get_dataframe(symbol, '5m')
+        df_15m = get_dataframe(symbol, '15m')
+
+        m5  = df_5m.iloc[-2]   # last closed 5m candle
+        m15 = df_15m.iloc[-2]  # last closed 15m candle
+
+        now_ts = time.time()
+        signal_id = str(uuid.uuid4())[:8]
+
+        atr_percent = (m5['atr'] / m5['close']) * 100
+        volume_high = m5['volume'] > m5['vol_avg'] * 1.5  # stricter volume filter for scalping
+        vol_status  = "HIGH" if volume_high else "NORMAL"
+        adx_val     = round(m5['adx'], 2)
+        atr_val     = round(atr_percent, 2)
+
+        # =========================
+        # FOMO FILTER
+        # =========================
+
+        candle_size = abs(m5['close'] - m5['open'])
+        if candle_size > m5['atr'] * 2.0:
+            set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, "Candle Too Big (SCALPING)", score=0, adx=adx_val, atr=atr_val)
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # SCORE (max 100 pts)
+        # =========================
+
+        long_score  = 0
+        short_score = 0
+        btc_trend   = get_btc_trend()
+
+        # --- 5m EMA alignment (30pts) - Primary signal ---
+        if m5['ema7'] > m5['ema25']:
+            long_score += 30
+        else:
+            short_score += 30
+
+        # --- 15m EMA confirmation (20pts) - Higher TF filter ---
+        if m15['ema7'] > m15['ema25']:
+            long_score += 20
+        else:
+            short_score += 20
+
+        # --- MACD 5m momentum (15pts) ---
+        if m5['macd'] > m5['macd_signal'] and m5['macd'] > 0:
+            long_score += 15
+        elif m5['macd'] < m5['macd_signal'] and m5['macd'] < 0:
+            short_score += 15
+
+        # --- RSI Golden Zone (15pts) ---
+        rsi_val = m5['rsi']
+        if 40 <= rsi_val <= 55:
+            long_score += 15   # LONG sweet spot
+        elif 45 <= rsi_val <= 60:
+            short_score += 15  # SHORT sweet spot
+
+        # --- Volume spike (10pts) ---
+        if volume_high:
+            long_score  += 10
+            short_score += 10
+
+        # --- ADX strength (10pts) ---
+        if SCALPING_MIN_ADX <= m5['adx'] <= SCALPING_MAX_ADX:
+            if m5['ema7'] > m5['ema25']:
+                long_score += 10
+            else:
+                short_score += 10
+
+        # --- BTC filter (penalty) ---
+        if symbol != 'BTC/USDT:USDT':
+            if btc_trend == "bearish":
+                long_score -= 15
+            elif btc_trend == "bullish":
+                short_score -= 15
+
+        # --- ADX overextended penalty ---
+        if m5['adx'] > SCALPING_MAX_ADX:
+            long_score -= 20
+            short_score -= 20
+
+        long_score  = min(long_score, 100)
+        short_score = min(short_score, 100)
+
+        # =========================
+        # GRADE
+        # =========================
+
+        score = max(long_score, short_score)
+        grade = "C"
+        if score >= 95:
+            grade = "A+"
+        elif score >= 85:
+            grade = "A"
+        elif score >= 75:
+            grade = "B"
+
+        # =========================
+        # SCORE FILTER
+        # =========================
+
+        if score < SCALPING_MIN_SCORE:
+            set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, f"Score Below MIN_SCORE (SCALPING {score})", score=score, adx=adx_val, atr=atr_val)
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # DETERMINE SIDE
+        # =========================
+
+        if long_score >= short_score and long_score >= SCALPING_MIN_SCORE:
+            if rsi_val > SCALPING_LONG_MAX_RSI:
+                set_scan_result(symbol, {"status": "RSI Too High", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"RSI Too High SCALPING ({round(rsi_val, 2)} > {SCALPING_LONG_MAX_RSI})", score=score, adx=adx_val, atr=atr_val)
+                return {"symbol": symbol, "result": "skipped"}
+            # BTC trend filter for LONG
+            if btc_trend == "bearish":
+                set_scan_result(symbol, {"status": "BTC Bearish", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "BTC Bearish - no LONG scalp", score=score, adx=adx_val, atr=atr_val)
+                return {"symbol": symbol, "result": "skipped"}
+            side  = "LONG"
+            entry = round(m5['close'], 4)  # Market order = current close
+        elif short_score > long_score and short_score >= SCALPING_MIN_SCORE:
+            if rsi_val < SCALPING_SHORT_MIN_RSI:
+                set_scan_result(symbol, {"status": "RSI Too Low", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"RSI Too Low SCALPING ({round(rsi_val, 2)} < {SCALPING_SHORT_MIN_RSI})", score=score, adx=adx_val, atr=atr_val)
+                return {"symbol": symbol, "result": "skipped"}
+            # BTC trend filter for SHORT
+            if btc_trend == "bullish":
+                set_scan_result(symbol, {"status": "BTC Bullish", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "BTC Bullish - no SHORT scalp", score=score, adx=adx_val, atr=atr_val)
+                return {"symbol": symbol, "result": "skipped"}
+            side  = "SHORT"
+            entry = round(m5['close'], 4)  # Market order = current close
+        else:
+            set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # SL / TP (tight for scalping)
+        # =========================
+
+        atr = m5['atr']
+        if side == "LONG":
+            sl   = round(entry - atr * SCALPING_SL_ATR_MULT, 4)
+            risk = entry - sl
+            tp2  = round(entry + risk * SCALPING_TP_RR, 4)
+            tp1  = round(entry + risk, 4)
+            rr   = round((tp2 - entry) / (entry - sl), 2)
+        else:
+            sl   = round(entry + atr * SCALPING_SL_ATR_MULT, 4)
+            risk = sl - entry
+            tp2  = round(entry - risk * SCALPING_TP_RR, 4)
+            tp1  = round(entry - risk, 4)
+            rr   = round((entry - tp2) / (sl - entry), 2)
+
+        # =========================
+        # BUILD MESSAGE
+        # =========================
+
+        icon = "\U0001f680" if side == "LONG" else "\U0001f53b"
+
+        message = f"""
+{icon} {side} SIGNAL
+
+{symbol}
+
+Strategy:
+SCALPING
+
+Grade:
+{grade}
+
+Score:
+{score}/100
+
+Market Entry:
+{entry}
+
+SL:
+{sl}
+
+TP:
+{tp2}
+
+RR:
+1:{rr}
+
+RSI:
+{round(rsi_val, 2)}
+
+ADX:
+{adx_val}
+
+ATR %:
+{atr_val}
+
+Volume:
+{vol_status}
+
+BTC Trend:
+{btc_trend}
+
+Plan:
+- Market order entry
+- Tight SL ({SCALPING_SL_ATR_MULT}x ATR)
+- TP at {SCALPING_TP_RR}:1 RR
+"""
+
+        print(message, flush=True)
+
+        if not silent_mode:
+            send_telegram(message)
+
+        if not signal_only:
+            save_signal(signal_id, symbol, side, grade, score, entry, sl, tp1, tp2)
+
+            signal_regime = CURRENT_REGIME
+
+            with state_lock:
+                active_trades[signal_id] = {
+                    "symbol": symbol,
+                    "status": "SIGNAL",
+                    "side": side,
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "signal_regime": signal_regime,
+                    "created_at": time.time(),
+                    "grade": grade,
+                    "score": score,
+                    "strategy": "SCALPING",
+                }
+                last_alert[(symbol, "SCALPING")] = now_ts
+
+        set_scan_result(symbol, {
+            "status": "Signal Generated",
+            "score": score,
+            "adx": adx_val,
+            "atr": atr_val,
+            "volume": vol_status,
+            "timestamp": now_ts,
+            "strategy": "SCALPING",
+        })
+
+        # Track candidate signal for top candidates
+        candidate_signals[symbol] = {
+            "side": side,
+            "grade": grade,
+            "score": score,
+            "symbol": symbol,
+            "strategy": "SCALPING",
+        }
+
+        # =========================
+        # AUTO TRADE (Market Order)
+        # =========================
+
+        if SCALPING_AUTO_TRADE and not signal_only:
+
+            skip_reason = None
+
+            # Grade filter
+            if config.GRADE_PRIORITY.get(grade, 0) < config.GRADE_PRIORITY.get(SCALPING_MIN_GRADE, 0):
+                skip_reason = f"Scalping Grade: {grade} < {SCALPING_MIN_GRADE}"
+
+            # Max 1 active scalping position
+            if not skip_reason:
+                with state_lock:
+                    scalp_count = sum(
+                        1 for t in active_trades.values()
+                        if t.get("status") in ["PENDING", "OPEN"]
+                        and t.get("strategy") == "SCALPING"
+                    )
+                if scalp_count >= SCALPING_MAX_TRADES:
+                    skip_reason = f"Scalping max {SCALPING_MAX_TRADES} position reached"
+
+            # Regime still valid
+            if not skip_reason and CURRENT_REGIME != signal_regime:
+                skip_reason = "MARKET_REGIME_CHANGED"
+
+            if not skip_reason:
+                print(f"[SCALPING_AUTO_TRADE] {symbol} {side} — executing market order", flush=True)
+                try:
+                    bingx_client.execute_scalp_trade(symbol, side.lower())
+                except Exception:
+                    print(f"[SCALPING_AUTO_TRADE] execute_scalp_trade error", flush=True)
+                    print(traceback.format_exc(), flush=True)
+            else:
+                print(f"[SCALPING_AUTO_TRADE] {symbol} skipped — {skip_reason}", flush=True)
+
+                if skip_reason != "MARKET_REGIME_CHANGED":
+                    send_telegram(
+                        f"\U0001f916 SCALP AUTO TRADE SKIPPED\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Side: {side}\n"
+                        f"Reason: {skip_reason}\n"
+                        f"Grade: {grade}\n"
+                        f"Score: {score}"
+                    )
+
+        # Google Sheets logging
+        try:
+            google_sheet.log_signal(
+                symbol=symbol,
+                side=side,
+                grade=grade,
+                score=score,
+                entry=entry,
+                sl=sl,
+                tp=tp2,
+                atr=atr_val,
+                adx=adx_val,
+                volume=vol_status,
+                btc_trend=btc_trend,
+                status="SIGNAL",
+                strategy="SCALPING",
+                allocation_decision="ALLOCATED",
+                skip_reason=""
+            )
+        except Exception as e:
+            print(f"[SCALPING] Google Sheets log error: {e}", flush=True)
+
+        # BACKTEST
+        backtest.record_signal(
+            signal_id=signal_id,
+            symbol=symbol,
+            side=side,
+            entry=entry,
+            sl=sl,
+            tp=tp2,
+            grade=grade,
+            score=score,
+            strategy="SCALPING"
+        )
+
+        return {"symbol": symbol, "result": "signal", "side": side, "score": score}
+
+    except Exception:
+        print(f"[SCALPING ERROR] {symbol}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        google_sheet.log_debug(symbol, "Error (SCALPING)", score=0, adx=0, atr=0)
+        return {"symbol": symbol, "result": "error"}
 
 
 # =========================
@@ -3477,7 +3942,11 @@ def main():
             # =========================
             
             reset_cycle_counters()
-            for symbol in symbols:
+
+            # SCALPING mode uses dedicated symbol list; other modes use main list
+            scan_symbols = SCALPING_SYMBOLS if MARKET_MODE == "SCALPING" else symbols
+
+            for symbol in scan_symbols:
 
                 analyze(symbol)
 
@@ -3490,13 +3959,16 @@ def main():
             # (not after regime-change rescans, which keep them for top candidates)
             candidate_signals.clear()
 
+            # Adaptive scan interval: scalping scans every 60s, others every 300s
+            current_scan_interval = SCALPING_SCAN_INTERVAL if MARKET_MODE == "SCALPING" else SCAN_INTERVAL
+
             print(
-                "Sleep 5 minutes...",
+                f"Sleep {current_scan_interval}s ({MARKET_MODE} mode)...",
                 flush=True
             )
 
             time.sleep(
-                SCAN_INTERVAL
+                current_scan_interval
             )
 
         except Exception:
