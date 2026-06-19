@@ -1761,40 +1761,43 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 
             # --- TREND LONG ---
             if m15['close'] > m15['ema25']:
-                if rsi_val > 70:
-                    long_score -= 40   # ดอยจัด ไล่ราคาสูงมาก
-                elif 65 <= rsi_val <= 70:
-                    long_score -= 20   # เริ่มตึง
-                elif 53 <= rsi_val < 65:
-                    long_score += 5    # Neutral/high
-                elif 42 <= rsi_val <= 52:
-                    long_score += 20   # GOLDEN ZONE - pullback สวยงามในแนวโน้มขาขึ้น
-                elif 35 <= rsi_val <= 41:
-                    long_score += 10   # PRE-GOLDEN - pullback ลึก
+                if rsi_val > 65:
+                    long_score -= 40   # ดอยจัด (was >70, tightened)
+                elif 60 <= rsi_val <= 65:
+                    long_score -= 25   # เริ่มตึง (was 65-70)
+                elif 53 <= rsi_val < 60:
+                    long_score += 5    # Neutral
+                elif 45 <= rsi_val <= 52:
+                    long_score += 20   # GOLDEN ZONE (narrowed from 42-52)
+                elif 38 <= rsi_val <= 44:
+                    long_score += 10   # PRE-GOLDEN
+                elif rsi_val < 38:
+                    long_score -= 15   # Too deep pullback — may break down
 
-                # Price stretch: ใช้ 3.5% แทน 2.5% เพราะ crypto volatile สูง
-                if long_stretch_pct > 3.5:
-                    long_score -= 25   # บินหนีเส้นฐานมากเกินไป
-                elif long_stretch_pct <= 1.2:
-                    long_score += 10   # เกาะเส้นฐานสวย ปลอดภัย
+                if long_stretch_pct > 2.5:
+                    long_score -= 30   # Overextended (was 3.5%, tightened)
+                elif long_stretch_pct <= 0.8:
+                    long_score += 10   # Close to base — safe
 
             # --- TREND SHORT ---
             if m15['close'] < m15['ema25']:
-                if rsi_val < 40:
-                    short_score -= 40  # ต่ำเกินไป เสี่ยงดีดกลับ (Squeeze)
-                elif 40 <= rsi_val < 45:
-                    short_score -= 20  # ค่อนข้างต่ำ เสี่ยงสะสม
-                elif 45 <= rsi_val < 48:
-                    short_score += 5    # Neutral/low
-                elif 48 <= rsi_val <= 58:
-                    short_score += 20  # GOLDEN ZONE - pullback ดีดกลับมาที่แนวต้านกลางของขาลง
-                elif 59 <= rsi_val <= 65:
-                    short_score += 10  # PRE-GOLDEN - pullback สูงขึ้น ปลอดภัยขึ้น
+                if rsi_val < 35:
+                    short_score -= 40  # Oversold — bounce risk (was <40)
+                elif 35 <= rsi_val < 42:
+                    short_score -= 25  # Getting low (was 40-44)
+                elif 42 <= rsi_val < 48:
+                    short_score += 5    # Neutral
+                elif 48 <= rsi_val <= 55:
+                    short_score += 20  # GOLDEN ZONE (narrowed from 48-58)
+                elif 56 <= rsi_val <= 62:
+                    short_score += 10  # PRE-GOLDEN
+                elif rsi_val > 62:
+                    short_score -= 15  # Too high for SHORT — trend may reverse
 
-                if short_stretch_pct > 3.5:
-                    short_score -= 25  # ดิ่งลึกเกินไป เสี่ยงดีดกลับ
-                elif short_stretch_pct <= 1.2:
-                    short_score += 10  # เพิ่งหลุดเส้นฐาน ปลอดภัย
+                if short_stretch_pct > 2.5:
+                    short_score -= 30  # Oversold (was 3.5%, tightened)
+                elif short_stretch_pct <= 0.8:
+                    short_score += 10  # Just broke base — safe
 
         elif CURRENT_REGIME == "SIDEWAYS":
 
@@ -2075,10 +2078,17 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # LONG SIGNAL
         # =========================
 
+        # 15m micro-alignment: price must be above EMA7, EMA7 above EMA25
+        long_micro_aligned = (m15['close'] > m15['ema7'] and m15['ema7'] > m15['ema25'])
+        # MACD histogram must be positive and growing (accelerating momentum)
+        long_macd_accel = (m15['macd'] > m15['macd_signal'])
+
         if (
             long_score >= MIN_SCORE
             and btc_trend == "bullish"
             and m15['rsi'] <= config.TREND_LONG_MAX_RSI
+            and long_micro_aligned
+            and long_macd_accel
         ):
 
             entry = round(
@@ -2375,6 +2385,11 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             short_score >= MIN_SCORE
             and btc_trend == "bearish"
             and m15['rsi'] >= config.TREND_SHORT_MIN_RSI
+            # 15m micro-alignment: price below EMA7, EMA7 below EMA25
+            and m15['close'] < m15['ema7']
+            and m15['ema7'] < m15['ema25']
+            # MACD must confirm downward momentum
+            and m15['macd'] < m15['macd_signal']
         ):
 
             entry = round(
