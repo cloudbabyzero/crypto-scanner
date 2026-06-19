@@ -3305,21 +3305,21 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         ema7 = m15['ema7']
         ema25 = m15['ema25']
 
-        # LONG: RSI < 30, Close <= BB Lower, ADX < 28
+        # LONG: RSI < 40, Close <= BB Lower, ADX < 28
         # + ต้องไม่ downtrend ชัด: ema7 ต้องไม่ต่ำกว่า ema25 มากเกิน 1%
         long_trend_ok = ema7 >= ema25 * 0.99  # ยอมให้ต่ำกว่าได้นิดหน่อย แต่ไม่ downtrend ชัด
         long_condition = (
-            rsi < 30
+            rsi < 40
             and close <= bb_lower
             and adx < 28
             and long_trend_ok
         )
 
-        # SHORT: RSI > 70, Close >= BB Upper, ADX < 28
+        # SHORT: RSI > 60, Close >= BB Upper, ADX < 28
         # + ต้องไม่ uptrend ชัด: ema7 ต้องไม่สูงกว่า ema25 มากเกิน 1%
         short_trend_ok = ema7 <= ema25 * 1.01
         short_condition = (
-            rsi > 70
+            rsi > 60
             and close >= bb_upper
             and adx < 28
             and short_trend_ok
@@ -3337,7 +3337,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         if long_condition and short_condition:
             # Both conditions met — pick the more extreme RSI
-            side = "LONG" if abs(30 - rsi) > abs(70 - rsi) else "SHORT"
+            side = "LONG" if abs(40 - rsi) > abs(60 - rsi) else "SHORT"
         elif long_condition:
             side = "LONG"
         else:
@@ -3359,13 +3359,13 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         # SCORE (คำนวณก่อน grade เพราะ grade ต้องใช้ score)
         # RSI rescale สำหรับ sideways range จริงๆ
-        # SHORT: RSI 65=0pts, 70=30pts, 75+=60pts(max)
-        # LONG:  RSI 35=0pts, 30=30pts, 25-=60pts(max)
+        # SHORT: RSI 60=0pts, 75=60pts(max)
+        # LONG:  RSI 40=0pts, 25=60pts(max)
         # =========================
         if side == "LONG":
-            rsi_score = max(0, min(60, int((30 - rsi) * 6)))  # RSI 30→0pts, 20→60pts
+            rsi_score = max(0, min(60, int((40 - rsi) * 4)))  # RSI 40→0pts, 25→60pts
         else:
-            rsi_score = max(0, min(60, int((rsi - 70) * 6)))  # RSI 70→0pts, 80→60pts
+            rsi_score = max(0, min(60, int((rsi - 60) * 4)))  # RSI 60→0pts, 75→60pts
 
         # RR component: max 40 pts
         rr_score = max(0, min(40, int((rr - 1.0) * 20)))
