@@ -874,9 +874,12 @@ def calculate_trade_levels(
     atr,
     side
 ):
+    # Dynamic volatility SL: minimum 1.5% distance or 2.0 ATR
+    sl_dist = max(atr * 2.0, entry * 0.015)
+
     if side == "LONG":
         sl = round(
-            entry - atr * 1.5,
+            entry - sl_dist,
             4
         )
         risk = entry - sl
@@ -897,7 +900,7 @@ def calculate_trade_levels(
         return sl, tp1, tp2, rr
 
     sl = round(
-        entry + atr * 1.5,
+        entry + sl_dist,
         4
     )
     risk = sl - entry
@@ -1647,7 +1650,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         adx_ceiling_penalty = False
         if adx_val > ADX_CEILING_LIMIT:
             print(
-                f"[SKIP] ADX is overextended ({adx_val:.2f} > {ADX_CEILING_LIMIT}). Applying -25 penalty.",
+                f"[SKIP] ADX is overextended ({adx_val:.2f} > {ADX_CEILING_LIMIT}). Applying -50 penalty.",
                 flush=True
             )
             adx_ceiling_penalty = True
@@ -1681,8 +1684,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 
         # Apply ADX ceiling and stretch penalties
         if adx_ceiling_penalty:
-            long_score -= 25
-            short_score -= 25
+            long_score -= 50
+            short_score -= 50
         if long_stretch_penalty:
             long_score -= 25
         if short_stretch_penalty:
@@ -1848,8 +1851,10 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 short_score += 10
         
         # =========================
-        # VOLUME (ให้ตาม price direction ไม่ใช่ให้ทั้งคู่)
+        # CANDLE PA, VOLUME TRAP, AND BTC REGIME
         # =========================
+        is_green = m15['close'] > m15['open']
+        is_red = m15['close'] < m15['open']
 
         volume_high = (
             m15['volume']
@@ -1857,11 +1862,32 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             m15['vol_avg'] * 1.3
         )
 
-        if volume_high:
+        # BTC Regime Strict Filter
+        if btc_trend == "bullish":
+            short_score -= 25
+        elif btc_trend == "bearish":
+            long_score -= 25
+
+        # PA & Volume Logic
+        if is_green:
+            short_score -= 30  # Opposes SHORT
+            if volume_high:
+                short_score -= 40  # Reversal Trap!
+            
             if h1['ema7'] > h1['ema25']:
-                long_score += 15   # volume + price ขึ้น = ยืนยัน LONG
-            else:
-                short_score += 15  # volume + price ลง = ยืนยัน SHORT
+                # Aligns with LONG
+                if volume_high:
+                    long_score += 15
+        
+        if is_red:
+            long_score -= 30   # Opposes LONG
+            if volume_high:
+                long_score -= 40   # Reversal Trap!
+                
+            if h1['ema7'] <= h1['ema25']:
+                # Aligns with SHORT
+                if volume_high:
+                    short_score += 15
 
         # =========================
         # BOLLINGER FILTER
