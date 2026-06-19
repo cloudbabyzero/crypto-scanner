@@ -35,7 +35,7 @@ MARGIN_PER_TRADE = 0.84
 # =========================
 
 ADX_FILTER = 18
-MIN_SCORE = 75
+MIN_SCORE = 80
 ATR_FILTER = 0.4
 
 # =========================
@@ -46,15 +46,15 @@ symbols = [
     'BTC/USDT:USDT',
     'ETH/USDT:USDT',
     'SOL/USDT:USDT',
-    'DOGE/USDT:USDT',
-    'INJ/USDT:USDT',
+    # 'DOGE/USDT:USDT',   # Removed: 0% WR live + backtest
+    # 'INJ/USDT:USDT',    # Removed: 0% WR live + backtest
     'LINK/USDT:USDT',
     'SUI/USDT:USDT',
     'AAVE/USDT:USDT',
     'AVAX/USDT:USDT',
     'NEAR/USDT:USDT',
     'HYPE/USDT:USDT',
-    'FET/USDT:USDT',
+    # 'FET/USDT:USDT',    # Removed: 0% WR, worst PnL -28.81%
     'TAO/USDT:USDT',
   ]
 
@@ -63,7 +63,7 @@ symbols = [
 # =========================
 
 AUTO_TRADE = False
-AUTO_TRADE_MIN_GRADE = "A"
+AUTO_TRADE_MIN_GRADE = "A+"
 MAX_LONG_TRADES = 2
 MAX_SHORT_TRADES = 2
 MAX_ACTIVE_TRADES = 2  # Global limit for total active positions (LONG + SHORT)
@@ -103,8 +103,8 @@ TREND_HIGH_VOLUME_ONLY = False
 # ADX CEILING & STRETCH LIMIT FILTERS
 # =========================
 
-ADX_CEILING_LIMIT = 55         # Maximum allowed ADX. If higher, trend is overextended.
-STRETCH_MAX_DISTANCE_PCT = 1.5 # Maximum allowed distance (%) between current price and entry EMA.
+ADX_CEILING_LIMIT = 50         # Maximum allowed ADX. If higher, trend is overextended. (was 55)
+STRETCH_MAX_DISTANCE_PCT = 1.2 # Maximum allowed distance (%) between current price and entry EMA. (was 1.5)
 
 # =========================
 # RSI SAFE ZONE FILTERS

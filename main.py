@@ -874,8 +874,8 @@ def calculate_trade_levels(
     atr,
     side
 ):
-    # Dynamic volatility SL: minimum 1.5% distance or 2.0 ATR
-    sl_dist = max(atr * 2.0, entry * 0.015)
+    # Dynamic volatility SL: minimum 2.0% distance or 2.5 ATR (was 1.5%/2.0)
+    sl_dist = max(atr * 2.5, entry * 0.020)
 
     if side == "LONG":
         sl = round(
@@ -1862,17 +1862,17 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             m15['vol_avg'] * 1.3
         )
 
-        # BTC Regime Strict Filter
+        # BTC Regime Filter (reduced from -25 — was too dominant)
         if btc_trend == "bullish":
-            short_score -= 25
+            short_score -= 15
         elif btc_trend == "bearish":
-            long_score -= 25
+            long_score -= 15
 
-        # PA & Volume Logic
+        # PA & Volume Logic (reduced penalties — single candle shouldn't dominate)
         if is_green:
-            short_score -= 30  # Opposes SHORT
+            short_score -= 15  # was -30
             if volume_high:
-                short_score -= 40  # Reversal Trap!
+                short_score -= 20  # was -40
             
             if h1['ema7'] > h1['ema25']:
                 # Aligns with LONG
@@ -1880,9 +1880,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     long_score += 15
         
         if is_red:
-            long_score -= 30   # Opposes LONG
+            long_score -= 15   # was -30
             if volume_high:
-                long_score -= 40   # Reversal Trap!
+                long_score -= 20   # was -40
                 
             if h1['ema7'] <= h1['ema25']:
                 # Aligns with SHORT
@@ -1983,22 +1983,22 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         if symbol != 'BTC/USDT:USDT':
 
             if btc_trend == "bullish":
-                # BTC bullish: penalize SHORT only
-                short_score -= 20
+                # BTC bullish: penalize SHORT only (reduced from -20)
+                short_score -= 10
 
             elif btc_trend == "bearish":
-                # BTC bearish: penalize LONG only
-                long_score -= 20
+                # BTC bearish: penalize LONG only (reduced from -20)
+                long_score -= 10
 
             elif btc_trend == "neutral":
                 # BTC neutral: market reversal / conflicting signals
-                # Apply strict -20 penalty to BOTH directions
+                # Reduced from -20 to -10 — neutral shouldn't block both sides
                 print(
-                    "BTC Trend is neutral. Applying -20 score penalty.",
+                    "BTC Trend is neutral. Applying -10 score penalty.",
                     flush=True
                 )
-                long_score  -= 20
-                short_score -= 20
+                long_score  -= 10
+                short_score -= 10
 
         # =========================
         # LIMIT SCORE
@@ -2057,19 +2057,19 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # SHORT: entry ต้องสูงกว่า current price = รอราคาขึ้นมา (pullback)
         # =========================
 
-        # Deep entry — รอ pullback มาที่ ema7
-        long_pullback_deep   = round(m15['ema7'] - (m15['atr'] * 0.3), 4)
-        short_pullback_deep  = round(m15['ema7'] + (m15['atr'] * 0.3), 4)
+        # Deep entry — รอ pullback มาที่ ema7 (reduced from ATR*0.3 to ATR*0.15)
+        long_pullback_deep   = round(m15['ema7'] - (m15['atr'] * 0.15), 4)
+        short_pullback_deep  = round(m15['ema7'] + (m15['atr'] * 0.15), 4)
 
-        # Shallow entry — ใกล้ราคาปัจจุบันมากขึ้น
-        long_pullback_shallow  = round(m15['close'] - (m15['atr'] * 0.1), 4)
-        short_pullback_shallow = round(m15['close'] + (m15['atr'] * 0.1), 4)
+        # Shallow entry — ใกล้ราคาปัจจุบันมากขึ้น (ATR*0.05 instead of 0.1)
+        long_pullback_shallow  = round(m15['close'] - (m15['atr'] * 0.05), 4)
+        short_pullback_shallow = round(m15['close'] + (m15['atr'] * 0.05), 4)
 
-        # LONG: เลือก entry ที่ต่ำกว่า close เสมอ (รอราคาลงมา)
-        long_pullback = min(long_pullback_deep, long_pullback_shallow)
+        # LONG: เลือก entry ที่สูงกว่า (ใกล้ close มากกว่า) เพื่อเพิ่ม fill rate
+        long_pullback = max(long_pullback_deep, long_pullback_shallow)
 
-        # SHORT: เลือก entry ที่สูงกว่า close เสมอ (รอราคาขึ้นมา)
-        short_pullback = max(short_pullback_deep, short_pullback_shallow)
+        # SHORT: เลือก entry ที่ต่ำกว่า (ใกล้ close มากกว่า) เพื่อเพิ่ม fill rate
+        short_pullback = min(short_pullback_deep, short_pullback_shallow)
 
         # =========================
         # LONG SIGNAL
