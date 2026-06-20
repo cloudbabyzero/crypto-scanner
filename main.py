@@ -1364,6 +1364,28 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         long_score  = 0
         short_score = 0
         btc_trend   = get_btc_trend()
+        
+        vwap_val = m5['vwap']
+        is_above_vwap = m5['close'] > vwap_val
+        
+        # ห้ามสวน VWAP เด็ดขาด
+        if not is_above_vwap:
+            long_score -= 1000
+        if is_above_vwap:
+            short_score -= 1000
+            
+        is_green = m5['close'] > m5['open']
+        is_red = m5['close'] < m5['open']
+        
+        # PA & Volume Logic (STRICT ANTI-TRAP)
+        if is_green:
+            short_score -= 30
+            if volume_high:
+                short_score -= 40
+        if is_red:
+            long_score -= 30
+            if volume_high:
+                long_score -= 40
 
         # --- 5m EMA alignment (30pts) - Primary signal ---
         if m5['ema7'] > m5['ema25']:
@@ -1652,7 +1674,11 @@ Plan:
                 status="SIGNAL",
                 strategy="SCALPING",
                 allocation_decision="ALLOCATED",
-                skip_reason=""
+                skip_reason="",
+                vwap_position="ABOVE" if is_above_vwap else "BELOW",
+                stoch_rsi=round(m5['stoch_rsi'], 2),
+                stretch_pct=round(abs(m5['close'] - m5['ema25']) / m5['ema25'] * 100, 2),
+                candle_color="GREEN" if is_green else "RED"
             )
         except Exception as e:
             print(f"[SCALPING] Google Sheets log error: {e}", flush=True)
@@ -1667,7 +1693,15 @@ Plan:
             tp=tp2,
             grade=grade,
             score=score,
-            strategy="SCALPING"
+            strategy="SCALPING",
+            adx=adx_val,
+            atr_pct=atr_val,
+            vol_status=vol_status,
+            btc_trend=btc_trend,
+            vwap_pos="ABOVE" if is_above_vwap else "BELOW",
+            stoch_rsi=round(m5['stoch_rsi'], 2),
+            stretch_pct=round(abs(m5['close'] - m5['ema25']) / m5['ema25'] * 100, 2),
+            candle_color="GREEN" if is_green else "RED"
         )
 
         return {"symbol": symbol, "result": "signal", "side": side, "score": score}
@@ -2056,6 +2090,17 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         m15 = df_15m.iloc[-2]
 
         # =========================
+        # PRE-FILTER (Early rejection for ADX/ATR)
+        # =========================
+        adx_val = round(m15['adx'], 2)
+        atr_pct = (m15['atr'] / m15['close']) * 100
+        vol_high = m15['volume'] > m15['vol_avg'] * 1.3
+        
+        passes_exec, exec_reason = check_trend_filters(atr_pct, adx_val, vol_high)
+        if not passes_exec:
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
         # FOMO FILTER
         # =========================
 
@@ -2137,12 +2182,23 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 short_stretch_penalty = True  # Price below EMA - penalize SHORT
 
         # =========================
+        # VWAP ULTIMATE FILTER
+        # =========================
+        vwap_val = m15['vwap']
+        is_above_vwap = current_price > vwap_val
+
+        # =========================
         # SCORE
         # =========================
 
         long_score = 0
-
         short_score = 0
+
+        # ห้ามสวน VWAP เด็ดขาด
+        if not is_above_vwap:
+            long_score -= 1000
+        if is_above_vwap:
+            short_score -= 1000
 
         btc_trend = get_btc_trend()
         signal_id = str(uuid.uuid4())[:8]
@@ -2330,17 +2386,17 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             m15['vol_avg'] * 1.3
         )
 
-        # BTC Regime Filter (reduced from -25 — was too dominant)
+        # BTC Regime Filter (STRICT)
         if btc_trend == "bullish":
-            short_score -= 15
+            short_score -= 25
         elif btc_trend == "bearish":
-            long_score -= 15
+            long_score -= 25
 
-        # PA & Volume Logic (reduced penalties — single candle shouldn't dominate)
+        # PA & Volume Logic (STRICT)
         if is_green:
-            short_score -= 15  # was -30
+            short_score -= 30
             if volume_high:
-                short_score -= 20  # was -40
+                short_score -= 40
             
             if h1['ema7'] > h1['ema25']:
                 # Aligns with LONG
@@ -2348,9 +2404,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     long_score += 15
         
         if is_red:
-            long_score -= 15   # was -30
+            long_score -= 30
             if volume_high:
-                long_score -= 20   # was -40
+                long_score -= 40
                 
             if h1['ema7'] <= h1['ema25']:
                 # Aligns with SHORT
@@ -2811,7 +2867,11 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 status="SIGNAL",
                 strategy="TREND",
                 allocation_decision="ALLOCATED",
-                skip_reason=""
+                skip_reason="",
+                vwap_position="ABOVE" if is_above_vwap else "BELOW",
+                stoch_rsi=round(m15['stoch_rsi'], 2),
+                stretch_pct=round(distance_pct, 2),
+                candle_color="GREEN" if is_green else "RED"
             )
             google_sheet.log_fill_analysis(
                 symbol=symbol,
@@ -2837,7 +2897,15 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     tp=tp2,
                     grade=grade,
                     score=long_score,
-                    strategy="TREND"
+                    strategy="TREND",
+                    adx=round(m15['adx'], 2),
+                    atr_pct=round(atr_percent, 2),
+                    vol_status=vol_status,
+                    btc_trend=btc_trend,
+                    vwap_pos="ABOVE" if is_above_vwap else "BELOW",
+                    stoch_rsi=round(m15['stoch_rsi'], 2),
+                    stretch_pct=round(distance_pct, 2),
+                    candle_color="GREEN" if is_green else "RED"
                 )
 
             return {"symbol": symbol, "result": "signal"}
@@ -3112,7 +3180,11 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 status="SIGNAL",
                 strategy="TREND",
                 allocation_decision="ALLOCATED",
-                skip_reason=""
+                skip_reason="",
+                vwap_position="ABOVE" if is_above_vwap else "BELOW",
+                stoch_rsi=round(m15['stoch_rsi'], 2),
+                stretch_pct=round(distance_pct, 2),
+                candle_color="GREEN" if is_green else "RED"
             )
             google_sheet.log_fill_analysis(
                 symbol=symbol,
@@ -3138,7 +3210,15 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     tp=tp2,
                     grade=grade,
                     score=short_score,
-                    strategy="TREND"
+                    strategy="TREND",
+                    adx=round(m15['adx'], 2),
+                    atr_pct=round(atr_percent, 2),
+                    vol_status=vol_status,
+                    btc_trend=btc_trend,
+                    vwap_pos="ABOVE" if is_above_vwap else "BELOW",
+                    stoch_rsi=round(m15['stoch_rsi'], 2),
+                    stretch_pct=round(distance_pct, 2),
+                    candle_color="GREEN" if is_green else "RED"
                 )
 
             return {"symbol": symbol, "result": "signal"}
@@ -3256,6 +3336,17 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         )
 
         m15 = df_15m.iloc[-2]
+
+        # =========================
+        # PRE-FILTER (Early rejection for ADX/ATR)
+        # =========================
+        adx_val = round(m15['adx'], 2)
+        atr_pct = (m15['atr'] / m15['close']) * 100
+        vol_high = m15['volume'] > m15['vol_avg'] * 1.3
+        
+        passes_exec, exec_reason = check_trend_filters(atr_pct, adx_val, vol_high)
+        if not passes_exec:
+            return {"symbol": symbol, "result": "skipped"}
 
         # =========================
         # FOMO FILTER

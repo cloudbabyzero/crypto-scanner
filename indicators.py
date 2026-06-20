@@ -124,6 +124,31 @@ def get_dataframe(symbol, timeframe):
         .mean()
     )
 
+    # =========================
+    # VWAP
+    # =========================
+
+    vwap_ind = ta.volume.VolumeWeightedAveragePrice(
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        volume=df['volume'],
+        window=14
+    )
+    df['vwap'] = vwap_ind.volume_weighted_average_price()
+
+    # =========================
+    # STOCH RSI
+    # =========================
+
+    stoch_rsi_ind = ta.momentum.StochRSIIndicator(
+        close=df['close'],
+        window=14,
+        smooth1=3,
+        smooth2=3
+    )
+    df['stoch_rsi'] = stoch_rsi_ind.stochrsi() * 100
+
     return df
 
 # =========================

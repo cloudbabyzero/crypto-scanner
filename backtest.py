@@ -34,7 +34,9 @@ SHEET_BACKTEST = "BacktestResults"
 # RECORD SIGNAL
 # ===========================
 
-def record_signal(signal_id, symbol, side, entry, sl, tp, grade, score, strategy):
+def record_signal(signal_id, symbol, side, entry, sl, tp, grade, score, strategy,
+                  adx=0, atr_pct=0, vol_status="", btc_trend="",
+                  vwap_pos="", stoch_rsi=0, stretch_pct=0, candle_color=""):
     """บันทึก signal สำหรับ backtest
     
     เรียกทันทีหลัง signal ออก ก่อน place order
@@ -50,6 +52,14 @@ def record_signal(signal_id, symbol, side, entry, sl, tp, grade, score, strategy
             "grade":      grade,
             "score":      score,
             "strategy":   strategy,
+            "adx":        adx,
+            "atr_pct":    atr_pct,
+            "vol_status": vol_status,
+            "btc_trend":  btc_trend,
+            "vwap_pos":   vwap_pos,
+            "stoch_rsi":  stoch_rsi,
+            "stretch_pct":stretch_pct,
+            "candle_color":candle_color,
             "recorded_at": time.time(),
             "eval_at":    time.time() + EVAL_SECONDS,
         }
@@ -161,7 +171,7 @@ def _evaluate(sig, main_mod):
 def _log_result(sig, result, google_sheet):
     """บันทึกผล backtest ลง BacktestResults sheet"""
     try:
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [
             timestamp,
             sig["signal_id"],
@@ -177,6 +187,14 @@ def _log_result(sig, result, google_sheet):
             result.get("pnl_pct", 0),
             result.get("rr", 0),
             result.get("note", ""),
+            sig.get("adx", 0),
+            sig.get("atr_pct", 0),
+            sig.get("vol_status", ""),
+            sig.get("btc_trend", ""),
+            sig.get("vwap_pos", ""),
+            sig.get("stoch_rsi", 0),
+            sig.get("stretch_pct", 0),
+            sig.get("candle_color", ""),
         ]
         google_sheet._add_to_buffer(SHEET_BACKTEST, row)
 

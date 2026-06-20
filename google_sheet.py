@@ -127,7 +127,8 @@ def _ensure_sheets_exist():
             (SHEET_SIGNALS, [
                 "SignalID", "Timestamp", "Symbol", "Side", "Grade", "Score",
                 "Entry", "SL", "TP", "ATR", "ADX", "Volume", "BTCTrend", "Status",
-                "Strategy", "AllocationDecision", "SkipReason"
+                "Strategy", "AllocationDecision", "SkipReason",
+                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color"
             ]),
             (SHEET_TRADES, [
                 "Timestamp", "Symbol", "Side", "Entry", "Exit", "PnL",
@@ -139,7 +140,8 @@ def _ensure_sheets_exist():
             ]),
             (SHEET_CONFIG, ["Key", "Value"]),
             (SHEET_DEBUG, [
-                "Timestamp", "Symbol", "Strategy", "Reason", "Grade", "Score", "ADX", "ATR", "Details"
+                "Timestamp", "Symbol", "Strategy", "Reason", "Grade", "Score", "ADX", "ATR", "Details",
+                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color"
             ]),
             (SHEET_FILL_ANALYSIS, [
                 "Timestamp", "Symbol", "Side", "CurrentPrice", "EntryPrice",
@@ -150,7 +152,9 @@ def _ensure_sheets_exist():
             (SHEET_BACKTEST, [
                 "Timestamp", "SignalID", "Symbol", "Side", "Strategy",
                 "Grade", "Score", "Entry", "SL", "TP",
-                "Result", "PnL%", "RR", "Note"
+                "Result", "PnL%", "RR", "Note",
+                "ADX", "ATR_Percent", "Volume_Status", "BTC_Trend",
+                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color"
             ]),
         ]
         
@@ -182,7 +186,8 @@ def ensure_headers():
             SHEET_SIGNALS: [
                 "SignalID", "Timestamp", "Symbol", "Side", "Grade", "Score",
                 "Entry", "SL", "TP", "ATR", "ADX", "Volume", "BTCTrend", "Status",
-                "Strategy", "AllocationDecision", "SkipReason"
+                "Strategy", "AllocationDecision", "SkipReason",
+                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color"
             ],
             SHEET_TRADES: [
                 "Timestamp", "Symbol", "Side", "Entry", "Exit", "PnL",
@@ -193,7 +198,8 @@ def ensure_headers():
                 "WinRate", "ProfitUSDT", "CurrentLossStreak"
             ],
             SHEET_DEBUG: [
-                "Timestamp", "Symbol", "Strategy", "Reason", "Grade", "Score", "ADX", "ATR", "Details"
+                "Timestamp", "Symbol", "Strategy", "Reason", "Grade", "Score", "ADX", "ATR", "Details",
+                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color"
             ],
             SHEET_FILL_ANALYSIS: [
                 "Timestamp", "Symbol", "Side", "CurrentPrice", "EntryPrice",
@@ -314,7 +320,7 @@ def _log_health_check():
         with _buffer_lock:
             buffer_size = len(_buffer)
         
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         reason = "HEALTH_CHECK"
         extra_data = f"BufferSize={buffer_size},Connected=True"
         
@@ -421,7 +427,8 @@ def shutdown_all(flush_timeout=10, other_timeout=5):
 # ==================================================
 
 def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status="SIGNAL",
-               strategy="", allocation_decision="ALLOCATED", skip_reason=""):
+               strategy="", allocation_decision="ALLOCATED", skip_reason="",
+               vwap_position="", stoch_rsi="", stretch_pct="", candle_color=""):
     """
     Log a signal to the Signals sheet with unique SignalID.
 
@@ -447,9 +454,10 @@ def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_
     """
     try:
         signal_id = str(uuid.uuid4())
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [signal_id, timestamp, symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status,
-               strategy, allocation_decision, skip_reason]
+               strategy, allocation_decision, skip_reason,
+               vwap_position, stoch_rsi, stretch_pct, candle_color]
         _add_to_buffer(SHEET_SIGNALS, row)
         return signal_id
     except Exception as e:
@@ -474,7 +482,7 @@ def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr, st
         strategy: Strategy used (TREND, MOMENTUM, SIDEWAYS)
     """
     try:
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp, symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy]
         _add_to_buffer(SHEET_TRADES, row)
     except Exception as e:
@@ -508,7 +516,8 @@ def update_signal_status(signal_id, status):
         print(f"[GOOGLE_SHEETS] update_signal_status error: {e}", flush=True)
 
 
-def log_debug(symbol, reason, score=0, adx=0, atr=0, extra_data="", strategy="", grade=""):
+def log_debug(symbol, reason, score=0, adx=0, atr=0, extra_data="", strategy="", grade="",
+              vwap_position="", stoch_rsi="", stretch_pct="", candle_color=""):
     """
     Log a debug/rejection reason to the Debug sheet.
 
@@ -523,8 +532,9 @@ def log_debug(symbol, reason, score=0, adx=0, atr=0, extra_data="", strategy="",
         grade: Signal grade at time of event
     """
     try:
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-        row = [timestamp, symbol, strategy, reason, grade, score, adx, atr, extra_data]
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        row = [timestamp, symbol, strategy, reason, grade, score, adx, atr, extra_data,
+               vwap_position, stoch_rsi, stretch_pct, candle_color]
         _add_to_buffer(SHEET_DEBUG, row)
     except Exception as e:
         print(f"[GOOGLE_SHEETS] log_debug error: {e}", flush=True)
@@ -550,7 +560,7 @@ def log_fill_analysis(symbol, side, current_price, entry_price, grade, score, at
         expired_reason: Why it expired (e.g. "Not Filled", "Replaced By A+ Override", "Filled")
     """
     try:
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         distance_percent = abs(entry_price - current_price) / current_price * 100
         row = [timestamp, symbol, side, current_price, entry_price, round(distance_percent, 2),
                grade, score, atr, adx, btc_trend, fill_status,
@@ -579,7 +589,7 @@ def log_aplus_override(symbol, strategy, grade, cancelled_symbol, cancelled_grad
         atr: ATR value of the new signal
     """
     try:
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         details = f"Cancelled {cancelled_symbol} {cancelled_grade} Pending | Inserted {symbol} A+ score={score}"
         row = [timestamp, symbol, strategy, "A+ Override", grade, score, adx, atr, details]
         _add_to_buffer(SHEET_DEBUG, row)
@@ -602,7 +612,7 @@ def log_aplus_override(symbol, strategy, grade, cancelled_symbol, cancelled_grad
         current_loss_streak: Current consecutive loss streak
     """
     try:
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp, balance, open_positions, wins, losses, win_rate, profit_usdt, current_loss_streak]
         _add_to_buffer(SHEET_STATS, row)
     except Exception as e:
