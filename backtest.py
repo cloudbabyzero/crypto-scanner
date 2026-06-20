@@ -17,7 +17,7 @@ backtest.py — Signal Quality Backtester
 
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ===========================
 # STATE
@@ -171,7 +171,7 @@ def _evaluate(sig, main_mod):
 def _log_result(sig, result, google_sheet):
     """บันทึกผล backtest ลง BacktestResults sheet"""
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         row = [
             timestamp,
             sig["signal_id"],

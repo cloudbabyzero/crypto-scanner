@@ -26,7 +26,7 @@ import threading
 import traceback
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict, deque
 
 import gspread
@@ -320,7 +320,7 @@ def _log_health_check():
         with _buffer_lock:
             buffer_size = len(_buffer)
         
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         reason = "HEALTH_CHECK"
         extra_data = f"BufferSize={buffer_size},Connected=True"
         
@@ -454,7 +454,7 @@ def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_
     """
     try:
         signal_id = str(uuid.uuid4())
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         row = [signal_id, timestamp, symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status,
                strategy, allocation_decision, skip_reason,
                vwap_position, stoch_rsi, stretch_pct, candle_color]
@@ -482,7 +482,7 @@ def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr, st
         strategy: Strategy used (TREND, MOMENTUM, SIDEWAYS)
     """
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp, symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy]
         _add_to_buffer(SHEET_TRADES, row)
     except Exception as e:
@@ -532,7 +532,7 @@ def log_debug(symbol, reason, score=0, adx=0, atr=0, extra_data="", strategy="",
         grade: Signal grade at time of event
     """
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp, symbol, strategy, reason, grade, score, adx, atr, extra_data,
                vwap_position, stoch_rsi, stretch_pct, candle_color]
         _add_to_buffer(SHEET_DEBUG, row)
@@ -560,7 +560,7 @@ def log_fill_analysis(symbol, side, current_price, entry_price, grade, score, at
         expired_reason: Why it expired (e.g. "Not Filled", "Replaced By A+ Override", "Filled")
     """
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         distance_percent = abs(entry_price - current_price) / current_price * 100
         row = [timestamp, symbol, side, current_price, entry_price, round(distance_percent, 2),
                grade, score, atr, adx, btc_trend, fill_status,
@@ -589,7 +589,7 @@ def log_aplus_override(symbol, strategy, grade, cancelled_symbol, cancelled_grad
         atr: ATR value of the new signal
     """
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         details = f"Cancelled {cancelled_symbol} {cancelled_grade} Pending | Inserted {symbol} A+ score={score}"
         row = [timestamp, symbol, strategy, "A+ Override", grade, score, adx, atr, details]
         _add_to_buffer(SHEET_DEBUG, row)
@@ -611,7 +611,7 @@ def update_stats(balance, open_positions, wins, losses, win_rate, profit_usdt, c
         current_loss_streak: Current consecutive loss streak
     """
     try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         row = [timestamp, balance, open_positions, wins, losses, win_rate, profit_usdt, current_loss_streak]
         _add_to_buffer(SHEET_STATS, row)
     except Exception as e:
