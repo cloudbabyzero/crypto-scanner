@@ -64,6 +64,11 @@ def get_dataframe(symbol, timeframe):
         window=14
     )
 
+    df['rsi_7'] = ta.momentum.rsi(
+        df['close'],
+        window=7
+    )
+
     # =========================
     # MACD
     # =========================
@@ -150,6 +155,38 @@ def get_dataframe(symbol, timeframe):
     df['stoch_rsi'] = stoch_rsi_ind.stochrsi() * 100
 
     return df
+
+# =========================
+# PER-COIN REGIME DETECTION
+# =========================
+
+def detect_symbol_regime(df_15m):
+    """Detect local market regime for a specific symbol based on its 15m dataframe."""
+    if df_15m is None or len(df_15m) < 2:
+        return "PAUSE"
+        
+    m15 = df_15m.iloc[-2]
+    adx = m15['adx']
+    atr_pct = (m15['atr'] / m15['close']) * 100
+    
+    # 1. Momentum: very strong push, far from EMA
+    price_distance_pct = abs(m15['close'] - m15['ema7']) / m15['close'] * 100
+    if adx > 25 and price_distance_pct > 0.4:
+        return "MOMENTUM"
+        
+    # 2. Trending: strong trend, EMA aligned
+    if adx > 25:
+        return "TRENDING"
+            
+    # 3. Sideways: low ADX
+    if adx < 20:
+        return "SIDEWAYS"
+        
+    # 4. Scalping: high volatility but no clear trend/momentum
+    if atr_pct > 0.15:
+        return "SCALPING"
+        
+    return "PAUSE"
 
 # =========================
 # MOMENTUM DETECTION

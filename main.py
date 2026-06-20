@@ -96,7 +96,7 @@ import config
 # INDICATORS - Import from indicators.py
 # =========================
 
-from indicators import get_dataframe, get_btc_trend, detect_momentum
+from indicators import get_dataframe, get_btc_trend, detect_momentum, detect_symbol_regime
 
 # =========================
 # EXCHANGE CLIENT
@@ -983,7 +983,9 @@ def build_signal_message(
     adx,
     atr_percent,
     volume_high,
-    btc_trend
+    btc_trend,
+    local_regime="",
+    btc_regime=""
 ):
     icon = "🚀" if side == "LONG" else "🔻"
     return f"""
@@ -991,7 +993,10 @@ def build_signal_message(
 
 {symbol}
 
-Strategy:
+Coin Regime:
+{local_regime}
+
+Active Strategy:
 TREND
 
 Grade:
@@ -1251,21 +1256,23 @@ def detect_market_regime():
 # =========================
 
 def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
-    """Route to the correct analysis strategy based on MARKET_MODE.
+    """Route to the correct analysis strategy based on MARKET_MODE and per-coin regime.
     
     Feature 8: Respect CONTROL_MODE override.
     - If FORCE_TREND: always use trend analysis
     - If FORCE_SIDEWAY: always use sideways analysis
-    - If AUTO: use MARKET_MODE (which follows detected regime)
-    
-    Args:
-        symbol: Trading symbol to analyze.
-        bypass_cooldown: If True, ignore cooldown timers.
-        silent_mode: If True, do not send Telegram signals (for rescans).
-        signal_only: If True, do not execute auto trades (for startup rescans).
+    - If AUTO: use per-coin regime (local_regime) instead of BTC regime
     """
+    try:
+        df_15m = get_dataframe(symbol, '15m')
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch 15m data for {symbol}: {e}")
+        return {"symbol": symbol, "result": "error"}
+
+    local_regime = detect_symbol_regime(df_15m)
+    
     # Determine effective mode
-    effective_mode = MARKET_MODE
+    effective_mode = local_regime if local_regime != "PAUSE" else MARKET_MODE
     if CONTROL_MODE == "FORCE_TREND":
         effective_mode = "TRENDING"
     elif CONTROL_MODE == "FORCE_SIDEWAY":
@@ -1274,25 +1281,39 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
         effective_mode = "SCALPING"
     elif CONTROL_MODE == "FORCE_PAUSE":
         effective_mode = "PAUSE"
+    elif CONTROL_MODE == "AUTO":
+        effective_mode = local_regime
 
     if effective_mode == "PAUSE":
         set_scan_result(symbol, {"status": "Market Paused", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
         return {"symbol": symbol, "result": "paused"}
 
+    btc_regime = MARKET_MODE
+
+    kwargs = {
+        'bypass_cooldown': bypass_cooldown,
+        'silent_mode': silent_mode,
+        'signal_only': signal_only,
+        'df_15m': df_15m,
+        'local_regime': local_regime,
+        'btc_regime': btc_regime
+    }
+
     if effective_mode == "SIDEWAYS":
-        return analyze_sideways(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
+        return analyze_sideways(symbol, **kwargs)
     if effective_mode == "MOMENTUM":
-        return analyze_momentum(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
+        return analyze_momentum(symbol, **kwargs)
     if effective_mode == "SCALPING":
-        return analyze_scalping(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
-    return analyze_trend(symbol, bypass_cooldown=bypass_cooldown, silent_mode=silent_mode, signal_only=signal_only)
+        return analyze_scalping(symbol, **kwargs)
+    return analyze_trend(symbol, **kwargs)
+
 
 
 # =========================
 # ANALYZE SCALPING
 # =========================
 
-def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
+def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, local_regime="", btc_regime=""):
     """Scalping regime analysis — fast entry via market order on 5m timeframe.
 
     Key differences from other strategies:
@@ -1333,7 +1354,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
 
         df_5m = get_dataframe(symbol, '5m')
-        df_15m = get_dataframe(symbol, '15m')
+        if df_15m is None:
+            df_15m = get_dataframe(symbol, '15m')
 
         m5  = df_5m.iloc[-2]   # last closed 5m candle
         m15 = df_15m.iloc[-2]  # last closed 15m candle
@@ -1406,7 +1428,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             short_score += 15
 
         # --- RSI Golden Zone (15pts) ---
-        rsi_val = m5['rsi']
+        rsi_val = m5['rsi_7'] if 'rsi_7' in m5 else m5['rsi']
         if 40 <= rsi_val <= 55:
             long_score += 15   # LONG sweet spot
         elif 45 <= rsi_val <= 60:
@@ -1676,9 +1698,11 @@ Plan:
                 allocation_decision="ALLOCATED",
                 skip_reason="",
                 vwap_position="ABOVE" if is_above_vwap else "BELOW",
-                stoch_rsi=round(m5['stoch_rsi'], 2),
+                stoch_rsi=m5['stoch_rsi'],
                 stretch_pct=round(abs(m5['close'] - m5['ema25']) / m5['ema25'] * 100, 2),
-                candle_color="GREEN" if is_green else "RED"
+                candle_color="GREEN" if is_green else "RED",
+                local_regime=local_regime,
+                btc_regime=btc_regime
             )
         except Exception as e:
             print(f"[SCALPING] Google Sheets log error: {e}", flush=True)
@@ -1693,7 +1717,9 @@ Plan:
             atr=atr_val,
             adx=adx_val,
             btc_trend=btc_trend,
-            fill_status="OPEN"
+            fill_status="OPEN",
+            local_regime=local_regime,
+            btc_regime=btc_regime
         )
         
         # BACKTEST
@@ -1706,7 +1732,10 @@ Plan:
             tp=tp2,
             grade=grade,
             score=score,
+            rr=rr,
             strategy="SCALPING",
+            local_regime=local_regime,
+            btc_regime=btc_regime,
             adx=adx_val,
             atr_pct=atr_val,
             vol_status=vol_status,
@@ -1731,7 +1760,7 @@ Plan:
 # ANALYZE MOMENTUM
 # =========================
 
-def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
+def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, local_regime="", btc_regime=""):
     """Momentum regime analysis — entry near current price, no pullback wait."""
 
     global pause_trading
@@ -1760,7 +1789,8 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         df_4h = get_dataframe(symbol, '4h')
         df_1h = get_dataframe(symbol, '1h')
-        df_15m = get_dataframe(symbol, '15m')
+        if df_15m is None:
+            df_15m = get_dataframe(symbol, '15m')
 
         h4  = df_4h.iloc[-2]
         h1  = df_1h.iloc[-2]
@@ -1826,9 +1856,9 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         score = max(long_score, short_score)
         grade = "C"
-        if score >= 95:
+        if score >= 95 and adx_val > 35 and volume_high:
             grade = "A+"
-        elif score >= 85:
+        elif score >= 85 and adx_val > 25:
             grade = "A"
         elif score >= 75:
             grade = "B"
@@ -1942,6 +1972,12 @@ Volume:
 BTC Trend:
 {btc_trend}
 
+Coin Regime:
+{local_regime}
+
+Active Strategy:
+MOMENTUM
+
 Momentum Strength:
 {strength} ({momentum_info['consecutive_candles']} candles)
 
@@ -2008,7 +2044,9 @@ Plan:
                 vwap_position="ABOVE" if m15.get('vwap') and m15['close'] > m15['vwap'] else "BELOW" if m15.get('vwap') else "",
                 stoch_rsi=round(m15.get('stoch_rsi', 0), 2) if 'stoch_rsi' in m15 else 0,
                 stretch_pct=round(distance_pct, 2) if 'distance_pct' in locals() else 0,
-                candle_color="GREEN" if m15['close'] > m15['open'] else "RED"
+                candle_color="GREEN" if m15['close'] > m15['open'] else "RED",
+                local_regime=local_regime,
+                btc_regime=btc_regime
             )
             google_sheet.log_fill_analysis(
                 symbol=symbol,
@@ -2020,7 +2058,9 @@ Plan:
                 atr=atr_val,
                 adx=adx_val,
                 btc_trend=btc_trend,
-                fill_status="OPEN"
+                fill_status="OPEN",
+                local_regime=local_regime,
+                btc_regime=btc_regime
             )
             if signal_id:
                 backtest.record_signal(
@@ -2032,7 +2072,10 @@ Plan:
                     tp=tp2,
                     grade=grade,
                     score=score,
+                    rr=rr,
                     strategy="MOMENTUM",
+                    local_regime=local_regime,
+                    btc_regime=btc_regime,
                     adx=adx_val,
                     atr_pct=atr_val,
                     vol_status=vol_status,
@@ -2095,7 +2138,7 @@ Plan:
 # ANALYZE TREND
 # =========================
 
-def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
+def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, local_regime="", btc_regime=""):
 
     # =========================
     # PAUSE TRADING CHECK
@@ -2143,10 +2186,11 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             '1h'
         )
 
-        df_15m = get_dataframe(
-            symbol,
-            '15m'
-        )
+        if df_15m is None:
+            df_15m = get_dataframe(
+                symbol,
+                '15m'
+            )
 
         # =========================
         # CLOSED CANDLES
@@ -2613,27 +2657,13 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # GRADE
         # =========================
 
+        score = max(long_score, short_score)
         grade = "C"
-
-        if (
-            long_score >= 95
-            or short_score >= 95
-        ):
-
+        if score >= 95 and m15['adx'] > 25:
             grade = "A+"
-
-        elif (
-            long_score >= 85
-            or short_score >= 85
-        ):
-
+        elif score >= 85:
             grade = "A"
-
-        elif (
-            long_score >= 75
-            or short_score >= 75
-        ):
-
+        elif score >= 75:
             grade = "B"
 
         # =========================
@@ -2709,7 +2739,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 adx=m15['adx'],
                 atr_percent=atr_percent,
                 volume_high=volume_high,
-                btc_trend=btc_trend
+                btc_trend=btc_trend,
+                local_regime=local_regime,
+                btc_regime=btc_regime
             )
 
             print(
@@ -2968,7 +3000,10 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     tp=tp2,
                     grade=grade,
                     score=long_score,
+                    rr=rr,
                     strategy="TREND",
+                    local_regime=local_regime,
+                    btc_regime=btc_regime,
                     adx=round(m15['adx'], 2),
                     atr_pct=round(atr_percent, 2),
                     vol_status=vol_status,
@@ -3022,7 +3057,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 adx=m15['adx'],
                 atr_percent=atr_percent,
                 volume_high=volume_high,
-                btc_trend=btc_trend
+                btc_trend=btc_trend,
+                local_regime=local_regime,
+                btc_regime=btc_regime
             )
 
             print(
@@ -3281,7 +3318,10 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     tp=tp2,
                     grade=grade,
                     score=short_score,
+                    rr=rr,
                     strategy="TREND",
+                    local_regime=local_regime,
+                    btc_regime=btc_regime,
                     adx=round(m15['adx'], 2),
                     atr_pct=round(atr_percent, 2),
                     vol_status=vol_status,
@@ -3325,13 +3365,16 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 # ANALYZE SIDEWAYS
 # =========================
 
-def build_sideways_message(symbol, grade, score, side, entry, sl, tp, rr, rsi, adx, atr_percent, volume_high):
+def build_sideways_message(symbol, grade, score, side, entry, sl, tp, rr, rsi, adx, atr_percent, volume_high, local_regime="", btc_regime=""):
     icon = "🚀" if side == "LONG" else "🔻"
     return f"""
 {icon} {side} SIGNAL
 {symbol}
 
-Strategy:
+Coin Regime:
+{local_regime}
+
+Active Strategy:
 SIDEWAYS
 
 Grade:
@@ -3370,7 +3413,7 @@ Plan:
 """
 
 
-def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
+def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, local_regime="", btc_regime=""):
 
     # =========================
     # PAUSE TRADING CHECK
@@ -3401,10 +3444,11 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # GET DATA
         # =========================
 
-        df_15m = get_dataframe(
-            symbol,
-            '15m'
-        )
+        if df_15m is None:
+            df_15m = get_dataframe(
+                symbol,
+                '15m'
+            )
 
         m15 = df_15m.iloc[-2]
 
@@ -3541,7 +3585,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # B  = RSI พอใช้ หรือ RR ดีมาก (score 35+)
         # C  = RSI แค่แตะ threshold
         # =========================
-        if sideways_score >= 70:
+        if sideways_score >= 70 and adx_val < 20:
             grade = "A+"
         elif sideways_score >= 50:
             grade = "A"
@@ -3566,7 +3610,9 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             rsi=rsi,
             adx=adx,
             atr_percent=atr_percent,
-            volume_high=volume_high
+            volume_high=volume_high,
+            local_regime=local_regime,
+            btc_regime=btc_regime
         )
 
         print(
@@ -3776,7 +3822,10 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             tp=tp,
             grade=grade,
             score=sideways_score,
-            strategy="SIDEWAYS"
+            rr=rr,
+            strategy="SIDEWAYS",
+            local_regime=local_regime,
+            btc_regime=btc_regime
         )
 
         return {"symbol": symbol, "result": "signal"}

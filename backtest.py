@@ -61,6 +61,7 @@ SHEET_BACKTEST = "BacktestResults"
 # ===========================
 
 def record_signal(signal_id, symbol, side, entry, sl, tp, grade, score, strategy,
+                  rr=0, local_regime="", btc_regime="",
                   adx=0, atr_pct=0, vol_status="", btc_trend="",
                   vwap_pos="", stoch_rsi=0, stretch_pct=0, candle_color=""):
     """บันทึก signal สำหรับ backtest
@@ -78,6 +79,9 @@ def record_signal(signal_id, symbol, side, entry, sl, tp, grade, score, strategy
             "grade":      grade,
             "score":      score,
             "strategy":   strategy,
+            "rr":         rr,
+            "local_regime": local_regime,
+            "btc_regime": btc_regime,
             "adx":        adx,
             "atr_pct":    atr_pct,
             "vol_status": vol_status,

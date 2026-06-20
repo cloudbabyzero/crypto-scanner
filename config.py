@@ -188,7 +188,7 @@ MOMENTUM_MIN_CANDLES = 3            # Consecutive 4h candles in same direction
 MOMENTUM_ENTRY_ATR_MULT = 0.3
 
 # SL: tighter than Trend (1.5) — momentum reverses fast
-MOMENTUM_SL_ATR_MULT = 1.2
+MOMENTUM_SL_ATR_MULT = 2.0
 
 # TP: higher RR than Trend (2.0) — momentum can run far
 MOMENTUM_TP_RR = 2.5
@@ -218,7 +218,7 @@ SCALPING_PENDING_EXPIRY = 300      # Pending expire 5 นาที (ปกติ
 SCALPING_ENTRY_TYPE = "MARKET"     # Market order (fill ทันที ไม่รอ pullback)
 
 # Risk Management
-SCALPING_SL_ATR_MULT = 0.8        # SL = ATR * 0.8 (tight — scalping)
+SCALPING_SL_ATR_MULT = 1.5        # SL = ATR * 1.5 (wider for scalping safety)
 SCALPING_TP_RR = 1.5              # TP = risk * 1.5 (modest RR, high WR target)
 SCALPING_LEVERAGE = 25             # Leverage x25
 SCALPING_MARGIN_PER_TRADE = 0.84   # ขั้นต่ำ BingX

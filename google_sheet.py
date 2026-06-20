@@ -428,7 +428,8 @@ def shutdown_all(flush_timeout=10, other_timeout=5):
 
 def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status="SIGNAL",
                strategy="", allocation_decision="ALLOCATED", skip_reason="",
-               vwap_position="", stoch_rsi="", stretch_pct="", candle_color=""):
+               vwap_position="", stoch_rsi="", stretch_pct="", candle_color="",
+               local_regime="", btc_regime=""):
     """
     Log a signal to the Signals sheet with unique SignalID.
 
@@ -457,7 +458,8 @@ def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_
         timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         row = [signal_id, timestamp, symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status,
                strategy, allocation_decision, skip_reason,
-               vwap_position, stoch_rsi, stretch_pct, candle_color]
+               vwap_position, stoch_rsi, stretch_pct, candle_color,
+               local_regime, btc_regime]
         _add_to_buffer(SHEET_SIGNALS, row)
         return signal_id
     except Exception as e:
@@ -465,7 +467,7 @@ def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_
         return None
 
 
-def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy=""):
+def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy="", local_regime="", btc_regime=""):
     """
     Log a trade result to the Trades sheet.
 
@@ -483,7 +485,7 @@ def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr, st
     """
     try:
         timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
-        row = [timestamp, symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy]
+        row = [timestamp, symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy, local_regime, btc_regime]
         _add_to_buffer(SHEET_TRADES, row)
     except Exception as e:
         print(f"[GOOGLE_SHEETS] log_trade error: {e}", flush=True)
@@ -541,7 +543,7 @@ def log_debug(symbol, reason, score=0, adx=0, atr=0, extra_data="", strategy="",
 
 
 def log_fill_analysis(symbol, side, current_price, entry_price, grade, score, atr, adx, btc_trend, fill_status,
-                      pending_minutes=0, expired_reason=""):
+                      pending_minutes=0, expired_reason="", local_regime="", btc_regime=""):
     """
     Log fill analysis data to the FillAnalysis sheet.
 
@@ -564,7 +566,7 @@ def log_fill_analysis(symbol, side, current_price, entry_price, grade, score, at
         distance_percent = abs(entry_price - current_price) / current_price * 100
         row = [timestamp, symbol, side, current_price, entry_price, round(distance_percent, 2),
                grade, score, atr, adx, btc_trend, fill_status,
-               pending_minutes, expired_reason]
+               pending_minutes, expired_reason, local_regime, btc_regime]
         _add_to_buffer(SHEET_FILL_ANALYSIS, row)
     except Exception as e:
         print(f"[GOOGLE_SHEETS] log_fill_analysis error: {e}", flush=True)
