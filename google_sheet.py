@@ -597,8 +597,7 @@ def log_aplus_override(symbol, strategy, grade, cancelled_symbol, cancelled_grad
     except Exception as e:
         print(f"[GOOGLE_SHEETS] log_aplus_override error: {e}", flush=True)
 
-
-
+def update_stats(balance, open_positions, wins, losses, win_rate, profit_usdt, current_loss_streak):
     """
     Update stats to the Stats sheet.
     
