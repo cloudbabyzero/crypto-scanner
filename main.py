@@ -935,7 +935,7 @@ def calculate_trade_levels(
             4
         )
         tp2 = round(
-            entry + (risk * 2),
+            entry + (risk * 1.5),
             4
         )
         rr = round(
@@ -956,7 +956,7 @@ def calculate_trade_levels(
         4
     )
     tp2 = round(
-        entry - (risk * 2),
+        entry - (risk * 1.5),
         4
     )
     rr = round(
