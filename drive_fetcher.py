@@ -7,15 +7,15 @@ import os
 def fetch_log_all(spreadsheet_name="Crypto Scanner Dashboard", sheet_name="Trades"):
     try:
         scopes = [
-            "https://googleapis.com",
-            "https://googleapis.com"
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/drive.readonly"
         ]
         
         # ค้นหาพิกัดไฟล์ json อัตโนมัติในโฟลเดอร์โปรเจกต์
         current_dir = os.path.dirname(os.path.abspath(__file__))
         json_path = os.path.join(current_dir, 'service_account.json')
         
-        creds = Credentials.from_service_account_file(json_path, scopes)
+        creds = Credentials.from_service_account_file(json_path, scopes=scopes)
         gc = gspread.authorize(creds)
         
         # เปิดสเปรดชีตหลักโดยอัตโนมัติ

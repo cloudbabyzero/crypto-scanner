@@ -540,7 +540,11 @@ def check_trades():
                         try:
                             entry_price = trade.get('entry', 0)
                             exit_price = trade.get('tp2', entry_price)
-                            pnl = 0
+                            amount = trade.get('amount', 0)
+                            if trade['side'] == 'LONG':
+                                pnl = round((exit_price - entry_price) * amount, 4)
+                            else:
+                                pnl = round((entry_price - exit_price) * amount, 4)
                             rr = 1.0
                             grade = trade.get('grade', 'C')
                             score = trade.get('score', 0)
@@ -577,7 +581,11 @@ def check_trades():
                         try:
                             entry_price = trade.get('entry', 0)
                             exit_price = trade.get('sl', entry_price)
-                            pnl = 0
+                            amount = trade.get('amount', 0)
+                            if trade['side'] == 'LONG':
+                                pnl = round((exit_price - entry_price) * amount, 4)
+                            else:
+                                pnl = round((entry_price - exit_price) * amount, 4)
                             rr = 1.0
                             grade = trade.get('grade', 'C')
                             score = trade.get('score', 0)
@@ -859,6 +867,12 @@ def reconcile_closed_trades_on_restart(pre_restart_trades):
                 result = _determine_trade_result(trade, symbol)
                 entry_price = trade.get('entry', 0)
                 exit_price = trade.get('tp2', entry_price) if result == "WIN" else trade.get('sl', entry_price)
+                amount = trade.get('amount', 0)
+                side = trade.get('side', '')
+                if side == 'LONG':
+                    pnl = round((exit_price - entry_price) * amount, 4)
+                else:
+                    pnl = round((entry_price - exit_price) * amount, 4)
 
                 print(
                     f"[RECONCILE] {symbol} closed during downtime → {result}",
@@ -877,7 +891,7 @@ def reconcile_closed_trades_on_restart(pre_restart_trades):
                     side=trade.get('side', ''),
                     entry=entry_price,
                     exit_price=exit_price,
-                    pnl=0,
+                    pnl=pnl,
                     result=result,
                     grade=trade.get('grade', 'C'),
                     score=trade.get('score', 0),
