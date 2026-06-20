@@ -17,6 +17,8 @@ backtest.py — Signal Quality Backtester
 
 import time
 import threading
+import json
+import os
 from datetime import datetime, timedelta
 
 # ===========================
@@ -25,6 +27,30 @@ from datetime import datetime, timedelta
 
 _pending = {}   # signal_id → signal_data
 _lock = threading.Lock()
+SAVE_FILE = "backtest_pending.json"
+
+def _save_pending():
+    # Helper to save _pending dictionary. Assumes _lock is held or called safely.
+    try:
+        with open(SAVE_FILE, 'w') as f:
+            json.dump(_pending, f)
+    except Exception as e:
+        print(f"[BACKTEST] Failed to save pending: {e}", flush=True)
+
+def _load_pending():
+    global _pending
+    if os.path.exists(SAVE_FILE):
+        try:
+            with open(SAVE_FILE, 'r') as f:
+                _pending = json.load(f)
+            print(f"[BACKTEST] Loaded {len(_pending)} pending signals from {SAVE_FILE}", flush=True)
+        except Exception as e:
+            print(f"[BACKTEST] Failed to load pending: {e}", flush=True)
+            _pending = {}
+
+# Load on startup
+_load_pending()
+
 
 EVAL_HOURS = 4           # ประเมินผลหลัง 4 ชั่วโมง
 EVAL_SECONDS = EVAL_HOURS * 3600
@@ -63,6 +89,7 @@ def record_signal(signal_id, symbol, side, entry, sl, tp, grade, score, strategy
             "recorded_at": time.time(),
             "eval_at":    time.time() + EVAL_SECONDS,
         }
+        _save_pending()
     print(f"[BACKTEST] Recorded {symbol} {side} entry={entry} sl={sl} tp={tp}", flush=True)
 
 
@@ -93,6 +120,7 @@ def check_pending():
 
             with _lock:
                 _pending.pop(signal_id, None)
+                _save_pending()
 
         except Exception as e:
             print(f"[BACKTEST] Error evaluating {sig['symbol']}: {e}", flush=True)
