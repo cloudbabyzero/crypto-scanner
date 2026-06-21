@@ -235,6 +235,78 @@ def _determine_trade_result(trade, symbol):
     except Exception as e:
         print(f"[WIN/LOSS] Error determining result for {symbol}: {e}", flush=True)
         return "LOSS"
+# =========================
+# TRAILING STOP
+# =========================
+
+def _process_trailing_stop(trade, current_price):
+    from config import TRAILING_ACTIVATION_ATR, TRAILING_BUFFER_ATR, TRAILING_STEP_ATR
+    import bingx_client
+    
+    # Only trail in TRENDING or MOMENTUM strategies
+    # Actually 'strategy' could be saved in trade dict, fallback to signal_regime
+    regime = trade.get('strategy') or trade.get('signal_regime')
+    if regime not in ["TRENDING", "MOMENTUM"]:
+        return
+
+    side = trade.get('side', 'LONG')
+    entry_price = trade.get('entry', 0)
+    current_sl = trade.get('sl', 0)
+    current_atr = trade.get('atr', 0)
+    
+    if current_atr <= 0 or current_price <= 0 or entry_price <= 0:
+        return
+
+    activation_dist = current_atr * TRAILING_ACTIVATION_ATR
+    trailing_buffer = current_atr * TRAILING_BUFFER_ATR
+    step_size = current_atr * TRAILING_STEP_ATR
+    
+    new_sl = current_sl
+    
+    if side == "LONG":
+        if current_price >= (entry_price + activation_dist):
+            breakeven = entry_price * 1.0015
+            proposed_sl = current_price - trailing_buffer
+            new_sl = max(current_sl, proposed_sl, breakeven)
+            
+            if new_sl > current_sl + step_size:
+                side_cfg = main_mod.get_side_config(side)
+                amount = trade.get('amount')
+                new_id = bingx_client.update_sl_order(trade['symbol'], side_cfg, trade.get('sl_order_id'), new_sl, amount)
+                if new_id:
+                    with main_mod.state_lock:
+                        trade['sl'] = new_sl
+                        trade['sl_order_id'] = new_id
+                    
+                    msg = (f"🛡️ [TRAILING STOP] ขยับบังทุน\n\n"
+                           f"{trade['symbol']}\n"
+                           f"Side: {side}\n"
+                           f"New SL: {new_sl}")
+                    main_mod.send_telegram(msg)
+                    print(f"[TRAILING] {trade['symbol']} LONG SL updated to {new_sl}", flush=True)
+
+    elif side == "SHORT":
+        if current_price <= (entry_price - activation_dist):
+            breakeven = entry_price * 0.9985
+            proposed_sl = current_price + trailing_buffer
+            new_sl = min(current_sl, proposed_sl, breakeven)
+            
+            if new_sl < current_sl - step_size:
+                side_cfg = main_mod.get_side_config(side)
+                amount = trade.get('amount')
+                new_id = bingx_client.update_sl_order(trade['symbol'], side_cfg, trade.get('sl_order_id'), new_sl, amount)
+                if new_id:
+                    with main_mod.state_lock:
+                        trade['sl'] = new_sl
+                        trade['sl_order_id'] = new_id
+                    
+                    msg = (f"🛡️ [TRAILING STOP] ขยับบังทุน\n\n"
+                           f"{trade['symbol']}\n"
+                           f"Side: {side}\n"
+                           f"New SL: {new_sl}")
+                    main_mod.send_telegram(msg)
+                    print(f"[TRAILING] {trade['symbol']} SHORT SL updated to {new_sl}", flush=True)
+
 
 # =========================
 # TRADE CHECKER
@@ -483,7 +555,7 @@ def check_trades():
                     continue
 
                 # =========================
-                # CHECK REAL POSITION
+                # CHECK REAL POSITION & TRAILING STOP
                 # =========================
 
                 try:
@@ -493,14 +565,16 @@ def check_trades():
                     )
 
                     contracts = 0
+                    current_price = 0
 
                     for pos in positions:
 
                         try:
 
-                            contracts += float(
-                                pos.get('contracts') or 0
-                            )
+                            c = float(pos.get('contracts') or 0)
+                            if c > 0:
+                                contracts += c
+                                current_price = float(pos.get('markPrice') or pos.get('entryPrice') or 0)
 
                         except (TypeError, ValueError):
 
@@ -509,6 +583,20 @@ def check_trades():
                 except Exception:
 
                     contracts = 0
+                    current_price = 0
+
+                # =========================
+                # TRAILING STOP (If position is open)
+                # =========================
+                if contracts > 0 and trade.get('status') == "OPEN":
+                    if current_price == 0:
+                        try:
+                            ticker = main_mod.exchange.fetch_ticker(trade['symbol'])
+                            current_price = float(ticker['last'])
+                        except Exception:
+                            pass
+                    if current_price > 0:
+                        _process_trailing_stop(trade, current_price)
 
                 # =========================
                 # POSITION CLOSED

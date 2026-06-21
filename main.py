@@ -278,6 +278,40 @@ def load_regime_storage():
     except Exception as e:
         print(f"Error loading regime storage: {e}, using defaults", flush=True)
 
+# =========================
+# STATE STORAGE (ACTIVE TRADES)
+# =========================
+
+STATE_STORAGE_FILE = "active_trades.json"
+
+def load_active_trades():
+    """Load active trades from disk to prevent amnesia on restart."""
+    global active_trades
+    try:
+        if os.path.exists(STATE_STORAGE_FILE):
+            with open(STATE_STORAGE_FILE, "r") as f:
+                data = json.load(f)
+                with state_lock:
+                    active_trades = data
+            msg = f"🔄 [SYSTEM] โหลดสถานะบอทสำเร็จ\nเรียกคืน {len(active_trades)} ออเดอร์จากหน่วยความจำ"
+            send_telegram(msg)
+            print(f"[STATE] Loaded {len(active_trades)} trades from {STATE_STORAGE_FILE}", flush=True)
+    except Exception as e:
+        print(f"[STATE] Error loading {STATE_STORAGE_FILE}: {e}", flush=True)
+
+def save_state_loop():
+    """Background loop to auto-save active trades."""
+    import time as pytime
+    while True:
+        try:
+            with state_lock:
+                data = dict(active_trades)
+            with open(STATE_STORAGE_FILE, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            pass
+        pytime.sleep(10)
+
 
 # =========================
 # SIGNAL CACHE MANAGEMENT (Feature 3)
@@ -919,10 +953,16 @@ def update_signal_result(
 def calculate_trade_levels(
     entry,
     atr,
-    side
+    side,
+    regime="TRENDING"
 ):
-    # Dynamic volatility SL: minimum 2.0% distance or 2.5 ATR (was 1.5%/2.0)
-    sl_dist = max(atr * 2.5, entry * 0.020)
+    # Dynamic RR based on regime
+    if regime in ["TRENDING", "MOMENTUM"]:
+        sl_dist = atr * 1.5
+        tp_rr = 4.0
+    else: # SIDEWAYS or SCALPING
+        sl_dist = atr * 1.5
+        tp_rr = 1.5
 
     if side == "LONG":
         sl = round(
@@ -935,15 +975,13 @@ def calculate_trade_levels(
             4
         )
         tp2 = round(
-            entry + (risk * 1.5),
+            entry + (risk * tp_rr),
             4
         )
         rr = round(
-            (tp2 - entry)
-            /
-            (entry - sl),
+            (tp2 - entry) / risk,
             2
-        )
+        ) if risk > 0 else 0
         return sl, tp1, tp2, rr
 
     sl = round(
@@ -956,15 +994,13 @@ def calculate_trade_levels(
         4
     )
     tp2 = round(
-        entry - (risk * 1.5),
+        entry - (risk * tp_rr),
         4
     )
     rr = round(
-        (entry - tp2)
-        /
-        (sl - entry),
+        (entry - tp2) / risk,
         2
-    )
+    ) if risk > 0 else 0
     return sl, tp1, tp2, rr
 
 # =========================
@@ -4040,6 +4076,14 @@ def main():
     # =========================
     # STARTUP
     # =========================
+
+    # Load persistent state to avoid Amnesia
+    load_active_trades()
+
+    threading.Thread(
+        target=save_state_loop,
+        daemon=True
+    ).start()
 
     # snapshot trades before restore เพื่อ reconcile ที่ปิดระหว่าง downtime
     with state_lock:

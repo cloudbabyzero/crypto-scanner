@@ -261,6 +261,37 @@ def place_protection_orders(
     return sl_order_id, tp2_order_id
 
 
+def update_sl_order(symbol, side_cfg, old_sl_id, new_sl_price, amount):
+    """Update stop-loss order by cancelling old and creating new."""
+    if old_sl_id and old_sl_id not in ["existing_sl", None]:
+        try:
+            cancel_order(old_sl_id, symbol)
+        except Exception as e:
+            logger.warning(f"Failed to cancel old SL {old_sl_id} for {symbol}: {e}")
+            pass
+
+    base_params = {
+        'positionSide': side_cfg['position_side'],
+        'closePosition': True
+    }
+
+    try:
+        sl_order = main_mod.exchange.create_order(
+            symbol=symbol,
+            type='STOP_MARKET',
+            side=side_cfg['stop_side'],
+            amount=amount,
+            params={
+                **base_params,
+                'stopPrice': new_sl_price
+            }
+        )
+        return sl_order['id']
+    except Exception as e:
+        logger.error(f"Failed to create new SL for {symbol}: {e}")
+        return None
+
+
 # =========================
 # TRADE EXECUTION
 # =========================
