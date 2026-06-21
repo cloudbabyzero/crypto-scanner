@@ -3520,6 +3520,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         
         passes_exec, exec_reason = check_trend_filters(atr_pct, adx_val, vol_high)
         if not passes_exec:
+            set_scan_result(symbol, {"status": exec_reason, "score": 0, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": now})
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
