@@ -63,7 +63,7 @@ symbols = [
 # =========================
 
 AUTO_TRADE = False
-AUTO_TRADE_MIN_GRADE = "A+"
+AUTO_TRADE_MIN_GRADE = "A"
 MAX_LONG_TRADES = 2
 MAX_SHORT_TRADES = 2
 MAX_ACTIVE_TRADES = 2  # Global limit for total active positions (LONG + SHORT)
