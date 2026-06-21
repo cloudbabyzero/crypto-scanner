@@ -438,6 +438,19 @@ def startup_market_scan():
         # Feature 6: Send top candidates from startup rescan
         send_top_candidates()
         
+        # Mode summary report
+        mode_counts = {}
+        mode_text = "📊 COIN MODES REPORT\n\n"
+        for sym, res in scan_results.items():
+            if isinstance(res, dict):
+                m = res.get("mode", "UNKNOWN")
+                mode_counts[m] = mode_counts.get(m, 0) + 1
+                mode_text += f"{sym}: {m}\n"
+        mode_text += "\nSummary:\n"
+        for m, c in mode_counts.items():
+            mode_text += f"{m}: {c}\n"
+        send_telegram(mode_text)
+
         send_telegram("✅ Bot Ready")
         
     except Exception as e:
@@ -1303,6 +1316,7 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
         df_15m = get_dataframe(symbol, '15m')
     except Exception as e:
         print(f"[ERROR] Failed to fetch 15m data for {symbol}: {e}")
+        set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time(), "mode": "UNKNOWN"})
         return {"symbol": symbol, "result": "error"}
 
     local_regime = detect_symbol_regime(df_15m)
@@ -1336,12 +1350,18 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
     }
 
     if effective_mode == "SIDEWAYS":
-        return analyze_sideways(symbol, **kwargs)
-    if effective_mode == "MOMENTUM":
-        return analyze_momentum(symbol, **kwargs)
-    if effective_mode == "SCALPING":
-        return analyze_scalping(symbol, **kwargs)
-    return analyze_trend(symbol, **kwargs)
+        res = analyze_sideways(symbol, **kwargs)
+    elif effective_mode == "MOMENTUM":
+        res = analyze_momentum(symbol, **kwargs)
+    elif effective_mode == "SCALPING":
+        res = analyze_scalping(symbol, **kwargs)
+    else:
+        res = analyze_trend(symbol, **kwargs)
+        
+    if symbol in scan_results and isinstance(scan_results[symbol], dict):
+        scan_results[symbol]['mode'] = effective_mode
+        
+    return res
 
 
 
@@ -1364,10 +1384,12 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
     global pause_trading
 
     if pause_trading:
+        set_scan_result(symbol, {"status": "Market Paused", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
         return {"symbol": symbol, "result": "paused"}
 
     # Only scalp symbols from the dedicated list
     if symbol not in SCALPING_SYMBOLS:
+        set_scan_result(symbol, {"status": "Not in SCALPING_SYMBOLS", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
         return {"symbol": symbol, "result": "skipped"}
 
     try:
@@ -2249,6 +2271,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         
         passes_exec, exec_reason = check_trend_filters(atr_pct, adx_val, vol_high)
         if not passes_exec:
+            set_scan_result(symbol, {"status": exec_reason, "score": 0, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": now})
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================

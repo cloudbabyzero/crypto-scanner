@@ -527,8 +527,10 @@ def format_scan_row(symbol, data):
     atr = data.get("atr", 0)
     volume = data.get("volume", "N/A")
     min_score = getattr(main_mod, 'MIN_SCORE', 85)
+    mode = data.get("mode", "UNKNOWN")
     
     lines = [symbol]
+    lines.append(f"Mode: {mode}")
     lines.append(f"Status: {status}")
     
     if status == "Signal Generated":
@@ -1108,6 +1110,18 @@ Min Grade: {main_mod.MOMENTUM_MIN_GRADE}
 Min Score: {main_mod.MOMENTUM_MIN_SCORE}
 Max Trades: {main_mod.MOMENTUM_MAX_TRADES}
 Auto Trade: {"ON" if main_mod.MOMENTUM_AUTO_TRADE else "OFF"}
+
+⚡ SCALPING
+
+MIN ADX: {main_mod.config.SCALPING_MIN_ADX}
+MIN ATR: {main_mod.config.SCALPING_MIN_ATR_PCT}%
+MAX ADX: {main_mod.config.SCALPING_MAX_ADX}
+SL ATR Mult: {main_mod.config.SCALPING_SL_ATR_MULT}
+TP RR: {main_mod.config.SCALPING_TP_RR}
+Min Grade: {main_mod.config.SCALPING_MIN_GRADE}
+Min Score: {main_mod.config.SCALPING_MIN_SCORE}
+Max Trades: {main_mod.config.SCALPING_MAX_TRADES}
+Auto Trade: {"ON" if main_mod.config.SCALPING_AUTO_TRADE else "OFF"}
 """
     bot.reply_to(message, text)
 
