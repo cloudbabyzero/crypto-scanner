@@ -195,9 +195,9 @@ MOMENTUM_TP_RR = 1.66
 
 # Auto trade — ON but with stricter filters below
 MOMENTUM_AUTO_TRADE = True
-MOMENTUM_MIN_GRADE = "A"           # Only A+ (Trend uses "A")
-MOMENTUM_MIN_SCORE = 85           # Only score >= 90 (Trend uses 85)
-MOMENTUM_MAX_TRADES = 1             # Max 1 position at a time (Trend uses 2)
+MOMENTUM_MIN_GRADE = "A"           # Only A (Trend uses "A")
+MOMENTUM_MIN_SCORE = 85           # Only score >= 85 (Trend uses 85)
+MOMENTUM_MAX_TRADES = 2            # Max 2 position at a time (Trend uses 2)
 
 # =========================
 # SCALPING STRATEGY CONFIG
