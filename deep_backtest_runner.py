@@ -178,9 +178,10 @@ def simulate_sideways_logic_3m(df_3m):
         m3 = df_3m.iloc[i]
         
         long_trend_ok = m3['ema7'] >= m3['ema25'] * 0.99
+        short_trend_ok = m3['ema7'] <= m3['ema25'] * 1.01
         if (m3['rsi'] < 45 and m3['low'] <= m3['bb_lower'] and m3['adx'] < 28 and long_trend_ok):
             entry_price = m3['close']
-            sl_price = entry_price - (m3['atr'] * 1.2)
+            sl_price = entry_price - (m3['atr'] * 2.0)
             tp_price = m3['bb_mid']
             
             fill_status, trade_result = True, "PENDING"

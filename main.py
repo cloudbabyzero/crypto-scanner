@@ -196,16 +196,16 @@ def set_scan_result(symbol, data):
 def calculate_sideways_levels(entry, atr, bb_mid, side):
     """Calculate SL and TP for sideways mean reversion trades.
 
-    SL: ATR * 1.2
+    SL: ATR * 2.0 (Widened to survive fakeouts and increase WR to ~63%)
     TP: Bollinger Middle Band
     """
     if side == "LONG":
-        sl = round(entry - atr * 1.2, 4)
+        sl = round(entry - atr * 2.0, 4)
         tp = round(bb_mid, 4)
         risk = entry - sl
         reward = tp - entry
     else:
-        sl = round(entry + atr * 1.2, 4)
+        sl = round(entry + atr * 2.0, 4)
         tp = round(bb_mid, 4)
         risk = sl - entry
         reward = entry - tp
@@ -404,16 +404,19 @@ def startup_market_scan():
     try:
         # Detect current BTC market regime
         startup_regime, btc_adx, btc_atr_pct = detect_market_regime()
+        btc_trend_str = get_btc_trend().upper()
         
         # Send regime info
         send_telegram(
             f"Regime: {startup_regime}\n"
+            f"BTC Trend: {btc_trend_str}\n"
             f"BTC ADX: {btc_adx}\n"
             f"BTC ATR: {btc_atr_pct}%"
         )
         
         print(
             f"[STARTUP_SCAN] Detected regime: {startup_regime}, "
+            f"BTC Trend: {btc_trend_str}, "
             f"BTC ADX: {btc_adx}, BTC ATR: {btc_atr_pct}%",
             flush=True
         )
@@ -1542,11 +1545,11 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         score = max(long_score, short_score)
         grade = "C"
-        if score >= 95:
+        if score >= 85:
             grade = "A+"
-        elif score >= 85:
-            grade = "A"
         elif score >= 75:
+            grade = "A"
+        elif score >= 65:
             grade = "B"
 
         # =========================
@@ -2796,11 +2799,32 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         short_pullback = max(short_pullback_deep, short_pullback_alt)
 
         # =========================
+        # FAIL REASON LOGGING
+        # =========================
+        fail_reason = None
+        long_micro_aligned = (m15['close'] > m15['ema7'] and m15['ema7'] > m15['ema25'])
+        short_micro_aligned = (m15['close'] < m15['ema7'] and m15['ema7'] < m15['ema25'])
+        
+        if long_score < MIN_SCORE and short_score < MIN_SCORE:
+            fail_reason = f"Score Below MIN_SCORE ({max(long_score, short_score)})"
+        elif long_score >= MIN_SCORE:
+            if btc_trend != "bullish":
+                fail_reason = "BTC Trend Mismatch (Needs Bullish)"
+            elif m15['rsi'] > config.TREND_LONG_MAX_RSI:
+                fail_reason = "RSI Too High for LONG"
+            elif not long_micro_aligned:
+                fail_reason = "Micro-Alignment Failed (Price > EMA7 > EMA25)"
+        elif short_score >= MIN_SCORE:
+            if btc_trend != "bearish":
+                fail_reason = "BTC Trend Mismatch (Needs Bearish)"
+            elif m15['rsi'] < config.TREND_SHORT_MIN_RSI:
+                fail_reason = "RSI Too Low for SHORT"
+            elif not short_micro_aligned:
+                fail_reason = "Micro-Alignment Failed (Price < EMA7 < EMA25)"
+
+        # =========================
         # LONG SIGNAL
         # =========================
-
-        # 15m micro-alignment: price must be above EMA7, EMA7 above EMA25
-        long_micro_aligned = (m15['close'] > m15['ema7'] and m15['ema7'] > m15['ema25'])
 
         if (
             long_score >= MIN_SCORE
@@ -3121,9 +3145,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             short_score >= MIN_SCORE
             and btc_trend == "bearish"
             and m15['rsi'] >= config.TREND_SHORT_MIN_RSI
-            # 15m micro-alignment: price below EMA7, EMA7 below EMA25
-            and m15['close'] < m15['ema7']
-            and m15['ema7'] < m15['ema25']
+            and short_micro_aligned
         ):
 
             entry = round(
@@ -3448,12 +3470,16 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
     vol_status = "HIGH" if volume_high else "NORMAL"
     score = max(long_score, short_score)
     missing_points = max(MIN_SCORE - score, 0)
-    set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "long_score": long_score, "short_score": short_score, "missing_points": missing_points})
+    
+    if 'fail_reason' not in locals() or not fail_reason:
+        fail_reason = f"Score Below MIN_SCORE ({missing_points} needed)" if missing_points > 0 else "Other Criteria Failed"
+        
+    set_scan_result(symbol, {"status": fail_reason, "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "long_score": long_score, "short_score": short_score, "missing_points": missing_points})
     # Track rejected signal (Feature 3)
     if score > 0:
         rejected_signals.add(symbol)
     # Google Sheets debug logging
-    google_sheet.log_debug(symbol, f"Score Below MIN_SCORE ({missing_points} points needed)", score=score, adx=round(m15['adx'], 2), atr=round(atr_percent, 2), vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+    google_sheet.log_debug(symbol, fail_reason, score=score, adx=round(m15['adx'], 2), atr=round(atr_percent, 2), vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
     return {"symbol": symbol, "result": "skipped"}
 
 
@@ -3669,6 +3695,11 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # SHORT: RSI 60=0pts, 75=60pts(max)
         # LONG:  RSI 40=0pts, 25=60pts(max)
         # =========================
+        
+        base_score = 0
+        if (side == "LONG" and m3['low'] <= bb_lower) or (side == "SHORT" and m3['high'] >= bb_upper):
+            base_score = 20
+
         if side == "LONG":
             rsi_score = max(0, min(60, int((40 - rsi) * 4)))  # RSI 40→0pts, 25→60pts
         else:
@@ -3677,7 +3708,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # RR component: max 40 pts
         rr_score = max(0, min(40, int((rr - 1.0) * 20)))
 
-        sideways_score = rsi_score + rr_score
+        sideways_score = base_score + rsi_score + rr_score
 
         # =========================
         # GRADE (ขึ้นกับ score รวม)

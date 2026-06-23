@@ -229,7 +229,7 @@ SCALPING_MARGIN_PER_TRADE = 0.84   # ขั้นต่ำ BingX
 SCALPING_MIN_ADX = 20             # ต้องมี direction พอสมควร
 SCALPING_MIN_ATR_PCT = 0.15       # ATR% ขั้นต่ำ (ต้องมี volatility)
 SCALPING_MAX_ADX = 50             # ADX สูงเกินหมายถึง overextended
-SCALPING_MIN_SCORE = 70           # Score ขั้นต่ำ
+SCALPING_MIN_SCORE = 65           # Score ขั้นต่ำ
 SCALPING_MIN_GRADE = "A"          # Grade ขั้นต่ำสำหรับ auto trade
 
 # RSI Safe Zone
