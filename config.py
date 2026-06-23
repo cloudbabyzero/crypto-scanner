@@ -185,7 +185,7 @@ MOMENTUM_MIN_PRICE_DISTANCE = 0.5   # Price must be >= 0.5% away from EMA7
 MOMENTUM_MIN_CANDLES = 3            # Consecutive 4h candles in same direction
 
 # Entry: entry = close ± atr * mult  (closer than Trend's ema7 ± atr*0.2)
-MOMENTUM_ENTRY_ATR_MULT = 0.3
+MOMENTUM_ENTRY_ATR_MULT = 0.0
 
 # SL: match backtest (1.2)
 MOMENTUM_SL_ATR_MULT = 1.2

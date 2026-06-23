@@ -85,21 +85,18 @@ def simulate_momentum_logic_3m(df_3m):
         long_score = min(long_score, 100)
         
         if long_score >= 85:
-            entry_price = m3['ema7']
+            entry_price = m3['close']
             sl_price = entry_price - (m3['atr'] * 1.2)
             tp_price = entry_price + (m3['atr'] * 2.0)
-            fill_status, trade_result = False, "PENDING"
+            fill_status, trade_result = True, "PENDING"
             for j in range(i+1, min(i+120, len(df_3m))):
                 future_bar = df_3m.iloc[j]
-                if not fill_status and future_bar['low'] <= entry_price:
-                    fill_status = True
-                if fill_status:
-                    if future_bar['low'] <= sl_price:
-                        trade_result = "LOSS"
-                        break
-                    elif future_bar['high'] >= tp_price:
-                        trade_result = "WIN"
-                        break
+                if future_bar['low'] <= sl_price:
+                    trade_result = "LOSS"
+                    break
+                elif future_bar['high'] >= tp_price:
+                    trade_result = "WIN"
+                    break
             trades.append({'time': m3['timestamp'], 'filled': fill_status, 'result': trade_result, 'rr': 1.66})
     return trades
 
