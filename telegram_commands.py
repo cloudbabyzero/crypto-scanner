@@ -113,6 +113,24 @@ TP2:
 
 
 # =========================
+# CLEAR TRADES COMMAND
+# =========================
+
+@bot.message_handler(commands=['cleartrades'])
+def cleartrades(message):
+    with main_mod.state_lock:
+        count = len(main_mod.active_trades)
+        main_mod.active_trades.clear()
+        
+    try:
+        import os
+        if os.path.exists(main_mod.STATE_STORAGE_FILE):
+            os.remove(main_mod.STATE_STORAGE_FILE)
+    except Exception as e:
+        pass
+        
+    bot.reply_to(message, f"✅ Cleared {count} ghost trades from memory and volume!\n\nNote: Any actually open positions on BingX will be re-detected on next bot restart.")
+# =========================
 # COINS COMMAND
 # =========================
 
@@ -122,6 +140,23 @@ def coins(message):
     for coin in main_mod.symbols:
         text += f"{coin}\n"
     bot.reply_to(message, text)
+
+
+# =========================
+# MODES COMMAND
+# =========================
+
+@bot.message_handler(commands=['modes'])
+def modes(message):
+    text = "🔍 COIN MODES REPORT\n\n"
+    results = getattr(main_mod, 'scan_results', {})
+    for coin in main_mod.symbols:
+        mode = "UNKNOWN"
+        if coin in results and isinstance(results[coin], dict):
+            mode = results[coin].get("mode", "UNKNOWN")
+        text += f"{coin}\nMode: {mode}\n\n"
+    
+    bot.reply_to(message, text.strip())
 
 
 # =========================
@@ -1223,8 +1258,14 @@ Example: /sideatr 0.20
 /coins
 ดูเหรียญที่สแกน
 
+/modes
+ดู Market Regime (สภาพตลาด) ของแต่ละเหรียญ
+
 /forcecheck
 บังคับสแกนทันที
+
+/cleartrades
+ล้าง active trades ที่ค้างในระบบ
 
 /long xrp
 เปิด LONG

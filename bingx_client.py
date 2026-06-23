@@ -601,13 +601,15 @@ def execute_trade(symbol, side, skip_pullback_check=False):
         # =========================
         trade_id = str(uuid.uuid4())[:8]
 
-        # Fetch grade/score from the signal so A+ override logic can compare later
+        # Fetch grade/score/strategy from the signal so A+ override logic can compare later
         _signal_for_grade = main_mod.get_latest_signal(symbol)
         _signal_grade = "C"
         _signal_score = 0
+        _signal_strategy = "UNKNOWN"
         if _signal_for_grade:
             _signal_grade = _signal_for_grade.get("grade", "C")
             _signal_score = _signal_for_grade.get("score", 0)
+            _signal_strategy = _signal_for_grade.get("strategy", "UNKNOWN")
 
         with main_mod.state_lock:
             main_mod.active_trades[trade_id] = {
@@ -623,7 +625,8 @@ def execute_trade(symbol, side, skip_pullback_check=False):
                 "tp2_order_id": tp2_order_id,
                 "created_at": pytime.time(),
                 "grade": _signal_grade,
-                "score": _signal_score
+                "score": _signal_score,
+                "strategy": _signal_strategy
             }
 
         # =========================
@@ -634,6 +637,9 @@ def execute_trade(symbol, side, skip_pullback_check=False):
 ✅ ORDER EXECUTED
 
 {symbol}
+
+Mode:
+{_signal_strategy}
 
 Side:
 {side.upper()}
@@ -923,6 +929,9 @@ def execute_scalp_trade(symbol, side):
 ⚡ SCALP ORDER FILLED
 
 {symbol}
+
+Mode:
+SCALPING
 
 Side:
 {side.upper()}

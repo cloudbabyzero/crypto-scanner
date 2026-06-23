@@ -1263,8 +1263,8 @@ def detect_market_regime():
         (regime, btc_adx, btc_atr_percent) tuple
     """
     try:
-        df_15m = get_dataframe('BTC/USDT:USDT', '15m')
-        btc = df_15m.iloc[-2]
+        df_1h = get_dataframe('BTC/USDT:USDT', '1h')
+        btc = df_1h.iloc[-2]
 
         btc_adx = round(btc['adx'], 2)
         btc_atr_percent = round((btc['atr'] / btc['close']) * 100, 2)
@@ -1321,12 +1321,13 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
     """
     try:
         df_15m = get_dataframe(symbol, '15m')
+        df_1h = get_dataframe(symbol, '1h')
     except Exception as e:
-        print(f"[ERROR] Failed to fetch 15m data for {symbol}: {e}")
+        print(f"[ERROR] Failed to fetch data for {symbol}: {e}")
         set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time(), "mode": "UNKNOWN"})
         return {"symbol": symbol, "result": "error"}
 
-    local_regime = detect_symbol_regime(df_15m)
+    local_regime = detect_symbol_regime(df_1h)
     
     # Determine effective mode
     effective_mode = local_regime if local_regime != "PAUSE" else MARKET_MODE
@@ -1352,6 +1353,7 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
         'silent_mode': silent_mode,
         'signal_only': signal_only,
         'df_15m': df_15m,
+        'df_1h': df_1h,
         'local_regime': local_regime,
         'btc_regime': btc_regime
     }
@@ -1376,7 +1378,7 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
 # ANALYZE SCALPING
 # =========================
 
-def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, local_regime="", btc_regime=""):
+def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, df_1h=None, local_regime="", btc_regime=""):
     """Scalping regime analysis — fast entry via market order on 5m timeframe.
 
     Key differences from other strategies:
@@ -1834,7 +1836,7 @@ Plan:
 # ANALYZE MOMENTUM
 # =========================
 
-def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, local_regime="", btc_regime=""):
+def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, df_1h=None, local_regime="", btc_regime=""):
     """Momentum regime analysis — entry near current price, no pullback wait."""
 
     global pause_trading
@@ -1862,7 +1864,8 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
 
         df_4h = get_dataframe(symbol, '4h')
-        df_1h = get_dataframe(symbol, '1h')
+        if df_1h is None:
+            df_1h = get_dataframe(symbol, '1h')
         if df_15m is None:
             df_15m = get_dataframe(symbol, '15m')
         df_3m = get_dataframe(symbol, '3m')
@@ -2225,7 +2228,7 @@ Plan:
 # ANALYZE TREND
 # =========================
 
-def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, local_regime="", btc_regime=""):
+def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, df_1h=None, local_regime="", btc_regime=""):
 
     # =========================
     # PAUSE TRADING CHECK
@@ -2268,10 +2271,11 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             '4h'
         )
 
-        df_1h = get_dataframe(
-            symbol,
-            '1h'
-        )
+        if df_1h is None:
+            df_1h = get_dataframe(
+                symbol,
+                '1h'
+            )
 
         if df_15m is None:
             df_15m = get_dataframe(
@@ -2356,14 +2360,15 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # =========================
 
         adx_val = round(m15['adx'], 2)
+        h1_adx_val = round(h1['adx'], 2)
         current_price = m15['close']
         entry_ema = m15['ema25']  # Entry EMA reference
 
         # ADX Ceiling Check - apply penalty if ADX is overextended
         adx_ceiling_penalty = False
-        if adx_val > ADX_CEILING_LIMIT:
+        if h1_adx_val > ADX_CEILING_LIMIT:
             print(
-                f"[SKIP] ADX is overextended ({adx_val:.2f} > {ADX_CEILING_LIMIT}). Applying -50 penalty.",
+                f"[SKIP] 1H ADX is overextended ({h1_adx_val:.2f} > {ADX_CEILING_LIMIT}). Applying -50 penalty.",
                 flush=True
             )
             adx_ceiling_penalty = True
@@ -3496,7 +3501,7 @@ Plan:
 """
 
 
-def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, local_regime="", btc_regime=""):
+def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, df_1h=None, local_regime="", btc_regime=""):
 
     # =========================
     # PAUSE TRADING CHECK
@@ -3530,9 +3535,13 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         if df_15m is None:
             df_15m = get_dataframe(symbol, '15m')
             
+        if df_1h is None:
+            df_1h = get_dataframe(symbol, '1h')
+            
         df_3m = get_dataframe(symbol, '3m')
 
         m15 = df_15m.iloc[-2]
+        h1  = df_1h.iloc[-2]
         m3  = df_3m.iloc[-2]
 
         # =========================
