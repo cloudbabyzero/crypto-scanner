@@ -2086,7 +2086,10 @@ Plan:
                     "tp1": tp1,
                     "tp2": tp2,
                     "signal_regime": signal_regime,
-                    "created_at": time.time()
+                    "created_at": time.time(),
+                    "grade": grade,
+                    "score": score,
+                    "strategy": "MOMENTUM"
                 }
                 last_alert[(symbol, "MOMENTUM")] = now_ts
 
@@ -2853,7 +2856,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     "signal_regime": signal_regime,
                     "created_at": time.time(),
                     "grade": grade,
-                    "score": long_score
+                    "score": long_score,
+                    "strategy": "TREND"
                 }
                 # Update last_alert after storing the signal
                 last_alert[(symbol, "TREND")] = now
@@ -3169,7 +3173,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                     "signal_regime": signal_regime,
                     "created_at": time.time(),
                     "grade": grade,
-                    "score": short_score
+                    "score": short_score,
+                    "strategy": "TREND"
                 }
                 # Update last_alert after storing the signal
                 last_alert[(symbol, "TREND")] = now
@@ -3722,7 +3727,9 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 "tp2": tp,
                 "signal_regime": signal_regime,
                 "created_at": time.time(),
-                "grade": grade
+                "grade": grade,
+                "score": sideways_score,
+                "strategy": "SIDEWAYS"
             }
             # Update last_alert after storing the signal
             last_alert[(symbol, "SIDEWAYS")] = now

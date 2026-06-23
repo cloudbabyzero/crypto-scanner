@@ -377,21 +377,20 @@ def check_trades():
                             or trade['entry']
                         )
 
-                        # 2. Derive the original ATR distance from the
-                        #    signal‑based entry and SL (ATR = |entry‑SL| / 1.5).
-                        original_atr = abs(trade['entry'] - trade['sl']) / 1.5
+                        # 2. Calculate the slippage delta (difference between filled and original entry)
+                        #    We use this to simply shift the original SL and TP by the exact same amount,
+                        #    preserving the original risk, reward, and RR multipliers perfectly across ALL strategies.
+                        delta = filled_entry - trade['entry']
 
-                        # 3. Re‑calculate SL and TP2 using the filled entry.
-                        new_sl, _, new_tp2, _ = main_mod.calculate_trade_levels(
-                            filled_entry,
-                            original_atr,
-                            trade['side']
-                        )
+                        # 3. Shift SL and TP1/TP2 by the delta
+                        new_sl = round(trade['sl'] + delta, 4)
+                        new_tp1 = round(trade.get('tp1', trade['tp2']) + delta, 4)
+                        new_tp2 = round(trade['tp2'] + delta, 4)
 
-                        # 4. Update trade dict with the actual entry and new
-                        #    protection levels.
+                        # 4. Update trade dict with the actual entry and new protection levels.
                         trade['entry'] = filled_entry
                         trade['sl'] = new_sl
+                        trade['tp1'] = new_tp1
                         trade['tp2'] = new_tp2
 
                         # 5. (Re)place protection orders using the updated
