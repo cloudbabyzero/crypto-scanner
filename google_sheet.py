@@ -268,7 +268,7 @@ def _flush_buffer():
             try:
                 worksheet = spreadsheet.worksheet(sheet_name)
                 # Use append_rows for batch insert (more efficient than individual appends)
-                worksheet.append_rows(rows)
+                worksheet.append_rows(rows, table_range="A1")
                 print(f"[GOOGLE_SHEETS] Flushed {len(rows)} rows to {sheet_name}", flush=True)
             except Exception as e:
                 print(f"[GOOGLE_SHEETS] Error writing to {sheet_name}: {e}", flush=True)
