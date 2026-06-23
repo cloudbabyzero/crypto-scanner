@@ -877,6 +877,47 @@ def restore_open_positions():
             # Fetch SL/TP orders for this position to restore protection state
             protection = _fetch_protection_orders_for_position(symbol, side)
             
+            # AUTO-FIX: Recreate missing protection orders
+            if protection['sl_order_id'] is None and protection['tp_order_id'] is None:
+                print(f"[RESTORE] Protection orders not found for {symbol}. Attempting AUTO-FIX...", flush=True)
+                try:
+                    # 1. Fetch 15m ATR for fallback calculation
+                    df = main_mod.indicators.fetch_ohlcv_with_retry(symbol, "15m", limit=50)
+                    if df is not None and not df.empty:
+                        atr_series = main_mod.indicators.calculate_atr(df, 14)
+                        atr = atr_series.iloc[-1]
+                    else:
+                        atr = entry_price * 0.02 # fallback to 2%
+                        
+                    # 2. Calculate trade levels based on restored entry
+                    sl, tp1, tp2, _ = main_mod.calculate_trade_levels(entry_price, atr, side.upper())
+                    
+                    # 3. Cancel existing trigger orders just in case they exist but are hidden
+                    try:
+                        main_mod.exchange.cancel_all_orders(symbol)
+                    except Exception:
+                        pass
+                        
+                    # 4. Re-place protection orders
+                    side_cfg = main_mod.get_side_config(side.upper())
+                    import bingx_client
+                    sl_id, tp_id = bingx_client.place_protection_orders(
+                        symbol=symbol,
+                        side_cfg=side_cfg,
+                        sl_price=sl,
+                        tp2_price=tp2,
+                        amount=contracts
+                    )
+                    
+                    # 5. Overwrite the missing protection data
+                    protection['sl_order_id'] = sl_id
+                    protection['tp_order_id'] = tp_id
+                    protection['sl_price'] = sl
+                    protection['tp_price'] = tp2
+                    print(f"[RESTORE] AUTO-FIX SUCCESS! Recreated protection orders. SL_ID={sl_id}, TP_ID={tp_id}", flush=True)
+                except Exception as e:
+                    print(f"[RESTORE] AUTO-FIX FAILED: {e}", flush=True)
+
             # Determine SL and TP prices
             # Use None if protection orders not found (displayed as N/A in /trades)
             sl_price = protection['sl_price']
