@@ -163,7 +163,7 @@ def detect_symbol_regime(df_1h):
     
     # 1. Momentum: very strong push, far from EMA
     price_distance_pct = abs(h1['close'] - h1['ema7']) / h1['close'] * 100
-    if adx > 25 and price_distance_pct > 0.4:
+    if adx > 30 and price_distance_pct >= 1.5:
         return "MOMENTUM"
         
     # 2. Trending: strong trend, EMA aligned

@@ -404,6 +404,7 @@ def execute_trade(symbol, side, skip_pullback_check=False):
 
         entry = signal["entry"]
         sl = signal["sl"]
+        tp2 = signal["tp"]
         atr = signal["atr"]
         
         # =========================
@@ -519,11 +520,6 @@ def execute_trade(symbol, side, skip_pullback_check=False):
         # =========================
 
         if side == "long":
-            sl, tp1, tp2, _ = main_mod.calculate_trade_levels(
-                entry,
-                atr,
-                "LONG"
-            )
 
             order = main_mod.exchange.create_order(
                 symbol=symbol,
@@ -543,11 +539,6 @@ def execute_trade(symbol, side, skip_pullback_check=False):
         # =========================
 
         else:
-            sl, tp1, tp2, _ = main_mod.calculate_trade_levels(
-                entry,
-                atr,
-                "SHORT"
-            )
 
             order = main_mod.exchange.create_order(
                 symbol=symbol,
@@ -626,7 +617,8 @@ def execute_trade(symbol, side, skip_pullback_check=False):
                 "created_at": pytime.time(),
                 "grade": _signal_grade,
                 "score": _signal_score,
-                "strategy": _signal_strategy
+                "strategy": _signal_strategy,
+                "atr": atr
             }
 
         # =========================

@@ -34,7 +34,7 @@ def calculate_indicators(df):
     return df.dropna().reset_index(drop=True)
 
 def simulate_trend_logic_15m(df_15m):
-    # Trend 15m (SL 2.0, TP 1.0 => RR 0.5:1)
+    # Trend 15m (SL 2.0, TP 3.0 => RR 1.5:1) with Trailing Stop
     trades = []
     for i in range(50, len(df_15m) - 10):
         m15 = df_15m.iloc[i]
@@ -48,21 +48,56 @@ def simulate_trend_logic_15m(df_15m):
         if long_score >= 85:
             # Pullback entry at EMA7
             entry_price = m15['ema7']
-            sl_price = entry_price - (m15['atr'] * 2.0)
-            tp_price = entry_price + (m15['atr'] * 1.0) # RR 0.5:1
+            original_sl = entry_price - (m15['atr'] * 2.0)
+            sl_price = original_sl
+            tp_price = entry_price + (m15['atr'] * 3.0) # RR 1.5:1
+            activation_price = entry_price + (m15['atr'] * 1.5)
+            trailing_buffer = m15['atr'] * 1.0
+            
             fill_status, trade_result = False, "PENDING"
+            actual_rr = 0.0
             for j in range(i+1, min(i+40, len(df_15m))): # Lookahead 10 hours
                 future_bar = df_15m.iloc[j]
                 if not fill_status and future_bar['low'] <= entry_price:
                     fill_status = True
                 if fill_status:
+                    # Check SL First (Did it hit our stop this candle?)
                     if future_bar['low'] <= sl_price:
-                        trade_result = "LOSS"
+                        if sl_price > entry_price:
+                            trade_result = "BREAKEVEN/TRAILED"
+                            # Calculate profit obtained before getting stopped out
+                            profit = sl_price - entry_price
+                            risk = entry_price - original_sl
+                            actual_rr = profit / risk
+                        else:
+                            trade_result = "LOSS"
+                            actual_rr = -1.0
                         break
+                        
+                    # Check TP
                     elif future_bar['high'] >= tp_price:
                         trade_result = "WIN"
+                        actual_rr = 1.5
                         break
-            trades.append({'time': m15['timestamp'], 'filled': fill_status, 'result': trade_result, 'rr': 0.5})
+                        
+                    # Process Trailing Stop based on candle High
+                    if future_bar['high'] >= activation_price:
+                        breakeven = entry_price * 1.0015
+                        proposed_sl = future_bar['high'] - trailing_buffer
+                        new_sl = max(sl_price, proposed_sl, breakeven)
+                        if new_sl > sl_price:
+                            sl_price = new_sl
+                            
+            if trade_result == "PENDING" and fill_status:
+                # Time expired, close at last price
+                last_price = df_15m.iloc[min(i+40, len(df_15m))-1]['close']
+                if last_price > entry_price:
+                    trade_result = "BREAKEVEN/TRAILED"
+                else:
+                    trade_result = "LOSS"
+                actual_rr = (last_price - entry_price) / (entry_price - original_sl)
+                
+            trades.append({'time': m15['timestamp'], 'filled': fill_status, 'result': trade_result, 'rr': actual_rr})
     return trades
 
 def simulate_momentum_logic_3m(df_3m):
@@ -170,22 +205,19 @@ def print_results(name, trades):
     filled = sum(1 for t in trades if t['filled'])
     wins = sum(1 for t in trades if t['result'] == 'WIN')
     losses = sum(1 for t in trades if t['result'] == 'LOSS')
+    breakeven = sum(1 for t in trades if t['result'] == 'BREAKEVEN/TRAILED')
     
     win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+    safe_rate = ((wins + breakeven) / filled * 100) if filled > 0 else 0
     
     # Calculate Net PnL (Risk = 1 Unit)
-    net_pnl = 0
-    for t in trades:
-        if t['result'] == 'WIN':
-            net_pnl += t['rr'] # Win = +RR units
-        elif t['result'] == 'LOSS':
-            net_pnl -= 1.0 # Loss = -1 unit
+    net_pnl = sum(t['rr'] for t in trades if t['filled'])
             
     print(f"\n--- {name} ---")
     print(f"Total Signals: {total}")
     print(f"Filled: {filled}")
-    print(f"Wins: {wins} | Losses: {losses}")
-    print(f"Win Rate: {win_rate:.2f}%")
+    print(f"Wins: {wins} | Losses: {losses} | Trailed/Breakeven: {breakeven}")
+    print(f"Win Rate (Strict): {win_rate:.2f}% | Win+Safe Rate: {safe_rate:.2f}%")
     print(f"Net PnL (Risk=1): {net_pnl:.2f} Units")
 
 if __name__ == "__main__":
@@ -199,7 +231,7 @@ if __name__ == "__main__":
     df_3m = fetch_data('3m')
     df_3m = calculate_indicators(df_3m)
     
-    print_results("1. TREND MODE (15m | SL 2.0 / TP 1.0 | RR 0.5:1)", simulate_trend_logic_15m(df_15m))
+    print_results("1. TREND MODE (15m | SL 2.0 / TP 3.0 | RR 1.5:1)", simulate_trend_logic_15m(df_15m))
     print_results("2. MOMENTUM MODE (3m | SL 1.2 / TP 2.0 | RR 1.66:1)", simulate_momentum_logic_3m(df_3m))
     print_results("3. SCALPING MODE (3m | SL 1.5 / TP 1.5 | RR 1:1)", simulate_scalping_logic_3m(df_3m))
     print_results("4. SIDEWAYS MODE (3m | SL 1.2 / TP BB Mid)", simulate_sideways_logic_3m(df_3m))

@@ -491,11 +491,14 @@ def check_trades():
                         created_at = trade.get('created_at', now)
                         age = now - created_at
 
-                        is_scalping = trade.get('strategy') == 'SCALPING'
-                        if is_scalping:
+                        strategy = trade.get('strategy', '')
+                        if strategy == 'SCALPING':
                             from config import SCALPING_PENDING_EXPIRY
                             expiry_seconds = SCALPING_PENDING_EXPIRY  # 300s (5 min)
                             expiry_label = f"{SCALPING_PENDING_EXPIRY // 60} minutes (SCALPING)"
+                        elif strategy == 'MOMENTUM':
+                            expiry_seconds = 300  # 5 minutes
+                            expiry_label = "5 minutes (MOMENTUM)"
                         else:
                             expiry_seconds = 3600  # 60 minutes
                             expiry_label = "60 minutes"
@@ -611,22 +614,40 @@ def check_trades():
                     # ============================================================
                     result = _determine_trade_result(trade, trade['symbol'])
 
-                    if result == "WIN":
+                    # ============================================================
+                    # Check if LOSS was actually a TRAILED stop
+                    # ============================================================
+                    if result == "LOSS":
+                        entry_price = trade.get('entry', 0)
+                        current_sl = trade.get('sl', 0)
+                        side = trade.get('side', 'LONG')
+                        
+                        is_trailed = False
+                        if side == 'LONG' and current_sl > entry_price:
+                            is_trailed = True
+                        elif side == 'SHORT' and 0 < current_sl < entry_price:
+                            is_trailed = True
+                            
+                        if is_trailed:
+                            result = "TRAILED"
 
+                    if result == "WIN" or result == "TRAILED":
+
+                        msg_title = "🏆 WIN" if result == "WIN" else "🛡️ TRAILED (PROFIT)"
                         main_mod.send_telegram(
-                            f"🏆 WIN\n\n"
+                            f"{msg_title}\n\n"
                             f"{trade['symbol']}"
                         )
 
                         main_mod.update_signal_result(
                             signal_id,
-                            "WIN"
+                            "WIN" if result == "WIN" else "TRAILED"
                         )
                         
-                        # Google Sheets logging for WIN
+                        # Google Sheets logging for WIN/TRAILED
                         try:
                             entry_price = trade.get('entry', 0)
-                            exit_price = trade.get('tp2', entry_price)
+                            exit_price = trade.get('tp2', entry_price) if result == "WIN" else trade.get('sl', entry_price)
                             amount = trade.get('amount', 0)
                             if trade['side'] == 'LONG':
                                 pnl = round((exit_price - entry_price) * amount, 4)
@@ -643,7 +664,7 @@ def check_trades():
                                 entry=entry_price,
                                 exit_price=exit_price,
                                 pnl=pnl,
-                                result="WIN",
+                                result="WIN" if result == "WIN" else "TRAILED",
                                 grade=grade,
                                 score=score,
                                 rr=rr,

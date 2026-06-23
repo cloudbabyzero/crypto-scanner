@@ -979,7 +979,7 @@ def calculate_trade_levels(
     # Dynamic RR based on regime
     if regime in ["TRENDING", "MOMENTUM"]:
         sl_dist = atr * 2.0
-        tp_rr = 0.5
+        tp_rr = 2.0
     else: # SIDEWAYS or SCALPING
         sl_dist = atr * 1.5
         tp_rr = 1.5
@@ -1883,6 +1883,14 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         vol_status  = "HIGH" if volume_high else "NORMAL"
         adx_val     = round(m3['adx'], 2)
         atr_val     = round(atr_percent, 2)
+
+        # =========================
+        # TIMEFRAME CONFLUENCE
+        # =========================
+        if m3['adx'] < 20:
+            set_scan_result(symbol, {"status": "3m ADX Too Weak", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, "3m ADX Too Weak for Momentum", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi=0, stretch_pct=0, candle_color="")
+            return {"symbol": symbol, "result": "skipped"}
 
         # =========================
         # SCORE

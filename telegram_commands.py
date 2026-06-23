@@ -134,6 +134,38 @@ def cleartrades(message):
 # COINS COMMAND
 # =========================
 
+@bot.message_handler(commands=['modes'])
+def coin_modes_report(message):
+    bot.reply_to(message, "⏳ Scanning regimes for all coins... (This may take a minute)")
+    
+    def run_report():
+        modes_count = {"TRENDING": 0, "MOMENTUM": 0, "SCALPING": 0, "SIDEWAYS": 0, "PAUSE": 0}
+        try:
+            for symbol in main_mod.symbols:
+                df_1h = main_mod.get_dataframe(symbol, '1h')
+                if df_1h is not None and len(df_1h) >= 2:
+                    from indicators import detect_symbol_regime
+                    regime = detect_symbol_regime(df_1h)
+                    if regime in modes_count:
+                        modes_count[regime] += 1
+                    else:
+                        modes_count["PAUSE"] += 1
+                        
+            total = sum(modes_count.values())
+            text = f"📊 COIN MODES REPORT\n\n"
+            text += f"Total Coins: {total}\n\n"
+            text += f"🚀 MOMENTUM: {modes_count['MOMENTUM']}\n"
+            text += f"📈 TRENDING: {modes_count['TRENDING']}\n"
+            text += f"⚡ SCALPING: {modes_count['SCALPING']}\n"
+            text += f"📉 SIDEWAYS: {modes_count['SIDEWAYS']}\n"
+            text += f"⏸️ PAUSE: {modes_count['PAUSE']}\n"
+            
+            bot.send_message(message.chat.id, text)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"❌ Error generating report: {e}")
+            
+    threading.Thread(target=run_report).start()
+
 @bot.message_handler(commands=['coins'])
 def coins(message):
     text = "🪙 COINS\n\n"
@@ -1174,6 +1206,12 @@ def help_command(message):
 
 /market
 ดู market regime และเลือกโหมด
+
+/modes
+ดึงรายงานจำนวนเหรียญในแต่ละ Mode
+
+/cleartrades
+ล้างออเดอร์ค้างในหน่วยความจำของบอท
 
 /config
 ดู config ปัจจุบัน
