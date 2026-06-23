@@ -187,11 +187,11 @@ MOMENTUM_MIN_CANDLES = 3            # Consecutive 4h candles in same direction
 # Entry: entry = close ± atr * mult  (closer than Trend's ema7 ± atr*0.2)
 MOMENTUM_ENTRY_ATR_MULT = 0.3
 
-# SL: tighter than Trend (1.5) — momentum reverses fast
-MOMENTUM_SL_ATR_MULT = 2.0
+# SL: match backtest (1.2)
+MOMENTUM_SL_ATR_MULT = 1.2
 
-# TP: higher RR than Trend (2.0) — momentum can run far
-MOMENTUM_TP_RR = 2.5
+# TP: ลดระยะลงมาเก็บกำไรไวขึ้น (2.0 ATR) -> RR = 2.0 / 1.2 = 1.66
+MOMENTUM_TP_RR = 1.66
 
 # Auto trade — ON but with stricter filters below
 MOMENTUM_AUTO_TRADE = True
