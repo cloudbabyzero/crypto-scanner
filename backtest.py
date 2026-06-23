@@ -203,7 +203,9 @@ def _evaluate(sig, main_mod):
 def _log_result(sig, result, google_sheet):
     """บันทึกผล backtest ลง BacktestResults sheet"""
     try:
-        timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
+        # ใช้เวลาตอนเกิด signal จริง (recorded_at) จะได้ตรงกับ sheet Signals
+        recorded_at_ts = sig.get("recorded_at", time.time() - EVAL_SECONDS)
+        timestamp = (datetime.utcfromtimestamp(recorded_at_ts) + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         row = [
             timestamp,
             sig["signal_id"],

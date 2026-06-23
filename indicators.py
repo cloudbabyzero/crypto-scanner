@@ -69,15 +69,7 @@ def get_dataframe(symbol, timeframe):
         window=7
     )
 
-    # =========================
-    # MACD
-    # =========================
 
-    macd = ta.trend.MACD(df['close'])
-
-    df['macd'] = macd.macd()
-
-    df['macd_signal'] = macd.macd_signal()
 
     # =========================
     # ADX

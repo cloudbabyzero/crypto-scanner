@@ -1467,30 +1467,38 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             if volume_high:
                 long_score -= 40
 
-        # --- 5m EMA alignment (30pts) - Primary signal ---
+        # --- 5m EMA alignment (50pts) - Primary signal ---
         if m5['ema7'] > m5['ema25']:
+            long_score += 50
+        else:
+            short_score += 50
+
+        # --- 15m EMA confirmation (30pts) - Higher TF filter ---
+        if m15['ema7'] > m15['ema25']:
             long_score += 30
         else:
             short_score += 30
 
-        # --- 15m EMA confirmation (20pts) - Higher TF filter ---
-        if m15['ema7'] > m15['ema25']:
-            long_score += 20
-        else:
-            short_score += 20
+        # --- Exhaustion Penalty ---
+        stoch_rsi = m5.get('stoch_rsi', 50)
+        stretch_pct = abs(m5['close'] - m5['ema25']) / m5['ema25'] * 100
 
-        # --- MACD 5m momentum (15pts) ---
-        if m5['macd'] > m5['macd_signal'] and m5['macd'] > 0:
-            long_score += 15
-        elif m5['macd'] < m5['macd_signal'] and m5['macd'] < 0:
-            short_score += 15
+        if stoch_rsi > 80:
+            long_score -= 30
+        elif stoch_rsi < 20:
+            short_score -= 30
+            
+        if stretch_pct > 1.0:
+            long_score -= 20
+            short_score -= 20
 
         # --- RSI Golden Zone (15pts) ---
         rsi_val = m5['rsi_7'] if 'rsi_7' in m5 else m5['rsi']
-        if 40 <= rsi_val <= 55:
+        if 40 <= rsi_val <= 60:
             long_score += 15   # LONG sweet spot
-        elif 45 <= rsi_val <= 60:
+        elif 40 <= rsi_val <= 60:
             short_score += 15  # SHORT sweet spot
+
 
         # --- Volume spike (10pts) ---
         if volume_high:
@@ -1740,6 +1748,7 @@ Plan:
         # Google Sheets logging
         try:
             google_sheet.log_signal(
+                signal_id=signal_id,
                 symbol=symbol,
                 side=side,
                 grade=grade,
@@ -1877,17 +1886,24 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         else:
             short_score += 35
 
-        # 1H EMA alignment (25pts)
+        # 1H EMA alignment (45pts)
         if h1['ema7'] > h1['ema25']:
-            long_score += 25
+            long_score += 45
         else:
-            short_score += 25
+            short_score += 45
 
-        # MACD 1H (20pts)
-        if h1['macd'] > h1['macd_signal'] and h1['macd'] > 0:
-            long_score += 20
-        elif h1['macd'] < h1['macd_signal'] and h1['macd'] < 0:
-            short_score += 20
+        # --- Exhaustion Penalty ---
+        stoch_rsi = m15.get('stoch_rsi', 50)
+        stretch_pct = abs(m15['close'] - m15['ema25']) / m15['ema25'] * 100
+
+        if stoch_rsi > 80:
+            long_score -= 30
+        elif stoch_rsi < 20:
+            short_score -= 30
+            
+        if stretch_pct > 1.0:
+            long_score -= 20
+            short_score -= 20
 
         # ADX strength (10pts)
         if m15['adx'] >= MOMENTUM_MIN_ADX:
@@ -1901,9 +1917,9 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             long_score  += 10
             short_score += 10
 
-        # BTC filter
-        if symbol != 'BTC/USDT:USDT' and btc_trend == "bearish":
-            long_score -= 20
+        # =========================
+        # (BTC filter removed for Momentum to allow FOMO chasing)
+        # =========================
 
         long_score  = min(long_score, 100)
         short_score = min(short_score, 100)
@@ -2083,7 +2099,8 @@ Plan:
 
         # Google Sheets logging
         try:
-            signal_id = google_sheet.log_signal(
+            google_sheet.log_signal(
+                signal_id=signal_id,
                 symbol=symbol,
                 side=side,
                 grade=grade,
@@ -2416,29 +2433,27 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 
         if h1['ema7'] > h1['ema25']:
 
-            long_score += 20
+            long_score += 35
 
         else:
 
-            short_score += 20
+            short_score += 35
 
         # =========================
-        # MACD MOMENTUM
+        # EXHAUSTION PENALTY
         # =========================
+        
+        stoch_rsi = m15.get('stoch_rsi', 50)
+        stretch_pct = abs(m15['close'] - m15['ema25']) / m15['ema25'] * 100
 
-        if (
-            h1['macd'] > h1['macd_signal']
-            and h1['macd'] > 0
-        ):
-
-            long_score += 15
-
-        elif (
-            h1['macd'] < h1['macd_signal']
-            and h1['macd'] < 0
-        ):
-
-            short_score += 15
+        if stoch_rsi > 80:
+            long_score -= 30
+        elif stoch_rsi < 20:
+            short_score -= 30
+            
+        if stretch_pct > 1.0:
+            long_score -= 20
+            short_score -= 20
 
         # =========================
         # ANTI-FOMO SCORING ENGINE
@@ -2741,19 +2756,19 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # SHORT: entry ต้องสูงกว่า current price = รอราคาขึ้นมา (pullback)
         # =========================
 
-        # Deep entry — รอ pullback มาที่ ema7 (reduced from ATR*0.3 to ATR*0.15)
-        long_pullback_deep   = round(m15['ema7'] - (m15['atr'] * 0.15), 4)
-        short_pullback_deep  = round(m15['ema7'] + (m15['atr'] * 0.15), 4)
+        # Sniper Entry — รอราคากลับมาทดสอบเส้น EMA25 หรือลึกระดับ ATR*0.3
+        long_pullback_deep   = round(m15['ema25'], 4)
+        short_pullback_deep  = round(m15['ema25'], 4)
 
-        # Shallow entry — ใกล้ราคาปัจจุบันมากขึ้น (ATR*0.05 instead of 0.1)
-        long_pullback_shallow  = round(m15['close'] - (m15['atr'] * 0.05), 4)
-        short_pullback_shallow = round(m15['close'] + (m15['atr'] * 0.05), 4)
+        # เผื่อกรณีที่เทรนด์แรงมากแล้ว EMA25 อยู่ไกลไป ให้ขยับมารับที่ EMA7 - ATR*0.3
+        long_pullback_alt = round(m15['ema7'] - (m15['atr'] * 0.3), 4)
+        short_pullback_alt = round(m15['ema7'] + (m15['atr'] * 0.3), 4)
 
-        # LONG: เลือก entry ที่สูงกว่า (ใกล้ close มากกว่า) เพื่อเพิ่ม fill rate
-        long_pullback = max(long_pullback_deep, long_pullback_shallow)
+        # LONG: เลือกแนวรับที่แข็งที่สุด (ลึกที่สุด)
+        long_pullback = min(long_pullback_deep, long_pullback_alt)
 
-        # SHORT: เลือก entry ที่ต่ำกว่า (ใกล้ close มากกว่า) เพื่อเพิ่ม fill rate
-        short_pullback = min(short_pullback_deep, short_pullback_shallow)
+        # SHORT: เลือกแนวต้านที่แข็งที่สุด (สูงที่สุด)
+        short_pullback = max(short_pullback_deep, short_pullback_alt)
 
         # =========================
         # LONG SIGNAL
@@ -2761,15 +2776,12 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
 
         # 15m micro-alignment: price must be above EMA7, EMA7 above EMA25
         long_micro_aligned = (m15['close'] > m15['ema7'] and m15['ema7'] > m15['ema25'])
-        # MACD histogram must be positive and growing (accelerating momentum)
-        long_macd_accel = (m15['macd'] > m15['macd_signal'])
 
         if (
             long_score >= MIN_SCORE
             and btc_trend == "bullish"
             and m15['rsi'] <= config.TREND_LONG_MAX_RSI
             and long_micro_aligned
-            and long_macd_accel
         ):
 
             entry = round(
@@ -3086,8 +3098,6 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             # 15m micro-alignment: price below EMA7, EMA7 below EMA25
             and m15['close'] < m15['ema7']
             and m15['ema7'] < m15['ema25']
-            # MACD must confirm downward momentum
-            and m15['macd'] < m15['macd_signal']
         ):
 
             entry = round(
@@ -3571,22 +3581,22 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         ema7 = m15['ema7']
         ema25 = m15['ema25']
 
-        # LONG: RSI < 40, Close <= BB Lower, ADX < 28
+        # LONG: RSI < 45, Low <= BB Lower, ADX < 28
         # + ต้องไม่ downtrend ชัด: ema7 ต้องไม่ต่ำกว่า ema25 มากเกิน 1%
         long_trend_ok = ema7 >= ema25 * 0.99  # ยอมให้ต่ำกว่าได้นิดหน่อย แต่ไม่ downtrend ชัด
         long_condition = (
-            rsi < 40
-            and close <= bb_lower
+            rsi < 45
+            and m15['low'] <= bb_lower
             and adx < 28
             and long_trend_ok
         )
 
-        # SHORT: RSI > 60, Close >= BB Upper, ADX < 28
+        # SHORT: RSI > 55, High >= BB Upper, ADX < 28
         # + ต้องไม่ uptrend ชัด: ema7 ต้องไม่สูงกว่า ema25 มากเกิน 1%
         short_trend_ok = ema7 <= ema25 * 1.01
         short_condition = (
-            rsi > 60
-            and close >= bb_upper
+            rsi > 55
+            and m15['high'] >= bb_upper
             and adx < 28
             and short_trend_ok
         )
@@ -3872,7 +3882,35 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             "strategy": "SIDEWAYS",
         }
 
-        # BACKTEST: บันทึก signal สำหรับ evaluate ผล 4h ทีหลัง
+        # BACKTEST: บันทึก signal เพื่อให้ evaluate หลัง 4h จบแท่ง
+        try:
+            google_sheet.log_signal(
+                signal_id=signal_id,
+                symbol=symbol,
+                side=side,
+                grade=grade,
+                score=sideways_score,
+                entry=entry,
+                sl=sl,
+                tp=tp,
+                atr=atr_percent,
+                adx=round(adx, 2),
+                volume=vol_status,
+                btc_trend=get_btc_trend(),
+                status="SIGNAL",
+                strategy="SIDEWAYS",
+                allocation_decision="ALLOCATED",
+                skip_reason="",
+                vwap_position="",
+                stoch_rsi=round(m15.get('stoch_rsi', 0), 2) if 'stoch_rsi' in m15 else 0,
+                stretch_pct=round(abs(m15['close'] - m15['ema25']) / m15['ema25'] * 100, 2),
+                candle_color="GREEN" if m15['close'] > m15['open'] else "RED",
+                local_regime=local_regime,
+                btc_regime=btc_regime
+            )
+        except Exception as e:
+            print(f"[SIDEWAYS] Google Sheets log error: {e}", flush=True)
+
         backtest.record_signal(
             signal_id=signal_id,
             symbol=symbol,

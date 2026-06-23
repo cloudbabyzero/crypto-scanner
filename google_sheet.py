@@ -426,7 +426,7 @@ def shutdown_all(flush_timeout=10, other_timeout=5):
 # PUBLIC API FUNCTIONS
 # ==================================================
 
-def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status="SIGNAL",
+def log_signal(signal_id, symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status="SIGNAL",
                strategy="", allocation_decision="ALLOCATED", skip_reason="",
                vwap_position="", stoch_rsi="", stretch_pct="", candle_color="",
                local_regime="", btc_regime=""):
@@ -434,6 +434,7 @@ def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_
     Log a signal to the Signals sheet with unique SignalID.
 
     Args:
+        signal_id: Unique ID for the signal
         symbol: Trading pair symbol
         side: LONG or SHORT
         grade: Signal grade (A+, A, B, C)
@@ -454,7 +455,8 @@ def log_signal(symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_
         SignalID for tracking
     """
     try:
-        signal_id = str(uuid.uuid4())
+        if not signal_id:
+            signal_id = str(uuid.uuid4())
         timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
         row = [signal_id, timestamp, symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status,
                strategy, allocation_decision, skip_reason,

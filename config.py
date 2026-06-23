@@ -195,8 +195,8 @@ MOMENTUM_TP_RR = 2.5
 
 # Auto trade — ON but with stricter filters below
 MOMENTUM_AUTO_TRADE = True
-MOMENTUM_MIN_GRADE = "A+"           # Only A+ (Trend uses "A")
-MOMENTUM_MIN_SCORE = 90             # Only score >= 90 (Trend uses 85)
+MOMENTUM_MIN_GRADE = "A"           # Only A+ (Trend uses "A")
+MOMENTUM_MIN_SCORE = 85           # Only score >= 90 (Trend uses 85)
 MOMENTUM_MAX_TRADES = 1             # Max 1 position at a time (Trend uses 2)
 
 # =========================
@@ -229,7 +229,7 @@ SCALPING_MARGIN_PER_TRADE = 0.84   # ขั้นต่ำ BingX
 SCALPING_MIN_ADX = 20             # ต้องมี direction พอสมควร
 SCALPING_MIN_ATR_PCT = 0.15       # ATR% ขั้นต่ำ (ต้องมี volatility)
 SCALPING_MAX_ADX = 50             # ADX สูงเกินหมายถึง overextended
-SCALPING_MIN_SCORE = 75           # Score ขั้นต่ำ
+SCALPING_MIN_SCORE = 70           # Score ขั้นต่ำ
 SCALPING_MIN_GRADE = "A"          # Grade ขั้นต่ำสำหรับ auto trade
 
 # RSI Safe Zone
