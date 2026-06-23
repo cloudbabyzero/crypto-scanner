@@ -238,7 +238,11 @@ CONTROL_MODE = MODE  # "AUTO", "FORCE_TREND", "FORCE_SIDEWAY"
 # PERSISTENT STORAGE (Feature 7)
 # =========================
 
-REGIME_STORAGE_FILE = "regime_storage.json"
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+if os.path.isdir(DATA_DIR):
+    REGIME_STORAGE_FILE = os.path.join(DATA_DIR, "regime_storage.json")
+else:
+    REGIME_STORAGE_FILE = "regime_storage.json"
 
 
 def save_regime_storage():
@@ -282,7 +286,10 @@ def load_regime_storage():
 # STATE STORAGE (ACTIVE TRADES)
 # =========================
 
-STATE_STORAGE_FILE = "active_trades.json"
+if os.path.isdir(DATA_DIR):
+    STATE_STORAGE_FILE = os.path.join(DATA_DIR, "active_trades.json")
+else:
+    STATE_STORAGE_FILE = "active_trades.json"
 
 def load_active_trades():
     """Load active trades from disk to prevent amnesia on restart."""
