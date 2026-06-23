@@ -733,9 +733,26 @@ def _fetch_protection_orders_for_position(symbol, position_side):
         Returns None values if orders not found
     """
     try:
-        # Fetch all open orders for the symbol
+        # Fetch all regular open limit orders for the symbol
         orders = main_mod.exchange.fetch_open_orders(symbol)
         
+        # BingX and other exchanges hide trigger orders. We must fetch them explicitly.
+        try:
+            stop_orders = main_mod.exchange.fetch_open_orders(symbol, params={'stop': True})
+            if stop_orders:
+                orders.extend(stop_orders)
+        except Exception as e:
+            # Silently ignore if exchange doesn't support this parameter
+            pass
+            
+        try:
+            # Some CCXT versions use type=STOP_MARKET for BingX triggers
+            stop_market_orders = main_mod.exchange.fetch_open_orders(symbol, params={'type': 'STOP_MARKET'})
+            if stop_market_orders:
+                orders.extend(stop_market_orders)
+        except Exception as e:
+            pass
+            
         sl_order_id = None
         tp_order_id = None
         sl_price = None
