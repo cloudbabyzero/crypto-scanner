@@ -1266,11 +1266,16 @@ def detect_market_regime():
         (regime, btc_adx, btc_atr_percent) tuple
     """
     try:
-        df_1h = get_dataframe('BTC/USDT:USDT', '1h')
-        btc = df_1h.iloc[-2]
+        df_15m = get_dataframe('BTC/USDT:USDT', '15m')
+        btc = df_15m.iloc[-2]
 
         btc_adx = round(btc['adx'], 2)
         btc_atr_percent = round((btc['atr'] / btc['close']) * 100, 2)
+        
+        # EMA alignment for trend confirmation
+        is_uptrend = btc['ema7'] > btc['ema25'] > btc['ema99']
+        is_downtrend = btc['ema7'] < btc['ema25'] < btc['ema99']
+        has_trend_alignment = is_uptrend or is_downtrend
 
         # MOMENTUM: strongest trend, price far from EMA7, consecutive candles
         momentum_info = detect_momentum('BTC/USDT:USDT')
@@ -1281,7 +1286,7 @@ def detect_market_regime():
         if btc_atr_percent >= MARKET_REGIME_ATR_VOLATILE:
             return "VOLATILE", btc_adx, btc_atr_percent
 
-        if btc_adx >= MARKET_REGIME_ADX_TRENDING:
+        if btc_adx >= MARKET_REGIME_ADX_TRENDING and has_trend_alignment:
             return "TRENDING", btc_adx, btc_atr_percent
 
         # SCALPING: moderate activity zone (between TRENDING and SIDEWAYS)
@@ -1330,7 +1335,7 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
         set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time(), "mode": "UNKNOWN"})
         return {"symbol": symbol, "result": "error"}
 
-    local_regime = detect_symbol_regime(df_1h)
+    local_regime = detect_symbol_regime(df_15m)
     
     # Determine effective mode
     effective_mode = local_regime if local_regime != "PAUSE" else MARKET_MODE

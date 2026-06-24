@@ -152,22 +152,26 @@ def get_dataframe(symbol, timeframe):
 # PER-COIN REGIME DETECTION
 # =========================
 
-def detect_symbol_regime(df_1h):
-    """Detect local market regime for a specific symbol based on its 1h dataframe."""
-    if df_1h is None or len(df_1h) < 2:
+def detect_symbol_regime(df_15m):
+    """Detect local market regime for a specific symbol based on its 15m dataframe."""
+    if df_15m is None or len(df_15m) < 2:
         return "PAUSE"
         
-    h1 = df_1h.iloc[-2]
-    adx = h1['adx']
-    atr_pct = (h1['atr'] / h1['close']) * 100
+    m15 = df_15m.iloc[-2]
+    adx = m15['adx']
+    atr_pct = (m15['atr'] / m15['close']) * 100
+    
+    is_uptrend = m15['ema7'] > m15['ema25'] > m15['ema99']
+    is_downtrend = m15['ema7'] < m15['ema25'] < m15['ema99']
+    has_trend_alignment = is_uptrend or is_downtrend
     
     # 1. Momentum: very strong push, far from EMA
-    price_distance_pct = abs(h1['close'] - h1['ema7']) / h1['close'] * 100
+    price_distance_pct = abs(m15['close'] - m15['ema7']) / m15['close'] * 100
     if adx > 30 and price_distance_pct >= 1.5:
         return "MOMENTUM"
         
     # 2. Trending: strong trend, EMA aligned
-    if adx > 25:
+    if adx > 20 and has_trend_alignment:
         return "TRENDING"
             
     # 3. Sideways: low ADX

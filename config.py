@@ -95,13 +95,20 @@ LOSS_STREAK_RESET_ON_WIN = True  # Reset loss streak counter when a WIN occurs
 # TREND STRATEGY FILTERS
 # =========================
 
-TREND_MIN_ADX = 30
-TREND_MIN_ATR = 0.45
+# --- TREND PARAMETERS ---
+TREND_MIN_ADX = 20
+TREND_MIN_ATR = 0.35
 TREND_HIGH_VOLUME_ONLY = False
 
-# =========================
-# ADX CEILING & STRETCH LIMIT FILTERS
-# =========================
+# --- SIDEWAYS PARAMETERS ---
+SIDEWAYS_MAX_ADX = 25
+
+# --- SCALPING PARAMETERS ---
+SCALPING_MIN_ADX = 15
+SCALPING_MAX_ADX = 45
+
+# --- MOMENTUM PARAMETERS ---
+MOMENTUM_MIN_ADX = 30
 
 ADX_CEILING_LIMIT = 50         # Maximum allowed ADX. If higher, trend is overextended. (was 55)
 STRETCH_MAX_DISTANCE_PCT = 1.2 # Maximum allowed distance (%) between current price and entry EMA. (was 1.5)
