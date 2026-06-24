@@ -152,30 +152,34 @@ def get_dataframe(symbol, timeframe):
 # PER-COIN REGIME DETECTION
 # =========================
 
-def detect_symbol_regime(df_15m):
-    """Detect local market regime for a specific symbol based on its 15m dataframe."""
-    if df_15m is None or len(df_15m) < 2:
+def detect_symbol_regime(df_1h):
+    """Detect local market regime for a specific symbol based on its 1h dataframe."""
+    if df_1h is None or len(df_1h) < 2:
         return "PAUSE"
         
-    m15 = df_15m.iloc[-2]
-    adx = m15['adx']
-    atr_pct = (m15['atr'] / m15['close']) * 100
+    h1 = df_1h.iloc[-2]
+    adx = h1['adx']
+    atr_pct = (h1['atr'] / h1['close']) * 100
     
-    is_uptrend = m15['ema7'] > m15['ema25'] > m15['ema99']
-    is_downtrend = m15['ema7'] < m15['ema25'] < m15['ema99']
+    is_uptrend = h1['ema7'] > h1['ema25'] > h1['ema99']
+    is_downtrend = h1['ema7'] < h1['ema25'] < h1['ema99']
     has_trend_alignment = is_uptrend or is_downtrend
     
     # 1. Momentum: very strong push, far from EMA
-    price_distance_pct = abs(m15['close'] - m15['ema7']) / m15['close'] * 100
+    price_distance_pct = abs(h1['close'] - h1['ema7']) / h1['close'] * 100
     if adx > 30 and price_distance_pct >= 1.5:
         return "MOMENTUM"
         
     # 2. Trending: strong trend, EMA aligned
-    if adx > 20 and has_trend_alignment:
-        return "TRENDING"
+    if adx >= 20:
+        if has_trend_alignment:
+            return "TRENDING"
+        elif atr_pct > 0.15:
+            # If ADX is high but EMAs aren't perfectly aligned, fallback to SCALPING if volatile
+            return "SCALPING"
             
     # 3. Sideways: low ADX
-    if adx < 20:
+    if adx < 25:
         return "SIDEWAYS"
         
     # 4. Scalping: high volatility but no clear trend/momentum
@@ -200,10 +204,11 @@ def detect_momentum(symbol='BTC/USDT:USDT'):
             consecutive_candles (int)
     """
     from config import (
-        MOMENTUM_MIN_ADX,
+        STRATEGY_CONFIG,
         MOMENTUM_MIN_PRICE_DISTANCE,
         MOMENTUM_MIN_CANDLES,
     )
+    MOMENTUM_MIN_ADX = STRATEGY_CONFIG['MOMENTUM']['FILTERS']['MIN_ADX']
 
     df = get_dataframe(symbol, '4h')
 

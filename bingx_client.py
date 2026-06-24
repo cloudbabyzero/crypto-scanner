@@ -427,8 +427,10 @@ def execute_trade(symbol, side, skip_pullback_check=False):
 
         if side == "long":
 
+            cfg = main_mod.get_strategy_config(signal.get('signal_regime', 'TRENDING'))
+
             main_mod.exchange.set_leverage(
-                main_mod.LEVERAGE,
+                cfg['LEVERAGE'],
                 symbol,
                 {
                      "side": "LONG"
@@ -437,8 +439,10 @@ def execute_trade(symbol, side, skip_pullback_check=False):
 
         else:
 
+            cfg = main_mod.get_strategy_config(signal.get('signal_regime', 'TRENDING'))
+
             main_mod.exchange.set_leverage(
-                main_mod.LEVERAGE,
+                cfg['LEVERAGE'],
                 symbol,
                 {
                     "side": "SHORT"
@@ -450,7 +454,7 @@ def execute_trade(symbol, side, skip_pullback_check=False):
         # =========================
 
         raw_amount = (
-            main_mod.MARGIN_PER_TRADE * main_mod.LEVERAGE
+            cfg['MARGIN_PER_TRADE'] * cfg['LEVERAGE']
         ) / entry
 
         amount = main_mod.exchange.amount_to_precision(
@@ -646,10 +650,10 @@ TP2:
 {tp2}
 
 Leverage:
-x{main_mod.LEVERAGE}
+x{cfg['LEVERAGE']}
 
 Margin:
-{main_mod.MARGIN_PER_TRADE} USDT
+{cfg['MARGIN_PER_TRADE']} USDT
 """
 
         main_mod.send_telegram(message)
@@ -770,7 +774,7 @@ def execute_scalp_trade(symbol, side):
         # MARGIN MODE + LEVERAGE (scalping-specific)
         # =========================
 
-        from config import SCALPING_LEVERAGE, SCALPING_MARGIN_PER_TRADE
+        cfg = main_mod.get_strategy_config('SCALPING')
 
         try:
             main_mod.exchange.set_margin_mode("isolated", symbol)
@@ -779,7 +783,7 @@ def execute_scalp_trade(symbol, side):
 
         leverage_side = "LONG" if side == "long" else "SHORT"
         main_mod.exchange.set_leverage(
-            SCALPING_LEVERAGE,
+            cfg['LEVERAGE'],
             symbol,
             {"side": leverage_side}
         )
@@ -788,7 +792,7 @@ def execute_scalp_trade(symbol, side):
         # AMOUNT
         # =========================
 
-        raw_amount = (SCALPING_MARGIN_PER_TRADE * SCALPING_LEVERAGE) / entry
+        raw_amount = (cfg['MARGIN_PER_TRADE'] * cfg['LEVERAGE']) / entry
         amount = main_mod.exchange.amount_to_precision(symbol, raw_amount)
         amount = float(amount)
 
@@ -796,16 +800,16 @@ def execute_scalp_trade(symbol, side):
         # SL / TP
         # =========================
 
-        from config import SCALPING_SL_ATR_MULT, SCALPING_TP_RR
+        
 
         if side == "long":
-            sl   = round(entry - atr * SCALPING_SL_ATR_MULT, 4)
+            sl   = round(entry - atr * cfg['SL_ATR_MULT'], 4)
             risk = entry - sl
-            tp2  = round(entry + risk * SCALPING_TP_RR, 4)
+            tp2  = round(entry + risk * cfg['TP_RR'], 4)
         else:
-            sl   = round(entry + atr * SCALPING_SL_ATR_MULT, 4)
+            sl   = round(entry + atr * cfg['SL_ATR_MULT'], 4)
             risk = sl - entry
-            tp2  = round(entry - risk * SCALPING_TP_RR, 4)
+            tp2  = round(entry - risk * cfg['TP_RR'], 4)
 
         # =========================
         # MARKET ORDER (instant fill)
@@ -838,13 +842,13 @@ def execute_scalp_trade(symbol, side):
 
         # Recalculate SL/TP based on actual fill price
         if side == "long":
-            sl   = round(filled_entry - atr * SCALPING_SL_ATR_MULT, 4)
+            sl   = round(filled_entry - atr * cfg['SL_ATR_MULT'], 4)
             risk = filled_entry - sl
-            tp2  = round(filled_entry + risk * SCALPING_TP_RR, 4)
+            tp2  = round(filled_entry + risk * cfg['TP_RR'], 4)
         else:
-            sl   = round(filled_entry + atr * SCALPING_SL_ATR_MULT, 4)
+            sl   = round(filled_entry + atr * cfg['SL_ATR_MULT'], 4)
             risk = sl - filled_entry
-            tp2  = round(filled_entry - risk * SCALPING_TP_RR, 4)
+            tp2  = round(filled_entry - risk * cfg['TP_RR'], 4)
 
         # =========================
         # PLACE PROTECTION ORDERS IMMEDIATELY
@@ -938,10 +942,10 @@ TP:
 {tp2}
 
 Leverage:
-x{SCALPING_LEVERAGE}
+x{cfg['LEVERAGE']}
 
 Margin:
-{SCALPING_MARGIN_PER_TRADE} USDT
+{cfg['MARGIN_PER_TRADE']} USDT
 """
 
         main_mod.send_telegram(message)
