@@ -55,8 +55,8 @@ import config
 # =========================
 # DYNAMIC CONFIG DEFAULTS
 # =========================
-TREND_HIGH_VOLUME_ONLY = True
-SIDEWAYS_HIGH_VOLUME_ONLY = True
+TREND_HIGH_VOLUME_ONLY = False
+SIDEWAYS_HIGH_VOLUME_ONLY = False
 ADX_FILTER = 18                   # Used to add bonus score for strong trend
 MIN_SCORE = 80                    # Global fallback for telegram overrides
 
