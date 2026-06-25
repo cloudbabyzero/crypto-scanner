@@ -951,13 +951,10 @@ def calculate_trade_levels(
     side,
     regime="TRENDING"
 ):
-    # Dynamic RR based on regime
-    if regime in ["TRENDING", "MOMENTUM"]:
-        sl_dist = atr * 2.0
-        tp_rr = 2.0
-    else: # SIDEWAYS or SCALPING
-        sl_dist = atr * 1.5
-        tp_rr = 1.5
+    # Dynamic RR based on config
+    config = STRATEGY_CONFIG.get(regime, STRATEGY_CONFIG['TRENDING'])
+    sl_dist = atr * config.get('SL_ATR_MULT', 2.0)
+    tp_rr = config.get('TP_RR', 1.5)
 
     if side == "LONG":
         sl = round(
@@ -1343,7 +1340,9 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
     if effective_mode == "SIDEWAYS":
         res = analyze_sideways(symbol, **kwargs)
     elif effective_mode == "MOMENTUM":
-        res = analyze_momentum(symbol, **kwargs)
+        # res = analyze_momentum(symbol, **kwargs)
+        # MOMENTUM mode disabled (per A/B test results), fallback to TREND which performs much better in high ADX
+        res = analyze_trend(symbol, **kwargs)
     elif effective_mode == "SCALPING":
         res = analyze_scalping(symbol, **kwargs)
     else:
@@ -1417,6 +1416,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         vol_status  = "HIGH" if volume_high else "NORMAL"
         adx_val     = round(m3['adx'], 2)
         atr_val     = round(atr_percent, 2)
+        rsi_val     = round(m3['rsi'], 2)
 
         # =========================
         # FOMO FILTER
@@ -1459,61 +1459,47 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 long_score -= 40
 
         # --- 3m EMA alignment (50pts) - Primary signal ---
-        if m3['ema7'] > m3['ema25']:
-            long_score += 50
-        else:
-            short_score += 50
+        # =========================
+        # SCALPING LOGIC (Aligned with Backtest 3m)
+        # =========================
 
-        # --- 15m EMA confirmation (30pts) - Higher TF filter ---
-        if m15['ema7'] > m15['ema25']:
-            long_score += 30
-        else:
-            short_score += 30
+        # LONG SCORE
+        if m3['ema7'] > m3['ema25']: long_score += 50
+        if m15['ema7'] > m15['ema25']: long_score += 30
+        if m3['rsi'] <= 38:
+            long_score += 25
+        if m3['volume'] > m3['vol_avg'] * 1.5: long_score += 10
+
+        # SHORT SCORE
+        if m3['ema7'] < m3['ema25']: short_score += 50
+        if m15['ema7'] < m15['ema25']: short_score += 30
+        if m3['rsi'] >= 62:
+            short_score += 25
+        if m3['volume'] > m3['vol_avg'] * 1.5: short_score += 10
 
         # --- Exhaustion Penalty ---
         stoch_rsi = m3.get('stoch_rsi', 50)
         stretch_pct = abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100
 
-        if stoch_rsi > 80:
-            long_score -= 30
-        elif stoch_rsi < 20:
-            short_score -= 30
-            
-        if stretch_pct > 1.0:
-            long_score -= 20
-            short_score -= 20
+        # LONG Penalty
+        if stoch_rsi > 80: long_score -= 30
+        if m3['close'] > m3['ema25'] and stretch_pct > 1.0: long_score -= 20
 
-        # --- RSI Golden Zone (15pts) ---
-        rsi_val = m3['rsi_7'] if 'rsi_7' in m3 else m3['rsi']
-        if rsi_val <= STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']:
-            long_score += 15   # LONG sweet spot
-        elif rsi_val >= STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']:
-            short_score += 15  # SHORT sweet spot
+        # SHORT Penalty
+        if stoch_rsi < 20: short_score -= 30
+        if m3['close'] < m3['ema25'] and stretch_pct > 1.0: short_score -= 20
 
-
-        # --- Volume spike (10pts) ---
-        if volume_high:
-            long_score  += 10
-            short_score += 10
-
-        # --- ADX strength (10pts) ---
-        if STRATEGY_CONFIG['SCALPING']['FILTERS']['MIN_ADX'] <= m3['adx'] <= STRATEGY_CONFIG['SCALPING']['FILTERS']['MAX_ADX']:
-            if m3['ema7'] > m3['ema25']:
-                long_score += 10
-            else:
-                short_score += 10
-
-        # --- BTC filter (penalty) ---
+        # =========================
+        # BTC FILTER (Strict Macro Alignment)
+        # =========================
         if symbol != 'BTC/USDT:USDT':
-            if btc_trend == "bearish":
-                long_score -= 15
-            elif btc_trend == "bullish":
-                short_score -= 15
-
-        # --- ADX overextended penalty ---
-        if m3['adx'] > STRATEGY_CONFIG['SCALPING']['FILTERS']['MAX_ADX']:
-            long_score -= 20
-            short_score -= 20
+            if btc_trend == "bullish":
+                short_score = 0  # Forbid SHORT in Bull Market
+            elif btc_trend == "bearish":
+                long_score = 0   # Forbid LONG in Bear Market
+            elif btc_trend == "neutral":
+                long_score -= 20
+                short_score -= 20
 
         long_score  = min(long_score, 100)
         short_score = min(short_score, 100)
@@ -1884,32 +1870,33 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         short_score = 0
         btc_trend   = get_btc_trend()
 
-        # 4H EMA alignment (35pts)
-        if h4['ema25'] > h4['ema99']:
-            long_score += 35
-        else:
-            short_score += 35
+        # =========================
+        # MOMENTUM LOGIC (Aligned with Backtest 3m)
+        # =========================
 
-        # 1H EMA alignment (45pts)
-        if h1['ema7'] > h1['ema25']:
-            long_score += 45
-        else:
-            short_score += 45
+        # LONG SCORE
+        if m3['ema7'] > m3['ema25']: long_score += 50
+        if m3['ema25'] > m3['ema99']: long_score += 35
+        if m3['adx'] > 25: long_score += 10
+        if m3['rsi'] <= 45: long_score += 25
+
+        # SHORT SCORE
+        if m3['ema7'] < m3['ema25']: short_score += 50
+        if m3['ema25'] < m3['ema99']: short_score += 35
+        if m3['adx'] > 25: short_score += 10
+        if m3['rsi'] >= 55: short_score += 25
 
         # --- Exhaustion Penalty ---
         stoch_rsi = m3.get('stoch_rsi', 50)
         stretch_pct = abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100
-            
-        if stretch_pct > 1.0:
-            long_score -= 20
-            short_score -= 20
 
-        # ADX strength (10pts)
-        if m3['adx'] >= STRATEGY_CONFIG['MOMENTUM']['FILTERS']['MIN_ADX']:
-            if h1['ema7'] > h1['ema25']:
-                long_score += 10
-            else:
-                short_score += 10
+        # LONG Penalty
+        if stoch_rsi > 80: long_score -= 30
+        if m3['close'] > m3['ema25'] and stretch_pct > 1.0: long_score -= 20
+        
+        # SHORT Penalty
+        if stoch_rsi < 20: short_score -= 30
+        if m3['close'] < m3['ema25'] and stretch_pct > 1.0: short_score -= 20
 
         # Volume confirmation (10pts)
         if volume_high:
@@ -1917,8 +1904,16 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             short_score += 10
 
         # =========================
-        # (BTC filter removed for Momentum to allow FOMO chasing)
+        # BTC FILTER (Strict Macro Alignment)
         # =========================
+        if symbol != 'BTC/USDT:USDT':
+            if btc_trend == "bullish":
+                short_score = 0  # Forbid SHORT in Bull Market
+            elif btc_trend == "bearish":
+                long_score = 0   # Forbid LONG in Bear Market
+            elif btc_trend == "neutral":
+                long_score -= 20
+                short_score -= 20
 
         long_score  = min(long_score, 100)
         short_score = min(short_score, 100)
@@ -2196,6 +2191,9 @@ Plan:
             if not skip_reason:
                 print(f"[MOMENTUM_AUTO_TRADE] {symbol} {side} — executing", flush=True)
                 try:
+                    if symbol not in scan_results or not isinstance(scan_results[symbol], dict):
+                        scan_results[symbol] = {}
+                    scan_results[symbol]["strategy"] = "MOMENTUM"
                     bingx_client.execute_trade(symbol, side, skip_pullback_check=True)
                 except Exception:
                     print(f"[MOMENTUM_AUTO_TRADE] execute_trade error", flush=True)
@@ -2289,7 +2287,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # =========================
         adx_val = round(m15['adx'], 2)
         atr_pct = (m15['atr'] / m15['close']) * 100
+        atr_percent = atr_pct
         vol_high = m15['volume'] > m15['vol_avg'] * 1.3
+        volume_high = vol_high
         
         passes_exec, exec_reason = check_trend_filters(atr_pct, adx_val, vol_high)
         if not passes_exec:
@@ -2303,6 +2303,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         candle_size = abs(
             m15['close'] - m15['open']
         )
+        is_green = m15['close'] > m15['open']
 
         if candle_size > m15['atr'] * 1.5:
             print(
@@ -2410,340 +2411,49 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             short_score -= 25
 
         # =========================
-        # DAILY TREND (ลด weight เพราะ lagging มาก)
+        # TREND LOGIC (Aligned with Backtest 15m)
         # =========================
 
-        if d1['ema25'] > d1['ema99']:
+        # LONG SCORE
+        if m15['ema7'] > m15['ema25']: long_score += 35
+        if m15['ema25'] > m15['ema99']: long_score += 25
+        if m15['close'] > m15['ema7']: long_score += 10
+        if vol_high: long_score += 15
+        if adx_val > STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ADX']: long_score += 15
 
-            long_score += 5   # เดิม 10
-
-        else:
-
-            short_score += 5  # เดิม 10
-
-        # =========================
-        # 4H TREND (ลด weight เพราะ lagging)
-        # =========================
-
-        if h4['ema25'] > h4['ema99']:
-
-            long_score += 15  # เดิม 25
-
-        else:
-
-            short_score += 15  # เดิม 25
+        # SHORT SCORE
+        if m15['ema7'] < m15['ema25']: short_score += 35
+        if m15['ema25'] < m15['ema99']: short_score += 25
+        if m15['close'] < m15['ema7']: short_score += 10
+        if vol_high: short_score += 15
+        if adx_val > STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ADX']: short_score += 15
 
         # =========================
-        # 1H EMA
+        # BTC FILTER (Strict Macro Alignment)
         # =========================
-
-        if h1['ema7'] > h1['ema25']:
-
-            long_score += 35
-
-        else:
-
-            short_score += 35
-
-        # =========================
-        # EXHAUSTION PENALTY
-        # =========================
-        
-        stoch_rsi = m15.get('stoch_rsi', 50)
-        stretch_pct = abs(m15['close'] - m15['ema25']) / m15['ema25'] * 100
-
-        if stoch_rsi > 80:
-            long_score -= 30
-        elif stoch_rsi < 20:
-            short_score -= 30
-            
-        if stretch_pct > 1.0:
-            long_score -= 20
-            short_score -= 20
-
-        # =========================
-        # ANTI-FOMO SCORING ENGINE
-        # หลักการ: ยิ่งวิ่งไปไกล ยิ่งต้องเกรดตก
-        # Golden Zone = momentum เพิ่งเริ่ม (ต้นน้ำ)
-        # Danger Zone = momentum extended ไปแล้ว (ปลายน้ำ/ดอย)
-        # =========================
-        rsi_val = m15['rsi']
-
-        # คำนวณระยะห่างของราคากับเส้นฐาน EMA25
-        long_stretch_pct  = ((m15['close'] - m15['ema25']) / m15['ema25']) * 100
-        short_stretch_pct = ((m15['ema25'] - m15['close']) / m15['ema25']) * 100
-
-        if local_regime == "TRENDING":
-
-            # --- TREND LONG ---
-            if m15['close'] > m15['ema25']:
-                if rsi_val > 65:
-                    long_score -= 40   # ดอยจัด (was >70, tightened)
-                elif 60 <= rsi_val <= 65:
-                    long_score -= 25   # เริ่มตึง (was 65-70)
-                elif 53 <= rsi_val < 60:
-                    long_score += 5    # Neutral
-                elif 45 <= rsi_val <= 52:
-                    long_score += 20   # GOLDEN ZONE (narrowed from 42-52)
-                elif 38 <= rsi_val <= 44:
-                    long_score += 10   # PRE-GOLDEN
-                elif rsi_val < 38:
-                    long_score -= 15   # Too deep pullback — may break down
-
-                if long_stretch_pct > 2.5:
-                    long_score -= 30   # Overextended (was 3.5%, tightened)
-                elif long_stretch_pct <= 0.8:
-                    long_score += 10   # Close to base — safe
-
-            # --- TREND SHORT ---
-            if m15['close'] < m15['ema25']:
-                if rsi_val < 35:
-                    short_score -= 40  # Oversold — bounce risk (was <40)
-                elif 35 <= rsi_val < 42:
-                    short_score -= 25  # Getting low (was 40-44)
-                elif 42 <= rsi_val < 48:
-                    short_score += 5    # Neutral
-                elif 48 <= rsi_val <= 55:
-                    short_score += 20  # GOLDEN ZONE (narrowed from 48-58)
-                elif 56 <= rsi_val <= 62:
-                    short_score += 10  # PRE-GOLDEN
-                elif rsi_val > 62:
-                    short_score -= 15  # Too high for SHORT — trend may reverse
-
-                if short_stretch_pct > 2.5:
-                    short_score -= 30  # Oversold (was 3.5%, tightened)
-                elif short_stretch_pct <= 0.8:
-                    short_score += 10  # Just broke base — safe
-
-        elif local_regime == "SIDEWAYS":
-
-            # --- SIDEWAYS LONG (ซื้อขอบล่างกรอบ) ---
-            if 40 <= rsi_val <= 49:
-                long_score += 25       # GOLDEN ZONE ช้อนซื้อแนวรับล่าง
-            elif rsi_val >= 58:
-                long_score -= 30       # อันตราย ราคาจ่อขอบบนแล้ว
-
-            if long_stretch_pct > 1.5:
-                long_score -= 20       # ดีดห่างเส้นฐานในไซด์เวย์ = ใกล้จบรอบ
-
-            # --- SIDEWAYS SHORT (ขายขอบบนกรอบ) ---
-            if 51 <= rsi_val <= 60:
-                short_score += 25      # GOLDEN ZONE เปิด SHORT ที่แนวต้านบน
-            elif rsi_val <= 42:
-                short_score -= 30      # อันตราย ราคาจ่อแนวรับล่างแล้ว
-
-            if short_stretch_pct > 1.5:
-                short_score -= 20      # ลงลึกเกินในไซด์เวย์ เสี่ยงดีดกลับ
-
-        # =========================
-        # ADX FILTER
-        # =========================
-
-        config = STRATEGY_CONFIG.get(local_regime, STRATEGY_CONFIG['TRENDING'])
-        if m15['adx'] > config['FILTERS']['MIN_ADX']:
-            
-            if h1['ema7'] > h1['ema25']:
-
-                long_score += 10
-
-            else:
-
-                short_score += 10
-
-        # =========================
-        # ATR VOLATILITY FILTER
-        # =========================
-
-        atr_percent = (
-            m15['atr']
-            /
-            m15['close']
-        ) * 100
-
-        config = STRATEGY_CONFIG.get(local_regime, STRATEGY_CONFIG['TRENDING'])
-        if atr_percent > config['FILTERS']['MIN_ATR_PCT']:
-
-            if h1['ema7'] > h1['ema25']:
-
-                long_score += 10
-
-            else:
-
-                short_score += 10
-        
-        # =========================
-        # CANDLE PA, VOLUME TRAP, AND BTC REGIME
-        # =========================
-        is_green = m15['close'] > m15['open']
-        is_red = m15['close'] < m15['open']
-
-        volume_high = (
-            m15['volume']
-            >
-            m15['vol_avg'] * 1.3
-        )
-
-        # BTC Regime Filter (STRICT)
-        if btc_trend == "bullish":
-            short_score -= 25
-        elif btc_trend == "bearish":
-            long_score -= 25
-
-        # PA & Volume Logic (STRICT)
-        if is_green:
-            short_score -= 30
-            if volume_high:
-                short_score -= 40
-            
-            if h1['ema7'] > h1['ema25']:
-                # Aligns with LONG
-                if volume_high:
-                    long_score += 15
-        
-        if is_red:
-            long_score -= 30
-            if volume_high:
-                long_score -= 40
-                
-            if h1['ema7'] <= h1['ema25']:
-                # Aligns with SHORT
-                if volume_high:
-                    short_score += 15
-
-        # =========================
-        # BOLLINGER FILTER
-        # =========================
-
-        upper_distance = (
-            m15['close']
-            /
-            m15['bb_upper']
-        )
-
-        lower_distance = (
-            m15['close']
-            /
-            m15['bb_lower']
-        )
-
-        # LONG FILTER
-        if (
-            m15['close'] > m15['bb_mid']
-            and upper_distance < 0.998
-        ):
-
-            long_score += 10
-
-        # SHORT FILTER
-        elif (
-            m15['close'] < m15['bb_mid']
-            and lower_distance > 1.002
-        ):
-
-            short_score += 10
-
-        # =========================
-        # SUPPORT / RESISTANCE FILTER
-        # =========================
-
-        recent_low = min(
-            df_15m['low'].tail(20)
-        )
-
-        recent_high = max(
-            df_15m['high'].tail(20)
-        )
-
-        distance_to_low = (
-            m15['close'] - recent_low
-        ) / m15['close']
-
-        distance_to_high = (
-            recent_high - m15['close']
-        ) / m15['close']
-
-        # SHORT ใกล้ low มากไป
-        if distance_to_low < 0.003:
-
-            short_score -= 15
-
-        # LONG ใกล้ high มากไป
-        if distance_to_high < 0.003:
-
-            long_score -= 15
-
-        # =========================
-        # EMA99 FILTER
-        # =========================
-
-        distance_ema99 = abs(
-            m15['close'] - m15['ema99']
-        )
-
-        if distance_ema99 < m15['atr'] * 0.3:
-            print(
-                f"{symbol} skipped - too close EMA99",
-                flush=True
-            )
-
-            score = max(long_score, short_score)
-            vol_status = "HIGH" if volume_high else "NORMAL"
-            set_scan_result(symbol, {"status": "Too Close EMA99", "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now})
-            # Track rejected signal (Feature 3)
-            rejected_signals.add(symbol)
-            # Google Sheets debug logging
-            google_sheet.log_debug(symbol, "Too Close EMA99", score=score, adx=round(m15['adx'], 2), atr=round(atr_percent, 2), vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
-            return {"symbol": symbol, "result": "skipped"}
-
-        # =========================
-        # BTC FILTER
-        # =========================
-        # bullish  → หัก short_score 20 (ไม่ควร short ตอน BTC ขึ้น)
-        # bearish  → หัก long_score  20 (ไม่ควร long ตอน BTC ลง)
-        # neutral  → หัก ทั้ง long และ short 20 (market reversal zone — strict penalty)
         if symbol != 'BTC/USDT:USDT':
-
             if btc_trend == "bullish":
-                # BTC bullish: penalize SHORT only (reduced from -20)
-                short_score -= 10
-
+                short_score = 0  # Forbid SHORT in Bull Market
             elif btc_trend == "bearish":
-                # BTC bearish: penalize LONG only (reduced from -20)
-                long_score -= 10
-
+                long_score = 0   # Forbid LONG in Bear Market
             elif btc_trend == "neutral":
-                # BTC neutral: market reversal / conflicting signals
-                # Reduced from -20 to -10 — neutral shouldn't block both sides
-                print(
-                    "BTC Trend is neutral. Applying -10 score penalty.",
-                    flush=True
-                )
-                long_score  -= 10
-                short_score -= 10
+                long_score -= 20
+                short_score -= 20
 
         # =========================
         # LIMIT SCORE
         # =========================
-
-        long_score = min(
-            long_score,
-            100
-        )
-
-        short_score = min(
-            short_score,
-            100
-        )
+        long_score = min(long_score, 100)
+        short_score = min(short_score, 100)
 
         # =========================
         # GRADE
         # =========================
-
         score = max(long_score, short_score)
         grade = "C"
         min_score = STRATEGY_CONFIG['TRENDING']['MIN_SCORE']
         
-        if score >= min_score + 10 and m15['adx'] > 25:
+        if score >= min_score + 10 and adx_val > 25:
             grade = "A+"
         elif score >= min_score:
             grade = "A"
@@ -2804,6 +2514,12 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             and m15['rsi'] <= STRATEGY_CONFIG['TRENDING']['FILTERS']['RSI_SAFE_LONG_MAX']
             and long_micro_aligned
         ):
+            
+            current_price = df_15m.iloc[-1]['close']
+            if current_price < long_pullback:
+                print(f"{symbol} LONG skipped - price already below support (Reversal Risk)", flush=True)
+                set_scan_result(symbol, {"status": "Reversal Risk (Broke Support)", "score": long_score, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": time.time()})
+                return {"symbol": symbol, "result": "skipped"}
 
             entry = round(
                 long_pullback,
@@ -3005,6 +2721,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                         f"Positions: {pos_status}"
                     )
                     
+                    if symbol not in scan_results or not isinstance(scan_results[symbol], dict):
+                        scan_results[symbol] = {}
+                    scan_results[symbol]["strategy"] = "TREND"
                     threading.Thread(
                         target=lambda: bingx_client.execute_trade(symbol, "long"),
                         daemon=True
@@ -3119,6 +2838,12 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             and m15['rsi'] >= STRATEGY_CONFIG['TRENDING']['FILTERS']['RSI_SAFE_SHORT_MIN']
             and short_micro_aligned
         ):
+
+            current_price = df_15m.iloc[-1]['close']
+            if current_price > short_pullback:
+                print(f"{symbol} SHORT skipped - price already above resistance (Reversal Risk)", flush=True)
+                set_scan_result(symbol, {"status": "Reversal Risk (Broke Resistance)", "score": short_score, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": time.time()})
+                return {"symbol": symbol, "result": "skipped"}
 
             entry = round(
                 short_pullback,
@@ -3320,6 +3045,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                         f"Positions: {pos_status}"
                     )
                     
+                    if symbol not in scan_results or not isinstance(scan_results[symbol], dict):
+                        scan_results[symbol] = {}
+                    scan_results[symbol]["strategy"] = "TREND"
                     threading.Thread(
                         target=lambda: bingx_client.execute_trade(symbol, "short"),
                         daemon=True
@@ -3681,6 +3409,18 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         rr_score = max(0, min(40, int((rr - 1.0) * 20)))
 
         sideways_score = base_score + rsi_score + rr_score
+
+        # =========================
+        # BTC FILTER (Strict Macro Alignment)
+        # =========================
+        btc_trend = get_btc_trend()
+        if symbol != 'BTC/USDT:USDT':
+            if btc_trend == "bullish" and side == "SHORT":
+                sideways_score = 0  # Forbid SHORT in Bull Market
+            elif btc_trend == "bearish" and side == "LONG":
+                sideways_score = 0   # Forbid LONG in Bear Market
+            elif btc_trend == "neutral":
+                sideways_score -= 20
 
         # =========================
         # GRADE (ขึ้นกับ score รวม)
