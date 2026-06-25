@@ -3281,11 +3281,11 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         # PRE-FILTER (Early rejection for ADX/ATR)
         # =========================
-        adx_val = round(m3['adx'], 2)
-        atr_pct = (m3['atr'] / m3['close']) * 100
-        vol_high = m3['volume'] > m3['vol_avg'] * 1.3
+        adx_val = round(m15['adx'], 2)
+        atr_pct = (m15['atr'] / m15['close']) * 100
+        vol_high = m15['volume'] > m15['vol_avg'] * 1.3
         
-        passes_exec, exec_reason = check_trend_filters(atr_pct, adx_val, vol_high)
+        passes_exec, exec_reason = check_sideways_filters(atr_pct, adx_val, vol_high)
         if not passes_exec:
             set_scan_result(symbol, {"status": exec_reason, "score": 0, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": now})
             return {"symbol": symbol, "result": "skipped"}
@@ -3295,18 +3295,18 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
 
         candle_size = abs(
-            m3['close'] - m3['open']
+            m15['close'] - m15['open']
         )
 
-        if candle_size > m3['atr'] * 1.5:
+        if candle_size > m15['atr'] * 1.5:
             print(
                 f"{symbol} skipped - candle too big",
                 flush=True
             )
 
-            adx_val = round(m3['adx'], 2)
-            atr_val = round((m3['atr'] / m3['close']) * 100, 2)
-            vol_status = "HIGH" if m3['volume'] > m3['vol_avg'] * 1.3 else "NORMAL"
+            adx_val = round(m15['adx'], 2)
+            atr_val = round((m15['atr'] / m15['close']) * 100, 2)
+            vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
             set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
             # Track rejected signal (Feature 3)
             rejected_signals.add(symbol)
@@ -3316,16 +3316,16 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # INDICATORS
         # =========================
 
-        rsi = m3['rsi']
-        close = m3['close']
-        bb_lower = m3['bb_lower']
-        bb_upper = m3['bb_upper']
-        bb_mid = m3['bb_mid']
-        adx = m3['adx']
-        atr = m3['atr']
+        rsi = m15['rsi']
+        close = m15['close']
+        bb_lower = m15['bb_lower']
+        bb_upper = m15['bb_upper']
+        bb_mid = m15['bb_mid']
+        adx = m15['adx']
+        atr = m15['atr']
 
         atr_percent = round((atr / close) * 100, 2)
-        volume_high = m3['volume'] > m3['vol_avg'] * 1.3
+        volume_high = m15['volume'] > m15['vol_avg'] * 1.3
         signal_id = str(uuid.uuid4())[:8]
 
         # =========================
@@ -3335,15 +3335,15 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         # TREND FILTER (Bug Fix: ป้องกัน LONG ในตลาดที่ downtrend ชัดเจน)
         # =========================
-        ema7 = m3['ema7']
-        ema25 = m3['ema25']
+        ema7 = m15['ema7']
+        ema25 = m15['ema25']
 
         # LONG: RSI < 45, Low <= BB Lower, ADX < 28
         # + ต้องไม่ downtrend ชัด: ema7 ต้องไม่ต่ำกว่า ema25 มากเกิน 1%
         long_trend_ok = ema7 >= ema25 * 0.99  # ยอมให้ต่ำกว่าได้นิดหน่อย แต่ไม่ downtrend ชัด
         long_condition = (
             rsi < 45
-            and m3['low'] <= bb_lower
+            and m15['low'] <= bb_lower
             and adx <= STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX']
             and long_trend_ok
         )
@@ -3353,7 +3353,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         short_trend_ok = ema7 <= ema25 * 1.01
         short_condition = (
             rsi > 55
-            and m3['high'] >= bb_upper
+            and m15['high'] >= bb_upper
             and adx <= STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX']
             and short_trend_ok
         )
@@ -3397,7 +3397,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         
         base_score = 0
-        if (side == "LONG" and m3['low'] <= bb_lower) or (side == "SHORT" and m3['high'] >= bb_upper):
+        if (side == "LONG" and m15['low'] <= bb_lower) or (side == "SHORT" and m15['high'] >= bb_upper):
             base_score = 20
 
         if side == "LONG":
