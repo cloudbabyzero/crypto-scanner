@@ -159,8 +159,8 @@ STRATEGY_CONFIG = {
         "FILTERS": {
             "MIN_ADX": 15,
             "MAX_ADX": 28,
-            "RSI_SAFE_LONG_MAX": 45,
-            "RSI_SAFE_SHORT_MIN": 55
+            "RSI_SAFE_LONG_MAX": 60,
+            "RSI_SAFE_SHORT_MIN": 40
         }
     },
     "SIDEWAYS": {
@@ -172,7 +172,7 @@ STRATEGY_CONFIG = {
         "ENTRY_TYPE": "LIMIT_PULLBACK",
         "LEVERAGE": 25,
         "MARGIN_PER_TRADE": 0.84,
-        "SL_ATR_MULT": 2.0,
+        "SL_ATR_MULT": 1.0,
         "TP_RR": 1.5,
         "MAX_TRADES": 2,
         "MIN_SCORE": 70,

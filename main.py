@@ -168,16 +168,17 @@ def set_scan_result(symbol, data):
 def calculate_sideways_levels(entry, atr, bb_mid, side):
     """Calculate SL and TP for sideways mean reversion trades.
 
-    SL: ATR * 2.0 (Widened to survive fakeouts and increase WR to ~63%)
+    SL: ATR * STRATEGY_CONFIG['SIDEWAYS']['SL_ATR_MULT']
     TP: Bollinger Middle Band
     """
+    sl_mult = STRATEGY_CONFIG['SIDEWAYS']['SL_ATR_MULT']
     if side == "LONG":
-        sl = round(entry - atr * 2.0, 4)
+        sl = round(entry - atr * sl_mult, 4)
         tp = round(bb_mid, 4)
         risk = entry - sl
         reward = tp - entry
     else:
-        sl = round(entry + atr * 2.0, 4)
+        sl = round(entry + atr * sl_mult, 4)
         tp = round(bb_mid, 4)
         risk = sl - entry
         reward = entry - tp
@@ -1208,6 +1209,7 @@ def get_latest_signal(symbol, side=None):
                     trade['entry'] - trade['sl']
                 ) / 1.5,
                 "signal_regime": trade.get("signal_regime", "UNKNOWN"),
+                "strategy": trade.get("strategy", "UNKNOWN"),
                 "grade": trade.get("grade", "C"),
                 "score": trade.get("score", 0)
             }
@@ -1394,7 +1396,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 last_time = last_alert.get((symbol, "SCALPING"))
             if last_time and now - last_time < STRATEGY_CONFIG['SCALPING']['COOLDOWN']:
                 set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
-                google_sheet.log_debug(symbol, "Cooldown (SCALPING)", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                google_sheet.log_debug(symbol, "Cooldown (SCALPING)", strategy="SCALPING", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1425,7 +1427,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         candle_size = abs(m3['close'] - m3['open'])
         if candle_size > m3['atr'] * 2.0:
             set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, "Candle Too Big (SCALPING)", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            google_sheet.log_debug(symbol, "Candle Too Big (SCALPING)", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1448,15 +1450,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         is_green = m3['close'] > m3['open']
         is_red = m3['close'] < m3['open']
         
-        # PA & Volume Logic (STRICT ANTI-TRAP)
-        if is_green:
-            short_score -= 30
-            if volume_high:
-                short_score -= 40
-        if is_red:
-            long_score -= 30
-            if volume_high:
-                long_score -= 40
+        # PA & Volume Logic (STRICT ANTI-TRAP) removed to allow pullback scalps
 
         # --- 3m EMA alignment (50pts) - Primary signal ---
         # =========================
@@ -1525,7 +1519,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         if score < STRATEGY_CONFIG['SCALPING']['MIN_SCORE']:
             set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, f"Score Below MIN_SCORE (SCALPING {score})", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            google_sheet.log_debug(symbol, f"Score Below MIN_SCORE (SCALPING {score})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1535,24 +1529,24 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         if long_score >= short_score and long_score >= STRATEGY_CONFIG['SCALPING']['MIN_SCORE']:
             if rsi_val > STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']:
                 set_scan_result(symbol, {"status": "RSI Too High", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, f"RSI Too High SCALPING ({round(rsi_val, 2)} > {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']})", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                google_sheet.log_debug(symbol, f"RSI Too High SCALPING ({round(rsi_val, 2)} > {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             # BTC trend filter for LONG
             if btc_trend == "bearish":
                 set_scan_result(symbol, {"status": "BTC Bearish", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, "BTC Bearish - no LONG scalp", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                google_sheet.log_debug(symbol, "BTC Bearish - no LONG scalp", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             side  = "LONG"
             entry = round(m3['ema25'], 4)  # Limit order on 3m EMA25 pullback
         elif short_score > long_score and short_score >= STRATEGY_CONFIG['SCALPING']['MIN_SCORE']:
             if rsi_val < STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']:
                 set_scan_result(symbol, {"status": "RSI Too Low", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, f"RSI Too Low SCALPING ({round(rsi_val, 2)} < {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']})", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                google_sheet.log_debug(symbol, f"RSI Too Low SCALPING ({round(rsi_val, 2)} < {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             # BTC trend filter for SHORT
             if btc_trend == "bullish":
                 set_scan_result(symbol, {"status": "BTC Bullish", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, "BTC Bullish - no SHORT scalp", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                google_sheet.log_debug(symbol, "BTC Bullish - no SHORT scalp", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             side  = "SHORT"
             entry = round(m3['ema25'], 4)  # Limit order on 3m EMA25 pullback
@@ -1798,7 +1792,7 @@ Plan:
         print(f"[SCALPING ERROR] {symbol}", flush=True)
         print(traceback.format_exc(), flush=True)
         set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
-        google_sheet.log_debug(symbol, "Error (SCALPING)", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+        google_sheet.log_debug(symbol, "Error (SCALPING)", strategy="SCALPING", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
         return {"symbol": symbol, "result": "error"}
 
 
@@ -1826,7 +1820,7 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 last_time = last_alert.get((symbol, "MOMENTUM"))
             if last_time and now - last_time < STRATEGY_CONFIG.get(local_regime, STRATEGY_CONFIG['TRENDING'])['COOLDOWN']:
                 set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
-                google_sheet.log_debug(symbol, "Cooldown", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                google_sheet.log_debug(symbol, "Cooldown", strategy="MOMENTUM", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1859,7 +1853,7 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         if m3['adx'] < 20:
             set_scan_result(symbol, {"status": "3m ADX Too Weak", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, "3m ADX Too Weak for Momentum", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi=0, stretch_pct=0, candle_color="")
+            google_sheet.log_debug(symbol, "3m ADX Too Weak for Momentum", strategy="MOMENTUM", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi=0, stretch_pct=0, candle_color="")
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1939,7 +1933,7 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         if score < STRATEGY_CONFIG['MOMENTUM']['MIN_SCORE']:
             set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, "Score Below MIN_SCORE", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            google_sheet.log_debug(symbol, "Score Below MIN_SCORE", strategy="MOMENTUM", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
@@ -1950,14 +1944,14 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         if long_score >= short_score and long_score >= STRATEGY_CONFIG['MOMENTUM']['MIN_SCORE'] and btc_trend == "bullish":
             if rsi_val < STRATEGY_CONFIG['MOMENTUM']['FILTERS']['RSI_MIN_LONG']:
                 set_scan_result(symbol, {"status": "RSI Too Low for Momentum", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, f"RSI Too Low ({round(rsi_val, 2)} < {STRATEGY_CONFIG['MOMENTUM']['FILTERS']['RSI_MIN_LONG']})", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                google_sheet.log_debug(symbol, f"RSI Too Low ({round(rsi_val, 2)} < {STRATEGY_CONFIG['MOMENTUM']['FILTERS']['RSI_MIN_LONG']})", strategy="MOMENTUM", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             side  = "LONG"
             entry = round(m3['ema7'], 4)
         elif short_score > long_score and short_score >= STRATEGY_CONFIG['MOMENTUM']['MIN_SCORE']:
             if rsi_val > STRATEGY_CONFIG['MOMENTUM']['FILTERS']['RSI_MAX_SHORT']:
                 set_scan_result(symbol, {"status": "RSI Too High for Momentum", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, f"RSI Too High ({round(rsi_val, 2)} > {STRATEGY_CONFIG['MOMENTUM']['FILTERS']['RSI_MAX_SHORT']})", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                google_sheet.log_debug(symbol, f"RSI Too High ({round(rsi_val, 2)} > {STRATEGY_CONFIG['MOMENTUM']['FILTERS']['RSI_MAX_SHORT']})", strategy="MOMENTUM", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             side  = "SHORT"
             entry = round(m3['ema7'], 4)
@@ -2207,7 +2201,7 @@ Plan:
         print(f"[MOMENTUM ERROR] {symbol}", flush=True)
         print(traceback.format_exc(), flush=True)
         set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
-        google_sheet.log_debug(symbol, "Error", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+        google_sheet.log_debug(symbol, "Error", strategy="MOMENTUM", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
         return {"symbol": symbol, "result": "error"}
 
 
@@ -3316,13 +3310,16 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # INDICATORS
         # =========================
 
-        rsi = m15['rsi']
+        rsi = h1['rsi']
+        bb_lower = h1['bb_lower']
+        bb_upper = h1['bb_upper']
+        bb_mid = h1['bb_mid']
+        stoch_rsi = h1.get('stoch_rsi', 50)
+        atr = h1['atr']
+        
+        # We keep adx, and close from m15 for risk calculation and message
         close = m15['close']
-        bb_lower = m15['bb_lower']
-        bb_upper = m15['bb_upper']
-        bb_mid = m15['bb_mid']
         adx = m15['adx']
-        atr = m15['atr']
 
         atr_percent = round((atr / close) * 100, 2)
         volume_high = m15['volume'] > m15['vol_avg'] * 1.3
@@ -3335,15 +3332,15 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         # TREND FILTER (Bug Fix: ป้องกัน LONG ในตลาดที่ downtrend ชัดเจน)
         # =========================
-        ema7 = m15['ema7']
-        ema25 = m15['ema25']
+        ema7 = h1['ema7']
+        ema25 = h1['ema25']
 
         # LONG: RSI < 45, Low <= BB Lower, ADX < 28
         # + ต้องไม่ downtrend ชัด: ema7 ต้องไม่ต่ำกว่า ema25 มากเกิน 1%
         long_trend_ok = ema7 >= ema25 * 0.99  # ยอมให้ต่ำกว่าได้นิดหน่อย แต่ไม่ downtrend ชัด
         long_condition = (
             rsi < 45
-            and m15['low'] <= bb_lower
+            and h1['low'] <= bb_lower
             and adx <= STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX']
             and long_trend_ok
         )
@@ -3353,7 +3350,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         short_trend_ok = ema7 <= ema25 * 1.01
         short_condition = (
             rsi > 55
-            and m15['high'] >= bb_upper
+            and h1['high'] >= bb_upper
             and adx <= STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX']
             and short_trend_ok
         )
@@ -3397,7 +3394,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         
         base_score = 0
-        if (side == "LONG" and m15['low'] <= bb_lower) or (side == "SHORT" and m15['high'] >= bb_upper):
+        if (side == "LONG" and h1['low'] <= bb_lower) or (side == "SHORT" and h1['high'] >= bb_upper):
             base_score = 20
 
         if side == "LONG":
@@ -3409,6 +3406,12 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         rr_score = max(0, min(40, int((rr - 1.0) * 20)))
 
         sideways_score = base_score + rsi_score + rr_score
+        
+        # StochRSI Filter
+        if side == "LONG" and stoch_rsi > 20:
+            sideways_score -= 50
+        elif side == "SHORT" and stoch_rsi < 80:
+            sideways_score -= 50
 
         # =========================
         # BTC FILTER (Strict Macro Alignment)

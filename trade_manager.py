@@ -246,7 +246,7 @@ def _process_trailing_stop(trade, current_price):
     # Only trail in TRENDING or MOMENTUM strategies
     # Actually 'strategy' could be saved in trade dict, fallback to signal_regime
     regime = trade.get('strategy') or trade.get('signal_regime')
-    if regime not in ["TRENDING", "MOMENTUM"]:
+    if regime not in ["TRENDING", "TREND", "MOMENTUM"]:
         return
 
     side = trade.get('side', 'LONG')

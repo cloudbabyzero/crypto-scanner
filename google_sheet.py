@@ -128,11 +128,12 @@ def _ensure_sheets_exist():
                 "SignalID", "Timestamp", "Symbol", "Side", "Grade", "Score",
                 "Entry", "SL", "TP", "ATR", "ADX", "Volume", "BTCTrend", "Status",
                 "Strategy", "AllocationDecision", "SkipReason",
-                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color"
+                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color",
+                "Local_Regime", "BTC_Regime"
             ]),
             (SHEET_TRADES, [
                 "Timestamp", "Symbol", "Side", "Entry", "Exit", "PnL",
-                "Result", "Grade", "Score", "RR", "Strategy"
+                "Result", "Grade", "Score", "RR", "Strategy", "Local_Regime", "BTC_Regime"
             ]),
             (SHEET_STATS, [
                 "Timestamp", "Balance", "OpenPositions", "Wins", "Losses",
@@ -141,7 +142,8 @@ def _ensure_sheets_exist():
             (SHEET_CONFIG, ["Key", "Value"]),
             (SHEET_DEBUG, [
                 "Timestamp", "Symbol", "Strategy", "Reason", "Grade", "Score", "ADX", "ATR", "Details",
-                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color"
+                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color",
+                "Local_Regime", "BTC_Regime"
             ]),
             (SHEET_FILL_ANALYSIS, [
                 "Timestamp", "Symbol", "Side", "CurrentPrice", "EntryPrice",
@@ -154,7 +156,8 @@ def _ensure_sheets_exist():
                 "Grade", "Score", "Entry", "SL", "TP",
                 "Result", "PnL%", "RR", "Note",
                 "ADX", "ATR_Percent", "Volume_Status", "BTC_Trend",
-                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color"
+                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color",
+                "Local_Regime", "BTC_Regime"
             ]),
         ]
         
