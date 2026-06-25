@@ -720,18 +720,19 @@ def execute_scalp_trade(symbol, side):
         # CHECK SCALPING POSITION LIMIT
         # =========================
 
-        from config import SCALPING_MAX_TRADES
+        from config import STRATEGY_CONFIG
+        max_scalp_trades = STRATEGY_CONFIG['SCALPING']['MAX_TRADES']
         with main_mod.state_lock:
             scalp_count = sum(
                 1 for t in main_mod.active_trades.values()
                 if t.get("status") in ["PENDING", "OPEN"]
                 and t.get("strategy") == "SCALPING"
             )
-        if scalp_count >= SCALPING_MAX_TRADES:
+        if scalp_count >= max_scalp_trades:
             main_mod.send_telegram(
                 f"❌ SCALPING POSITION LIMIT\n\n"
                 f"{symbol}\n"
-                f"Max {SCALPING_MAX_TRADES} scalping trades"
+                f"Max {max_scalp_trades} scalping trades"
             )
             return
 
