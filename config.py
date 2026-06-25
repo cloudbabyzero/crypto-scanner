@@ -37,6 +37,13 @@ SCALPING_SYMBOLS = [
     'BTC/USDT:USDT',
     'ETH/USDT:USDT',
     'SOL/USDT:USDT',
+    'LINK/USDT:USDT',
+    'SUI/USDT:USDT',
+    'AAVE/USDT:USDT',
+    'AVAX/USDT:USDT',
+    'NEAR/USDT:USDT',
+    'HYPE/USDT:USDT',
+    'TAO/USDT:USDT',
 ]
 
 # =========================
