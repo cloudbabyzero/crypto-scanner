@@ -50,6 +50,7 @@ SHEET_DEBUG = "Debug"
 SHEET_FILL_ANALYSIS = "FillAnalysis"
 SHEET_DASHBOARD = "Dashboard"
 SHEET_BACKTEST = "BacktestResults"
+SHEET_EVENTS = "Events Log"
 
 # ==================================================
 # GLOBAL STATE
@@ -159,6 +160,9 @@ def _ensure_sheets_exist():
                 "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color",
                 "Local_Regime", "BTC_Regime"
             ]),
+            (SHEET_EVENTS, [
+                "Timestamp", "Symbol", "Side", "Event_Type", "Message"
+            ]),
         ]
         
         for sheet_name, headers in sheet_configs:
@@ -190,11 +194,12 @@ def ensure_headers():
                 "SignalID", "Timestamp", "Symbol", "Side", "Grade", "Score",
                 "Entry", "SL", "TP", "ATR", "ADX", "Volume", "BTCTrend", "Status",
                 "Strategy", "AllocationDecision", "SkipReason",
-                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color"
+                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color",
+                "Local_Regime", "BTC_Regime"
             ],
             SHEET_TRADES: [
                 "Timestamp", "Symbol", "Side", "Entry", "Exit", "PnL",
-                "Result", "Grade", "Score", "RR", "Strategy"
+                "Result", "Grade", "Score", "RR", "Strategy", "Local_Regime", "BTC_Regime"
             ],
             SHEET_STATS: [
                 "Timestamp", "Balance", "OpenPositions", "Wins", "Losses",
@@ -208,6 +213,9 @@ def ensure_headers():
                 "Timestamp", "Symbol", "Side", "CurrentPrice", "EntryPrice",
                 "DistancePercent", "Grade", "Score", "ATR", "ADX", "BTCTrend", "FillStatus",
                 "PendingMinutes", "ExpiredReason"
+            ],
+            SHEET_EVENTS: [
+                "Timestamp", "Symbol", "Side", "Event_Type", "Message"
             ],
             SHEET_CONFIG: ["Key", "Value", "Description"],
         }
@@ -429,7 +437,7 @@ def shutdown_all(flush_timeout=10, other_timeout=5):
 # PUBLIC API FUNCTIONS
 # ==================================================
 
-def log_signal(signal_id, symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status="SIGNAL",
+def log_signal(signal_id=None, symbol=None, side=None, grade=None, score=None, entry=None, sl=None, tp=None, atr=None, adx=None, volume=None, btc_trend=None, status="SIGNAL",
                strategy="", allocation_decision="ALLOCATED", skip_reason="",
                vwap_position="", stoch_rsi="", stretch_pct="", candle_color="",
                local_regime="", btc_regime=""):
@@ -495,6 +503,30 @@ def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr, st
     except Exception as e:
         print(f"[GOOGLE_SHEETS] log_trade error: {e}", flush=True)
 
+def log_event(symbol, side, event_type, message):
+    """
+    Log a trading event (like trailing stop updates or phase transitions) to the Events sheet.
+
+    Args:
+        symbol: Trading pair symbol
+        side: Direction (LONG/SHORT)
+        event_type: Type of event (e.g., 'TRAILING_PHASE_2', 'SL_UPDATE')
+        message: Descriptive message
+    """
+    try:
+        timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
+        row = [
+            timestamp,
+            symbol,
+            side,
+            event_type,
+            message
+        ]
+        _add_to_buffer(SHEET_EVENTS, row)
+        return True
+    except Exception as e:
+        print(f"[GOOGLE_SHEETS] log_event error: {e}", flush=True)
+        return False
 
 def update_signal_status(signal_id, status):
     """

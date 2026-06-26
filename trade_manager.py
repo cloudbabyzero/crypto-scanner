@@ -242,17 +242,19 @@ def _determine_trade_result(trade, symbol):
 def _process_trailing_stop(trade, current_price):
     from config import TRAILING_ACTIVATION_ATR, TRAILING_BUFFER_ATR, TRAILING_STEP_ATR
     import bingx_client
+    import google_sheet
     
-    # Only trail in TRENDING or MOMENTUM strategies
-    # Actually 'strategy' could be saved in trade dict, fallback to signal_regime
+    # Only trail in TRENDING strategies
     regime = trade.get('strategy') or trade.get('signal_regime')
-    if regime not in ["TRENDING", "TREND", "MOMENTUM"]:
+    if regime not in ["TRENDING", "TREND"]:
         return
 
     side = trade.get('side', 'LONG')
     entry_price = trade.get('entry', 0)
     current_sl = trade.get('sl', 0)
     current_atr = trade.get('atr', 0)
+    tp_price = trade.get('tp2') or trade.get('tp')
+    phase = trade.get('trailing_phase', 1)
     
     if current_atr <= 0 or current_price <= 0 or entry_price <= 0:
         return
@@ -264,48 +266,108 @@ def _process_trailing_stop(trade, current_price):
     new_sl = current_sl
     
     if side == "LONG":
-        if current_price >= (entry_price + activation_dist):
-            breakeven = entry_price * 1.0015
-            proposed_sl = current_price - trailing_buffer
-            new_sl = max(current_sl, proposed_sl, breakeven)
+        # Check Phase 2 transition
+        if phase == 1 and tp_price and current_price >= tp_price:
+            # Enter Phase 2
+            if trade.get('tp2_order_id'):
+                try:
+                    bingx_client.cancel_order(trade['tp2_order_id'], trade['symbol'])
+                except Exception as e:
+                    print(f"[TRAILING] Failed to cancel TP for Phase 2: {e}", flush=True)
+                with main_mod.state_lock:
+                    trade['tp2_order_id'] = None
             
-            if new_sl > current_sl + step_size:
-                side_cfg = main_mod.get_side_config(side)
-                amount = trade.get('amount')
-                new_id = bingx_client.update_sl_order(trade['symbol'], side_cfg, trade.get('sl_order_id'), new_sl, amount)
-                if new_id:
-                    with main_mod.state_lock:
-                        trade['sl'] = new_sl
-                        trade['sl_order_id'] = new_id
-                    
-                    msg = (f"🛡️ [TRAILING STOP] ขยับบังทุน\n\n"
-                           f"{trade['symbol']}\n"
-                           f"Side: {side}\n"
-                           f"New SL: {new_sl}")
-                    main_mod.send_telegram(msg)
-                    print(f"[TRAILING] {trade['symbol']} LONG SL updated to {new_sl}", flush=True)
+            with main_mod.state_lock:
+                trade['trailing_phase'] = 2
+            phase = 2
+            
+            msg = (f"🚀 [INFINITY RUN] ชนเป้า TP แล้ว บังคับยึดกำไรเป้าหมาย และปล่อยรันเทรนด์!\n\n"
+                   f"{trade['symbol']}\n"
+                   f"Side: LONG\n"
+                   f"Price: {current_price}")
+            main_mod.send_telegram(msg)
+            google_sheet.log_event(trade['symbol'], side, "TRAILING_PHASE_2", f"Price {current_price} >= TP {tp_price}. Phase 2 activated.")
+            print(f"[TRAILING] {trade['symbol']} ENTERED PHASE 2", flush=True)
+
+        if phase == 2:
+            phase_2_buffer = current_atr * 1.5  # Sweet spot
+            proposed_sl = current_price - phase_2_buffer
+            min_lock = tp_price * 0.9985 if tp_price else entry_price * 1.0015
+            new_sl = max(current_sl, proposed_sl, min_lock)
+        else:
+            if current_price >= (entry_price + activation_dist):
+                breakeven = entry_price * 1.0015
+                proposed_sl = current_price - trailing_buffer
+                new_sl = max(current_sl, proposed_sl, breakeven)
+            
+        if new_sl > current_sl + step_size or (phase == 2 and new_sl > current_sl):
+            side_cfg = main_mod.get_side_config(side)
+            amount = trade.get('amount')
+            new_id = bingx_client.update_sl_order(trade['symbol'], side_cfg, trade.get('sl_order_id'), new_sl, amount)
+            if new_id:
+                with main_mod.state_lock:
+                    trade['sl'] = new_sl
+                    trade['sl_order_id'] = new_id
+                
+                prefix = "🚀 [INFINITY]" if phase == 2 else "🛡️ [TRAILING STOP]"
+                msg = (f"{prefix} ขยับบังทุน\n\n"
+                       f"{trade['symbol']}\n"
+                       f"Side: {side}\n"
+                       f"New SL: {new_sl}")
+                main_mod.send_telegram(msg)
+                print(f"[TRAILING] {trade['symbol']} LONG SL updated to {new_sl} (Phase {phase})", flush=True)
 
     elif side == "SHORT":
-        if current_price <= (entry_price - activation_dist):
-            breakeven = entry_price * 0.9985
-            proposed_sl = current_price + trailing_buffer
-            new_sl = min(current_sl, proposed_sl, breakeven)
+        # Check Phase 2 transition
+        if phase == 1 and tp_price and current_price <= tp_price:
+            # Enter Phase 2
+            if trade.get('tp2_order_id'):
+                try:
+                    bingx_client.cancel_order(trade['tp2_order_id'], trade['symbol'])
+                except Exception as e:
+                    print(f"[TRAILING] Failed to cancel TP for Phase 2: {e}", flush=True)
+                with main_mod.state_lock:
+                    trade['tp2_order_id'] = None
             
-            if new_sl < current_sl - step_size:
-                side_cfg = main_mod.get_side_config(side)
-                amount = trade.get('amount')
-                new_id = bingx_client.update_sl_order(trade['symbol'], side_cfg, trade.get('sl_order_id'), new_sl, amount)
-                if new_id:
-                    with main_mod.state_lock:
-                        trade['sl'] = new_sl
-                        trade['sl_order_id'] = new_id
-                    
-                    msg = (f"🛡️ [TRAILING STOP] ขยับบังทุน\n\n"
-                           f"{trade['symbol']}\n"
-                           f"Side: {side}\n"
-                           f"New SL: {new_sl}")
-                    main_mod.send_telegram(msg)
-                    print(f"[TRAILING] {trade['symbol']} SHORT SL updated to {new_sl}", flush=True)
+            with main_mod.state_lock:
+                trade['trailing_phase'] = 2
+            phase = 2
+            
+            msg = (f"🚀 [INFINITY RUN] ชนเป้า TP แล้ว บังคับยึดกำไรเป้าหมาย และปล่อยรันเทรนด์!\n\n"
+                   f"{trade['symbol']}\n"
+                   f"Side: SHORT\n"
+                   f"Price: {current_price}")
+            main_mod.send_telegram(msg)
+            google_sheet.log_event(trade['symbol'], side, "TRAILING_PHASE_2", f"Price {current_price} <= TP {tp_price}. Phase 2 activated.")
+            print(f"[TRAILING] {trade['symbol']} ENTERED PHASE 2", flush=True)
+
+        if phase == 2:
+            phase_2_buffer = current_atr * 1.5  # Sweet spot
+            proposed_sl = current_price + phase_2_buffer
+            min_lock = tp_price * 1.0015 if tp_price else entry_price * 0.9985
+            new_sl = min(current_sl, proposed_sl, min_lock)
+        else:
+            if current_price <= (entry_price - activation_dist):
+                breakeven = entry_price * 0.9985
+                proposed_sl = current_price + trailing_buffer
+                new_sl = min(current_sl, proposed_sl, breakeven)
+            
+        if new_sl < current_sl - step_size or (phase == 2 and new_sl < current_sl):
+            side_cfg = main_mod.get_side_config(side)
+            amount = trade.get('amount')
+            new_id = bingx_client.update_sl_order(trade['symbol'], side_cfg, trade.get('sl_order_id'), new_sl, amount)
+            if new_id:
+                with main_mod.state_lock:
+                    trade['sl'] = new_sl
+                    trade['sl_order_id'] = new_id
+                
+                prefix = "🚀 [INFINITY]" if phase == 2 else "🛡️ [TRAILING STOP]"
+                msg = (f"{prefix} ขยับบังทุน\n\n"
+                       f"{trade['symbol']}\n"
+                       f"Side: {side}\n"
+                       f"New SL: {new_sl}")
+                main_mod.send_telegram(msg)
+                print(f"[TRAILING] {trade['symbol']} SHORT SL updated to {new_sl} (Phase {phase})", flush=True)
 
 
 # =========================
@@ -944,13 +1006,16 @@ def restore_open_positions():
             sl_price = protection['sl_price']
             tp_price = protection['tp_price']
             
+            trailing_phase = 1
+            
             # Log when protection orders are not found
             if sl_price is None and tp_price is None:
                 print(f"[RESTORE] Protection orders not found for {symbol}", flush=True)
             elif sl_price is None:
                 print(f"[RESTORE] SL order not found for {symbol} (TP found: {tp_price})", flush=True)
             elif tp_price is None:
-                print(f"[RESTORE] TP order not found for {symbol} (SL found: {sl_price})", flush=True)
+                print(f"[RESTORE] TP order not found for {symbol} (SL found: {sl_price}). Assuming Phase 2 Infinity Run.", flush=True)
+                trailing_phase = 2
 
             # Create trade object with all required fields for consistency
             # This ensures restored trades have the same structure as non-restored trades
@@ -964,6 +1029,7 @@ def restore_open_positions():
                 "tp2": tp_price,
                 "sl_order_id": protection['sl_order_id'],
                 "tp2_order_id": protection['tp_order_id'],
+                "trailing_phase": trailing_phase,
                 # Set default grade/score for consistency with non-restored trades
                 # These may be refined later if metadata is available
                 "grade": "C",
