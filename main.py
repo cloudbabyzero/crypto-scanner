@@ -25,7 +25,6 @@ from config import (
     symbols,
     SCALPING_SYMBOLS,
     AUTO_TRADE,
-    AUTO_TRADE_MIN_GRADE,
     MAX_LONG_TRADES,
     MAX_SHORT_TRADES,
     MAX_ACTIVE_TRADES,
@@ -1105,11 +1104,11 @@ def get_side_config(side):
 # AUTO TRADE HELPERS
 # =========================
 
-def passes_grade_filter(grade):
+def passes_grade_filter(grade, min_grade):
     """Check if grade meets minimum auto trade grade."""
-    if grade not in GRADE_PRIORITY:
+    if grade not in GRADE_PRIORITY or min_grade not in GRADE_PRIORITY:
         return False
-    return GRADE_PRIORITY[grade] >= GRADE_PRIORITY[AUTO_TRADE_MIN_GRADE]
+    return GRADE_PRIORITY[grade] >= GRADE_PRIORITY[min_grade]
 
 def can_open_trade(side):
     """Check if new trade can be opened based on position limits."""
@@ -2661,8 +2660,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 skip_reason = None
                 
                 # Check grade filter
-                if not passes_grade_filter(grade):
-                    skip_reason = f"Grade: {grade} < {AUTO_TRADE_MIN_GRADE}"
+                min_req_grade = STRATEGY_CONFIG['TRENDING']['MIN_GRADE']
+                if not passes_grade_filter(grade, min_req_grade):
+                    skip_reason = f"Grade: {grade} < {min_req_grade}"
                 
                 # Check execution filters (only if grade passed)
                 elif not skip_reason:
@@ -3012,8 +3012,9 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 skip_reason = None
                 
                 # Check grade filter
-                if not passes_grade_filter(grade):
-                    skip_reason = f"Grade: {grade} < {AUTO_TRADE_MIN_GRADE}"
+                min_req_grade = STRATEGY_CONFIG['TRENDING']['MIN_GRADE']
+                if not passes_grade_filter(grade, min_req_grade):
+                    skip_reason = f"Grade: {grade} < {min_req_grade}"
                 
                 # Check execution filters (only if grade passed)
                 elif not skip_reason:
@@ -3655,8 +3656,9 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             skip_reason = None
 
             # Check grade filter FIRST (Bug Fix: sideways ไม่เคย check grade filter)
-            if not passes_grade_filter(grade):
-                skip_reason = f"Grade: {grade} < {AUTO_TRADE_MIN_GRADE}"
+            min_req_grade = STRATEGY_CONFIG['SIDEWAYS']['MIN_GRADE']
+            if not passes_grade_filter(grade, min_req_grade):
+                skip_reason = f"Grade: {grade} < {min_req_grade}"
 
             # Check execution filters (only if grade passed)
             if not skip_reason:

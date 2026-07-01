@@ -9,6 +9,8 @@ import threading
 import bingx_client
 from telebot import types
 
+from config import STRATEGY_CONFIG
+
 # Reference to main.py's globals
 main_mod = sys.modules["__main__"]
 
@@ -388,8 +390,11 @@ SIDEWAYS_MIN_ATR:
 AUTO_TRADE:
 {main_mod.config.AUTO_TRADE}
 
-AUTO_TRADE_MIN_GRADE:
-{main_mod.config.AUTO_TRADE_MIN_GRADE}
+MIN_GRADES:
+SCALPING: {STRATEGY_CONFIG['SCALPING']['MIN_GRADE']}
+MOMENTUM: {STRATEGY_CONFIG['MOMENTUM']['MIN_GRADE']}
+TRENDING: {STRATEGY_CONFIG['TRENDING']['MIN_GRADE']}
+SIDEWAYS: {STRATEGY_CONFIG['SIDEWAYS']['MIN_GRADE']}
 
 🚀 MOMENTUM STRATEGY
 
@@ -1310,9 +1315,9 @@ def autoon(message):
     text = f"""
 ✅ AUTO TRADE ENABLED
 
-Grade Filter:
-{main_mod.AUTO_TRADE_MIN_GRADE}
-
+Grade Filters:
+TRENDING: {main_mod.config.STRATEGY_CONFIG['TRENDING']['MIN_GRADE']}
+MOMENTUM: {main_mod.config.STRATEGY_CONFIG['MOMENTUM']['MIN_GRADE']}
 Max Longs:
 {main_mod.MAX_LONG_TRADES}
 
@@ -1366,8 +1371,9 @@ def autostatus(message):
 Status:
 {status_text}
 
-Grade Filter:
-{main_mod.AUTO_TRADE_MIN_GRADE}
+Grade Filters:
+TRENDING: {main_mod.config.STRATEGY_CONFIG['TRENDING']['MIN_GRADE']}
+MOMENTUM: {main_mod.config.STRATEGY_CONFIG['MOMENTUM']['MIN_GRADE']}
 
 📈 TREND STRATEGY
 
@@ -1405,12 +1411,17 @@ Total Active:
 def set_grade(message):
     try:
         parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "Usage: /grade A\n\nAllowed: A+ A B C")
+        if len(parts) < 3:
+            bot.reply_to(message, "Usage: /grade [STRATEGY] [GRADE]\nExample: /grade TRENDING A+\n\nStrategies: SCALPING, MOMENTUM, TRENDING, SIDEWAYS\nAllowed Grades: A+ A B C")
             return
         
-        grade = parts[1].upper()
+        strategy = parts[1].upper()
+        grade = parts[2].upper()
         
+        if strategy not in main_mod.config.STRATEGY_CONFIG:
+            bot.reply_to(message, f"❌ Invalid strategy: {strategy}")
+            return
+            
         if grade not in main_mod.GRADE_PRIORITY:
             bot.reply_to(
                 message,
@@ -1418,10 +1429,10 @@ def set_grade(message):
             )
             return
         
-        main_mod.AUTO_TRADE_MIN_GRADE = grade
+        main_mod.config.STRATEGY_CONFIG[strategy]['MIN_GRADE'] = grade
         bot.reply_to(
             message,
-            f"✅ Auto Trade Grade Filter updated to {grade}"
+            f"✅ Auto Trade Grade Filter for {strategy} updated to {grade}"
         )
     except Exception as e:
         bot.reply_to(message, f"ERROR: {str(e)}")

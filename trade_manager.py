@@ -517,6 +517,30 @@ def check_trades():
                             
                             # Continue to next trade - no retry
                             continue
+                        except bingx_client.StopLossBreachedError as e:
+                            # Stop Loss has already been breached by current price
+                            main_mod.send_telegram(
+                                f"🚨 STOP LOSS BREACHED BEFORE PLACEMENT\n\n"
+                                f"{trade['symbol']} {trade['side']}\n\n"
+                                f"Closing position at market to prevent further loss."
+                            )
+                            print(f"[TRADE_MANAGER] Stop loss breached for {trade['symbol']}, market closing", flush=True)
+                            
+                            try:
+                                bingx_client.close_position_market(
+                                    symbol=trade['symbol'],
+                                    side=trade['side'],
+                                    amount=amount
+                                )
+                            except Exception as close_err:
+                                print(f"[TRADE_MANAGER] Failed to emergency close {trade['symbol']}: {close_err}", flush=True)
+                                
+                            with main_mod.state_lock:
+                                trade['closed'] = True
+                                trade['status'] = "CLOSED"
+                                main_mod.active_trades.pop(signal_id, None)
+                                
+                            continue
                         except Exception as e:
                             # Protection order placement failed (real error, not 110406)
                             main_mod.send_telegram(

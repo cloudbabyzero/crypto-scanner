@@ -27,6 +27,20 @@ class PositionNotExistError(Exception):
         self.original_error = original_error
         super().__init__(f"{symbol}: {message} (BingX code {self.BINGX_CODE})")
 
+class StopLossBreachedError(Exception):
+    """Raised when BingX returns code 110412.
+    
+    This indicates that the Stop Loss price provided has already been breached
+    by the current market price, so the protection order is invalid.
+    The position should be closed at MARKET immediately.
+    """
+    BINGX_CODE = 110412
+
+    def __init__(self, symbol, message="Stop Loss price breached", original_error=None):
+        self.symbol = symbol
+        self.original_error = original_error
+        super().__init__(f"{symbol}: {message} (BingX code {self.BINGX_CODE})")
+
 
 # =========================
 # ERROR HANDLING HELPERS
@@ -45,34 +59,36 @@ def extract_bingx_error_code(exception):
         Tuple (error_code, error_msg) or (None, None) if not a BingX error
     """
     try:
+        error_str = str(exception)
+        
         # CCXT wraps the response in args[0] or response attribute
         if hasattr(exception, 'args') and exception.args:
             response = exception.args[0]
             if isinstance(response, str):
-                # Try to parse as JSON
-                try:
-                    data = json.loads(response)
-                    if isinstance(data, dict):
-                        code = data.get('code')
-                        msg = data.get('msg', '')
-                        return code, msg
-                except (json.JSONDecodeError, TypeError):
-                    pass
+                # CCXT sometimes prepends the exchange name: 'bingx {"code":110412,...}'
+                if '{' in response:
+                    json_str = response[response.find('{'):]
+                    try:
+                        data = json.loads(json_str)
+                        if isinstance(data, dict) and 'code' in data:
+                            return data.get('code'), data.get('msg', '')
+                    except (json.JSONDecodeError, TypeError):
+                        pass
         
         # Check exception response attribute
         if hasattr(exception, 'response'):
             response = exception.response
-            if isinstance(response, dict):
-                code = response.get('code')
-                msg = response.get('msg', '')
-                return code, msg
+            if isinstance(response, dict) and 'code' in response:
+                return response.get('code'), response.get('msg', '')
         
         # Last resort: check if error message contains code
-        error_str = str(exception)
         if '110406' in error_str:
             return 110406, error_str
         if '109420' in error_str:
             return 109420, error_str
+        if '110412' in error_str:
+            return 110412, error_str
+            
     except Exception:
         pass
     
@@ -119,19 +135,50 @@ def fetch_order(order_id, symbol):
 
 
 def cancel_order(order_id, symbol):
-    """Cancel an order on the exchange.
+    """Cancel a specific order.
     
     Args:
         order_id: Order ID to cancel
         symbol: Trading symbol
         
     Returns:
-        Cancel result from exchange
+        Response from exchange
     """
     try:
         return main_mod.exchange.cancel_order(order_id, symbol)
     except Exception as e:
         print(f"cancel_order error: {e}", flush=True)
+        raise
+
+def close_position_market(symbol, side, amount):
+    """Close an open position at market price.
+    
+    Args:
+        symbol: Trading symbol
+        side: Position side ('LONG' or 'SHORT')
+        amount: Position size to close
+        
+    Returns:
+        Response from exchange
+    """
+    position_side = side.upper()
+    order_side = 'sell' if position_side == 'LONG' else 'buy'
+    
+    print(f"[BINGX] Emergency Market Close for {symbol} {position_side}", flush=True)
+    try:
+        return main_mod.exchange.create_order(
+            symbol=symbol,
+            type='market',
+            side=order_side,
+            amount=amount,
+            params={
+                'positionSide': position_side,
+                'tradeSide': 'CLOSE',
+                'closePosition': True
+            }
+        )
+    except Exception as e:
+        print(f"close_position_market error: {e}", flush=True)
         raise
 
 # =========================
@@ -195,12 +242,15 @@ def place_protection_orders(
         if error_code == PositionNotExistError.BINGX_CODE:
             logger.error(f"Position does not exist for {symbol} (code {error_code}) - protection retry loop will stop")
             raise PositionNotExistError(symbol, error_msg or "Position does not exist", e)
-        # Check if this is error 110406 (SL already exists)
         elif error_code == 110406:
             # Protection already in place - treat as success
             print(f"[BINGX] SL already exists for {symbol} (code 110406) - OK", flush=True)
             # Return dummy ID to indicate protection exists (but we don't have order ID)
             sl_order_id = "existing_sl"
+        elif error_code == 110412:
+            # SL price breached
+            logger.error(f"Stop Loss breached for {symbol} (code 110412) - SL price {sl_price} invalid")
+            raise StopLossBreachedError(symbol, error_msg or "Stop Loss breached", e)
         else:
             # Log other errors for debugging
             logger.exception(f"SL order placement failed for {symbol}: {e}")

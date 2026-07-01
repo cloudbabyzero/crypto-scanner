@@ -51,7 +51,6 @@ SCALPING_SYMBOLS = [
 # =========================
 
 AUTO_TRADE = True
-AUTO_TRADE_MIN_GRADE = "A"
 MAX_ACTIVE_TRADES = 2  # Global limit for total active positions (LONG + SHORT)
 MAX_LONG_TRADES = 2
 MAX_SHORT_TRADES = 2
@@ -87,7 +86,7 @@ HEARTBEAT_INTERVAL = 3600
 DEBUG_ORDER_STATUS = False
 TOP_CANDIDATES_COUNT = 5
 
-MODE = "AUTO"
+MODE = "SCALPING"       # MOMENTUM, TRENDING, SCALPING, SIDEWAYS, AUTO
 
 MARKET_REGIME_ADX_TRENDING = 30
 MARKET_REGIME_ADX_SIDEWAYS = 25
@@ -141,7 +140,7 @@ STRATEGY_CONFIG = {
         "TP_RR": 1.5,
         "MAX_TRADES": 2,
         "MIN_SCORE": 70,
-        "MIN_GRADE": "A",
+        "MIN_GRADE": "A+",
         "FILTERS": {
             "MIN_ADX": 20,
             "MAX_ADX": 100,
@@ -157,11 +156,11 @@ STRATEGY_CONFIG = {
         "COOLDOWN": 300,
         "PENDING_EXPIRY": 300,
         "ENTRY_TYPE": "MARKET",
-        "LEVERAGE": 25,
+        "LEVERAGE": 35,
         "MARGIN_PER_TRADE": 0.84,
         "SL_ATR_MULT": 1.0,
         "TP_RR": 1.5,
-        "MAX_TRADES": 1,
+        "MAX_TRADES": 2,
         "MIN_SCORE": 60,
         "MIN_GRADE": "A",
         "FILTERS": {
