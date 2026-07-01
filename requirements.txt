@@ -5,3 +5,4 @@ requests
 pyTelegramBotAPI
 gspread
 google-auth
+google-generativeai

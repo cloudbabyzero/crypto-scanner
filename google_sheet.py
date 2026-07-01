@@ -130,7 +130,7 @@ def _ensure_sheets_exist():
                 "Entry", "SL", "TP", "ATR", "ADX", "Volume", "BTCTrend", "Status",
                 "Strategy", "AllocationDecision", "SkipReason",
                 "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color",
-                "Local_Regime", "BTC_Regime"
+                "Local_Regime", "BTC_Regime", "AI_Approved", "AI_Confidence", "AI_Reason", "AI_SL_Mult", "AI_TP_RR"
             ]),
             (SHEET_TRADES, [
                 "Timestamp", "Symbol", "Side", "Entry", "Exit", "PnL",
@@ -440,7 +440,8 @@ def shutdown_all(flush_timeout=10, other_timeout=5):
 def log_signal(signal_id=None, symbol=None, side=None, grade=None, score=None, entry=None, sl=None, tp=None, atr=None, adx=None, volume=None, btc_trend=None, status="SIGNAL",
                strategy="", allocation_decision="ALLOCATED", skip_reason="",
                vwap_position="", stoch_rsi="", stretch_pct="", candle_color="",
-               local_regime="", btc_regime=""):
+               local_regime="", btc_regime="",
+               ai_approved="", ai_confidence="", ai_reason="", ai_sl_mult="", ai_tp_rr=""):
     """
     Log a signal to the Signals sheet with unique SignalID.
 
@@ -461,6 +462,11 @@ def log_signal(signal_id=None, symbol=None, side=None, grade=None, score=None, e
         strategy: Strategy used (TREND, MOMENTUM, SIDEWAYS)
         allocation_decision: ALLOCATED, SKIPPED, or OVERRIDE
         skip_reason: Reason for skipping (e.g. "Position Full", "Replaced By A+ Override")
+        ai_approved: Boolean or string indicating AI approval
+        ai_confidence: AI confidence score (0-100)
+        ai_reason: AI reason for decision
+        ai_sl_mult: AI suggested SL ATR multiplier
+        ai_tp_rr: AI suggested TP RR ratio
 
     Returns:
         SignalID for tracking
@@ -472,7 +478,8 @@ def log_signal(signal_id=None, symbol=None, side=None, grade=None, score=None, e
         row = [signal_id, timestamp, symbol, side, grade, score, entry, sl, tp, atr, adx, volume, btc_trend, status,
                strategy, allocation_decision, skip_reason,
                vwap_position, stoch_rsi, stretch_pct, candle_color,
-               local_regime, btc_regime]
+               local_regime, btc_regime,
+               ai_approved, ai_confidence, ai_reason, ai_sl_mult, ai_tp_rr]
         _add_to_buffer(SHEET_SIGNALS, row)
         return signal_id
     except Exception as e:

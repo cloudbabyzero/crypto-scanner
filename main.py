@@ -165,13 +165,19 @@ def set_scan_result(symbol, data):
     scan_results[symbol] = data
 
 
-def calculate_sideways_levels(entry, atr, bb_mid, side):
+def calculate_sideways_levels(entry, atr, bb_mid, side, ai_override=None):
     """Calculate SL and TP for sideways mean reversion trades.
 
     SL: ATR * STRATEGY_CONFIG['SIDEWAYS']['SL_ATR_MULT']
     TP: Bollinger Middle Band
     """
+    import config as main_config
     sl_mult = STRATEGY_CONFIG['SIDEWAYS']['SL_ATR_MULT']
+    
+    if ai_override and ai_override.get("approved") and ai_override.get("confidence", 0) >= getattr(main_config, 'AI_FILTER_MIN_CONFIDENCE', 75):
+        if ai_override.get("sl_atr_mult"):
+            sl_mult = ai_override.get("sl_atr_mult")
+
     if side == "LONG":
         sl = round(entry - atr * sl_mult, 4)
         tp = round(bb_mid, 4)
@@ -950,12 +956,22 @@ def calculate_trade_levels(
     entry,
     atr,
     side,
-    regime="TRENDING"
+    regime="TRENDING",
+    ai_override=None
 ):
     # Dynamic RR based on config
-    config = STRATEGY_CONFIG.get(regime, STRATEGY_CONFIG['TRENDING'])
-    sl_dist = atr * config.get('SL_ATR_MULT', 2.0)
-    tp_rr = config.get('TP_RR', 1.5)
+    import config as main_config
+    strat_config = STRATEGY_CONFIG.get(regime, STRATEGY_CONFIG['TRENDING'])
+    sl_mult = strat_config.get('SL_ATR_MULT', 2.0)
+    tp_rr = strat_config.get('TP_RR', 1.5)
+
+    if ai_override and ai_override.get("approved") and ai_override.get("confidence", 0) >= getattr(main_config, 'AI_FILTER_MIN_CONFIDENCE', 75):
+        if ai_override.get("sl_atr_mult"):
+            sl_mult = ai_override.get("sl_atr_mult")
+        if ai_override.get("tp_rr_ratio"):
+            tp_rr = ai_override.get("tp_rr_ratio")
+
+    sl_dist = atr * sl_mult
 
     if side == "LONG":
         sl = round(
@@ -2547,10 +2563,32 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             )
 
             atr = m15['atr']
+            
+            # =========================
+            # AI FILTER (Pre-Execution)
+            # =========================
+            ai_override = None
+            import ai_filter
+            ai_instance = ai_filter.get_ai_filter()
+            if ai_instance:
+                indicators = {
+                    "ema7": float(m15['ema7']), "ema25": float(m15['ema25']), "ema99": float(m15['ema99']),
+                    "rsi": float(m15['rsi']), "adx": float(adx_val), "atr": float(atr_pct),
+                    "stoch_rsi": float(m15.get('stoch_rsi', 0)), "volume_ratio": float(m15['volume'] / m15['vol_avg']) if m15.get('vol_avg', 0) > 0 else 0
+                }
+                ohlcv = df_15m[['open', 'high', 'low', 'close', 'volume']].tail(5).to_dict('records')
+                ai_override = ai_instance.analyze_signal(symbol, "LONG", indicators, ohlcv)
+                
+                if not ai_instance.shadow_mode and not ai_override.get('approved', True):
+                    set_scan_result(symbol, {"status": f"AI Rejected: {ai_override.get('reason')}", "score": long_score, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": time.time()})
+                    return {"symbol": symbol, "result": "skipped"}
+
             sl, tp1, tp2, rr = calculate_trade_levels(
                 entry,
                 atr,
-                "LONG"
+                "LONG",
+                regime=local_regime,
+                ai_override=ai_override
             )
 
             message = build_signal_message(
@@ -2806,7 +2844,12 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 vwap_position="ABOVE" if is_above_vwap else "BELOW",
                 stoch_rsi=round(m15['stoch_rsi'], 2),
                 stretch_pct=round(distance_pct, 2),
-                candle_color="GREEN" if is_green else "RED"
+                candle_color="GREEN" if is_green else "RED",
+                ai_approved=ai_override.get('approved') if ai_override else "",
+                ai_confidence=ai_override.get('confidence') if ai_override else "",
+                ai_reason=ai_override.get('reason') if ai_override else "",
+                ai_sl_mult=ai_override.get('sl_atr_mult') if ai_override else "",
+                ai_tp_rr=ai_override.get('tp_rr_ratio') if ai_override else ""
             )
             google_sheet.log_fill_analysis(
                 symbol=symbol,
@@ -2871,10 +2914,32 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             )
 
             atr = m15['atr']
+            
+            # =========================
+            # AI FILTER (Pre-Execution)
+            # =========================
+            ai_override = None
+            import ai_filter
+            ai_instance = ai_filter.get_ai_filter()
+            if ai_instance:
+                indicators = {
+                    "ema7": float(m15['ema7']), "ema25": float(m15['ema25']), "ema99": float(m15['ema99']),
+                    "rsi": float(m15['rsi']), "adx": float(adx_val), "atr": float(atr_pct),
+                    "stoch_rsi": float(m15.get('stoch_rsi', 0)), "volume_ratio": float(m15['volume'] / m15['vol_avg']) if m15.get('vol_avg', 0) > 0 else 0
+                }
+                ohlcv = df_15m[['open', 'high', 'low', 'close', 'volume']].tail(5).to_dict('records')
+                ai_override = ai_instance.analyze_signal(symbol, "SHORT", indicators, ohlcv)
+                
+                if not ai_instance.shadow_mode and not ai_override.get('approved', True):
+                    set_scan_result(symbol, {"status": f"AI Rejected: {ai_override.get('reason')}", "score": short_score, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": time.time()})
+                    return {"symbol": symbol, "result": "skipped"}
+
             sl, tp1, tp2, rr = calculate_trade_levels(
                 entry,
                 atr,
-                "SHORT"
+                "SHORT",
+                regime=local_regime,
+                ai_override=ai_override
             )
 
             message = build_signal_message(
@@ -3130,7 +3195,12 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                 vwap_position="ABOVE" if is_above_vwap else "BELOW",
                 stoch_rsi=round(m15['stoch_rsi'], 2),
                 stretch_pct=round(distance_pct, 2),
-                candle_color="GREEN" if is_green else "RED"
+                candle_color="GREEN" if is_green else "RED",
+                ai_approved=ai_override.get('approved') if ai_override else "",
+                ai_confidence=ai_override.get('confidence') if ai_override else "",
+                ai_reason=ai_override.get('reason') if ai_override else "",
+                ai_sl_mult=ai_override.get('sl_atr_mult') if ai_override else "",
+                ai_tp_rr=ai_override.get('tp_rr_ratio') if ai_override else ""
             )
             google_sheet.log_fill_analysis(
                 symbol=symbol,
@@ -3489,6 +3559,31 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             grade = "C"
 
         # =========================
+        # AI FILTER (Pre-Execution)
+        # =========================
+        ai_override = None
+        import ai_filter
+        ai_instance = ai_filter.get_ai_filter()
+        if ai_instance:
+            indicators = {
+                "ema7": float(m15['ema7']), "ema25": float(m15['ema25']), "ema99": float(m15['ema99']),
+                "rsi": float(rsi), "adx": float(adx), "atr": float(atr_percent),
+                "stoch_rsi": float(stoch_rsi), "volume_ratio": float(m15['volume'] / m15['vol_avg']) if m15.get('vol_avg', 0) > 0 else 0
+            }
+            ohlcv = df_15m[['open', 'high', 'low', 'close', 'volume']].tail(5).to_dict('records')
+            ai_override = ai_instance.analyze_signal(symbol, side, indicators, ohlcv)
+            
+            if not ai_instance.shadow_mode and not ai_override.get('approved', True):
+                set_scan_result(symbol, {"status": f"AI Rejected: {ai_override.get('reason')}", "score": sideways_score, "adx": adx, "atr": atr_percent, "volume": "HIGH" if volume_high else "NORMAL", "timestamp": time.time()})
+                return {"symbol": symbol, "result": "skipped"}
+
+        # Recalculate if AI suggested new multipliers
+        if ai_override and ai_override.get("sl_atr_mult"):
+            sl, tp, rr = calculate_sideways_levels(
+                entry, atr, bb_mid, side, ai_override=ai_override
+            )
+
+        # =========================
         # SIGNAL MESSAGE
         # =========================
 
@@ -3732,7 +3827,12 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 stretch_pct=round(abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100, 2),
                 candle_color="GREEN" if m3['close'] > m3['open'] else "RED",
                 local_regime=local_regime,
-                btc_regime=btc_regime
+                btc_regime=btc_regime,
+                ai_approved=ai_override.get('approved') if ai_override else "",
+                ai_confidence=ai_override.get('confidence') if ai_override else "",
+                ai_reason=ai_override.get('reason') if ai_override else "",
+                ai_sl_mult=ai_override.get('sl_atr_mult') if ai_override else "",
+                ai_tp_rr=ai_override.get('tp_rr_ratio') if ai_override else ""
             )
         except Exception as e:
             print(f"[SIDEWAYS] Google Sheets log error: {e}", flush=True)
