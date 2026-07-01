@@ -472,86 +472,96 @@ def execute_trade(symbol, side, skip_pullback_check=False):
         current_price = ticker['last']
 
         # =========================
-        # PULLBACK VALIDATION
+        # ENTRY_TYPE LOGIC
         # =========================
-
-        # 1) Price has already passed the entry (no pullback opportunity)
-        # LONG: entry ต้องอยู่ต่ำกว่า current_price (รอราคาลงมา)
-        #       ถ้า current_price <= entry = ราคาลงเลย entry แล้ว = พลาด
-        # SHORT: entry ต้องอยู่สูงกว่า current_price (รอราคาขึ้นมา)
-        #        ถ้า current_price >= entry = ราคาขึ้นเลย entry แล้ว = พลาด
-        if (
-            (side == "long" and current_price <= entry)
-            or
-            (side != "long" and current_price >= entry)
-        ):
-            logger.info(
-                "Pullback passed %s side=%s current=%.4f entry=%.4f atr=%.4f",
-                symbol, side, current_price, entry, atr
-            )
-            main_mod.send_telegram(
-                f"⚠️ Pullback already passed – skipping order\n\n"
-                f"{symbol}\n"
-                f"Side: {side.upper()}\n"
-                f"Current: {current_price}\n"
-                f"Entry: {entry}\n"
-                f"ATR: {atr:.4f}"
-            )
-            return
-
-        # 2) Distance too small — avoid instant fill / Telegram spam
-        # Skipped for Momentum mode (entry is intentionally close to price)
-        distance_pct = abs(current_price - entry) / current_price * 100
-        min_dist = main_mod.PULLBACK_MIN_DISTANCE_PCT
-        if not skip_pullback_check and distance_pct < min_dist:
-            logger.info(
-                "Pullback shallow %s side=%s dist=%.2f%% min=%.2f%% atr=%.4f",
-                symbol, side, distance_pct, min_dist, atr
-            )
-            main_mod.send_telegram(
-                f"⚠️ Pullback too shallow – skipping order\n\n"
-                f"{symbol}\n"
-                f"Side: {side.upper()}\n"
-                f"Current: {current_price}\n"
-                f"Entry: {entry}\n"
-                f"Distance: {distance_pct:.2f}% (min: {min_dist}%)\n"
-                f"ATR: {atr:.4f}"
-            )
-            return
-
-        # =========================
-        # LONG
-        # =========================
-
-        if side == "long":
-
+        
+        entry_type = cfg.get('ENTRY_TYPE', 'LIMIT_PULLBACK')
+        
+        if entry_type == 'MARKET':
+            # =========================
+            # MARKET ENTRY
+            # =========================
             order = main_mod.exchange.create_order(
                 symbol=symbol,
-                type='limit',
-                side='buy',
+                type='market',
+                side='buy' if side == 'long' else 'sell',
                 amount=amount,
-                price=entry,
                 params={
-                    'positionSide': 'LONG',
+                    'positionSide': 'LONG' if side == 'long' else 'SHORT',
                     'tradeSide': 'OPEN',
                     'marginMode': 'isolated'
                 }
             )
-
-        # =========================
-        # SHORT
-        # =========================
+            
+            # Market fill is immediate, recalculate actual entry and SL/TP
+            ticker = main_mod.exchange.fetch_ticker(symbol)
+            actual_entry = ticker['last']
+            entry = actual_entry  # Update for state save
+            
+            atr_val = signal['atr']
+            if side == 'long':
+                sl  = round(actual_entry - atr_val * cfg['SL_ATR_MULT'], 4)
+                tp2 = round(actual_entry + (actual_entry - sl) * cfg['TP_RR'], 4)
+            else:
+                sl  = round(actual_entry + atr_val * cfg['SL_ATR_MULT'], 4)
+                tp2 = round(actual_entry - (sl - actual_entry) * cfg['TP_RR'], 4)
 
         else:
+            # =========================
+            # PULLBACK VALIDATION (LIMIT ORDERS)
+            # =========================
+
+            # 1) Price has already passed the entry (no pullback opportunity)
+            if (
+                (side == "long" and current_price <= entry)
+                or
+                (side != "long" and current_price >= entry)
+            ):
+                logger.info(
+                    "Pullback passed %s side=%s current=%.4f entry=%.4f atr=%.4f",
+                    symbol, side, current_price, entry, atr
+                )
+                main_mod.send_telegram(
+                    f"⚠️ Pullback already passed – skipping order\n\n"
+                    f"{symbol}\n"
+                    f"Side: {side.upper()}\n"
+                    f"Current: {current_price}\n"
+                    f"Entry: {entry}\n"
+                    f"ATR: {atr:.4f}"
+                )
+                return
+
+            # 2) Distance too small
+            distance_pct = abs(current_price - entry) / current_price * 100
+            min_dist = main_mod.PULLBACK_MIN_DISTANCE_PCT
+            if not skip_pullback_check and distance_pct < min_dist:
+                logger.info(
+                    "Pullback shallow %s side=%s dist=%.2f%% min=%.2f%% atr=%.4f",
+                    symbol, side, distance_pct, min_dist, atr
+                )
+                main_mod.send_telegram(
+                    f"⚠️ Pullback too shallow – skipping order\n\n"
+                    f"{symbol}\n"
+                    f"Side: {side.upper()}\n"
+                    f"Current: {current_price}\n"
+                    f"Entry: {entry}\n"
+                    f"Distance: {distance_pct:.2f}% (min: {min_dist}%)\n"
+                    f"ATR: {atr:.4f}"
+                )
+                return
+
+            # =========================
+            # LIMIT ORDER EXECUTION
+            # =========================
 
             order = main_mod.exchange.create_order(
                 symbol=symbol,
                 type='limit',
-                side='sell',
+                side='buy' if side == 'long' else 'sell',
                 amount=amount,
                 price=entry,
                 params={
-                    'positionSide': 'SHORT',
+                    'positionSide': 'LONG' if side == 'long' else 'SHORT',
                     'tradeSide': 'OPEN',
                     'marginMode': 'isolated'
                 }

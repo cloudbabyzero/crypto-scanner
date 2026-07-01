@@ -62,7 +62,7 @@ MIN_SCORE = 80                    # Global fallback for telegram overrides
 
 # ADX and Stretch Filters Limits
 ADX_CEILING_LIMIT = 60.0          # Maximum allowed ADX (overextended trend penalty)
-STRETCH_MAX_DISTANCE_PCT = 5.0    # Maximum allowed distance from EMA in % (stretch penalty)
+STRETCH_MAX_DISTANCE_PCT = 2.5    # Maximum allowed distance from EMA in % (stretch penalty)
 
 # =========================
 # INDICATORS - Import from indicators.py
@@ -1483,6 +1483,29 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         if stoch_rsi < 20: short_score -= 30
         if m3['close'] < m3['ema25'] and stretch_pct > 1.0: short_score -= 20
 
+        # === SCALPING EXTRA FILTERS ===
+        
+        # Pinbar Detection (ไส้เทียนยาว = rejection signal ที่แนวสำคัญ)
+        body_size = abs(m3['close'] - m3['open'])
+        upper_wick = m3['high'] - max(m3['close'], m3['open'])
+        lower_wick = min(m3['close'], m3['open']) - m3['low']
+        is_bearish_pinbar = (upper_wick > body_size * 2)   # ไส้บนยาว = Short signal
+        is_bullish_pinbar = (lower_wick > body_size * 2)   # ไส้ล่างยาว = Long signal
+        
+        # Volume Anomaly: volume พุ่ง 2x ขึ้นไป = ยืนยัน
+        strong_volume = m3['volume'] > m3['vol_avg'] * 2.0
+        
+        # ราคาอยู่ใกล้ VWAP หรือ EMA99 (แนวสำคัญ)
+        near_vwap   = abs(m3['close'] - m3['vwap']) / m3['vwap'] * 100 < 0.3
+        near_ema99  = abs(m3['close'] - m3['ema99']) / m3['ema99'] * 100 < 0.5
+        near_key_level = near_vwap or near_ema99
+        
+        # Bonus Scoring
+        if is_bearish_pinbar and near_key_level and strong_volume:
+            short_score += 20  # Sniper Short Signal
+        if is_bullish_pinbar and near_key_level and strong_volume:
+            long_score += 20   # Sniper Long Signal
+
         # =========================
         # BTC FILTER (Strict Macro Alignment)
         # =========================
@@ -2408,19 +2431,32 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # TREND LOGIC (Aligned with Backtest 15m)
         # =========================
 
+        # Early Crossover Check (5 candles lookback)
+        prev = df_15m.iloc[-7:-2]
+        early_long_cross  = any(prev.iloc[i]['ema7'] < prev.iloc[i]['ema25'] and
+                                prev.iloc[i+1]['ema7'] >= prev.iloc[i+1]['ema25']
+                                for i in range(len(prev)-1))
+        early_short_cross = any(prev.iloc[i]['ema7'] > prev.iloc[i]['ema25'] and
+                                prev.iloc[i+1]['ema7'] <= prev.iloc[i+1]['ema25']
+                                for i in range(len(prev)-1))
+
         # LONG SCORE
-        if m15['ema7'] > m15['ema25']: long_score += 35
-        if m15['ema25'] > m15['ema99']: long_score += 25
-        if m15['close'] > m15['ema7']: long_score += 10
-        if vol_high: long_score += 15
-        if adx_val > STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ADX']: long_score += 15
+        if early_long_cross:           long_score += 60
+        elif m15['ema7'] > m15['ema25']: long_score += 25
+        if m15['ema25'] > m15['ema99']: long_score += 20
+        if m15['close'] > m15['ema7']:  long_score += 10
+        if vol_high:                   long_score += 15
+        if 20 <= adx_val <= 35:        long_score += 15
+        elif adx_val > 45:             long_score -= 20
 
         # SHORT SCORE
-        if m15['ema7'] < m15['ema25']: short_score += 35
-        if m15['ema25'] < m15['ema99']: short_score += 25
-        if m15['close'] < m15['ema7']: short_score += 10
-        if vol_high: short_score += 15
-        if adx_val > STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ADX']: short_score += 15
+        if early_short_cross:            short_score += 60
+        elif m15['ema7'] < m15['ema25']:  short_score += 25
+        if m15['ema25'] < m15['ema99']:  short_score += 20
+        if m15['close'] < m15['ema7']:   short_score += 10
+        if vol_high:                     short_score += 15
+        if 20 <= adx_val <= 35:          short_score += 15
+        elif adx_val > 45:               short_score -= 20
 
         # =========================
         # BTC FILTER (Strict Macro Alignment)
@@ -2447,7 +2483,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         grade = "C"
         min_score = STRATEGY_CONFIG['TRENDING']['MIN_SCORE']
         
-        if score >= min_score + 10 and adx_val > 25:
+        if score >= min_score + 20 and (early_long_cross or early_short_cross):
             grade = "A+"
         elif score >= min_score:
             grade = "A"
@@ -2455,24 +2491,14 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
             grade = "B"
 
         # =========================
-        # PULLBACK ENTRY
+        # MARKET ENTRY
+        # ENTRY_TYPE = MARKET, entry = current close price
         # =========================
 
-        # =========================
-        # ADAPTIVE ENTRY
-        # คำนวณ entry 2 แบบแล้วเลือกแบบที่ใกล้ current price มากกว่า
-        # เพื่อเพิ่ม fill rate โดยยังรอ pullback นิดนึง
-        # =========================
-
-        # =========================
-        # ADAPTIVE ENTRY
-        # LONG:  entry ต้องต่ำกว่า current price = รอราคาลงมา (pullback)
-        # SHORT: entry ต้องสูงกว่า current price = รอราคาขึ้นมา (pullback)
-        # =========================
-
-        # Sniper Entry — รอราคากลับมาทดสอบเส้น EMA25 (Deep Pullback)
-        long_pullback = round(m15['ema25'], 4)
-        short_pullback = round(m15['ema25'], 4)
+        current_price = df_15m.iloc[-1]['close']
+        
+        long_pullback = round(current_price, 4)
+        short_pullback = round(current_price, 4)
 
         # =========================
         # FAIL REASON LOGGING
@@ -3396,6 +3422,22 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         base_score = 0
         if (side == "LONG" and h1['low'] <= bb_lower) or (side == "SHORT" and h1['high'] >= bb_upper):
             base_score = 20
+            
+        # === RSI DIVERGENCE DETECTION ===
+        # ตรวจว่าราคา New High แต่ RSI ไม่ New High (Bearish Divergence)
+        # ใช้ 5 candles ย้อนหลัง
+        recent_h1 = df_1h.iloc[-7:-2]
+        price_made_high = h1['high'] > recent_h1['high'].max()
+        rsi_made_high   = h1['rsi'] > recent_h1['rsi'].max()
+
+        bearish_divergence = price_made_high and not rsi_made_high  # Short signal
+        bullish_divergence = (h1['low'] < recent_h1['low'].min()) and (h1['rsi'] > recent_h1['rsi'].min())  # Long signal
+
+        # เพิ่ม Bonus score เข้าใน scoring section ของ sideways
+        if side == 'SHORT' and bearish_divergence:
+            base_score += 25  # Divergence confirmation
+        if side == 'LONG' and bullish_divergence:
+            base_score += 25
 
         if side == "LONG":
             rsi_score = max(0, min(60, int((40 - rsi) * 4)))  # RSI 40→0pts, 25→60pts

@@ -56,6 +56,7 @@ MAX_ACTIVE_TRADES = 2  # Global limit for total active positions (LONG + SHORT)
 MAX_LONG_TRADES = 2
 MAX_SHORT_TRADES = 2
 
+
 PULLBACK_MIN_DISTANCE_PCT = 0.05
 
 GRADE_PRIORITY = {
@@ -133,11 +134,11 @@ STRATEGY_CONFIG = {
         "SCAN_INTERVAL": 300,
         "COOLDOWN": 1800,
         "PENDING_EXPIRY": 3600,
-        "ENTRY_TYPE": "LIMIT_PULLBACK",
+        "ENTRY_TYPE": "MARKET",
         "LEVERAGE": 25,
         "MARGIN_PER_TRADE": 0.84,
-        "SL_ATR_MULT": 2.0,
-        "TP_RR": 1.2,
+        "SL_ATR_MULT": 1.5,
+        "TP_RR": 1.5,
         "MAX_TRADES": 2,
         "MIN_SCORE": 70,
         "MIN_GRADE": "A",
@@ -158,8 +159,8 @@ STRATEGY_CONFIG = {
         "ENTRY_TYPE": "MARKET",
         "LEVERAGE": 25,
         "MARGIN_PER_TRADE": 0.84,
-        "SL_ATR_MULT": 1.5,
-        "TP_RR": 1.0,
+        "SL_ATR_MULT": 1.0,
+        "TP_RR": 1.5,
         "MAX_TRADES": 1,
         "MIN_SCORE": 60,
         "MIN_GRADE": "A",
@@ -176,10 +177,10 @@ STRATEGY_CONFIG = {
         "SCAN_INTERVAL": 300,
         "COOLDOWN": 1800,
         "PENDING_EXPIRY": 3600,
-        "ENTRY_TYPE": "LIMIT_PULLBACK",
+        "ENTRY_TYPE": "LIMIT_EDGE",
         "LEVERAGE": 25,
         "MARGIN_PER_TRADE": 0.84,
-        "SL_ATR_MULT": 1.0,
+        "SL_ATR_MULT": 1.5,
         "TP_RR": 1.5,
         "MAX_TRADES": 2,
         "MIN_SCORE": 70,

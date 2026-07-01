@@ -20,6 +20,7 @@ import threading
 import json
 import os
 from datetime import datetime, timedelta
+import pandas as pd
 
 # ===========================
 # STATE
@@ -150,8 +151,16 @@ def _evaluate(sig, main_mod):
 
     try:
         df = main_mod.get_dataframe(symbol, "15m")
-        # เอาแค่ 16 candles ล่าสุด = 4h
-        candles = df.tail(16)
+        recorded_at = sig.get('recorded_at', 0)
+        
+        # Ensure time column is datetime for filtering
+        df['time_dt'] = pd.to_datetime(df['time'], unit='ms')
+        
+        # Filter candles that occurred AFTER the signal was generated
+        df_after = df[df['time'] > recorded_at * 1000]
+        
+        # เอาแค่ 16 candles หลัง signal = 4h
+        candles = df_after.head(16)
 
         tp_hit_idx  = None
         sl_hit_idx  = None
