@@ -733,7 +733,18 @@ def check_trades():
                         # Google Sheets logging for WIN/TRAILED
                         try:
                             entry_price = trade.get('entry', 0)
-                            exit_price = trade.get('tp2', entry_price) if result == "WIN" else trade.get('sl', entry_price)
+                            # Try to get actual exit price from exchange
+                            actual_exit = None
+                            try:
+                                recent_trades = main_mod.exchange.fetch_my_trades(trade['symbol'], limit=5)
+                                if recent_trades:
+                                    actual_exit = float(recent_trades[-1].get('price', 0))
+                            except Exception:
+                                pass
+                            if actual_exit and actual_exit > 0:
+                                exit_price = actual_exit
+                            else:
+                                exit_price = trade.get('tp2', entry_price) if result == "WIN" else trade.get('sl', entry_price)
                             amount = trade.get('amount', 0)
                             if trade['side'] == 'LONG':
                                 pnl = round((exit_price - entry_price) * amount, 4)
@@ -774,7 +785,18 @@ def check_trades():
                         # Google Sheets logging for LOSS
                         try:
                             entry_price = trade.get('entry', 0)
-                            exit_price = trade.get('sl', entry_price)
+                            # Try to get actual exit price from exchange
+                            actual_exit = None
+                            try:
+                                recent_trades = main_mod.exchange.fetch_my_trades(trade['symbol'], limit=5)
+                                if recent_trades:
+                                    actual_exit = float(recent_trades[-1].get('price', 0))
+                            except Exception:
+                                pass
+                            if actual_exit and actual_exit > 0:
+                                exit_price = actual_exit
+                            else:
+                                exit_price = trade.get('sl', entry_price)
                             amount = trade.get('amount', 0)
                             if trade['side'] == 'LONG':
                                 pnl = round((exit_price - entry_price) * amount, 4)

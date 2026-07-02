@@ -902,14 +902,16 @@ def execute_scalp_trade(symbol, side):
         )
 
         # Recalculate SL/TP based on actual fill price
+        # Add spread buffer to TP to compensate for round-trip execution cost
+        spread_buffer = filled_entry * 0.0002  # 0.02% spread compensation
         if side == "long":
             sl   = round(filled_entry - atr * cfg['SL_ATR_MULT'], 4)
             risk = filled_entry - sl
-            tp2  = round(filled_entry + risk * cfg['TP_RR'], 4)
+            tp2  = round(filled_entry + risk * cfg['TP_RR'] + spread_buffer, 4)
         else:
             sl   = round(filled_entry + atr * cfg['SL_ATR_MULT'], 4)
             risk = sl - filled_entry
-            tp2  = round(filled_entry - risk * cfg['TP_RR'], 4)
+            tp2  = round(filled_entry - risk * cfg['TP_RR'] - spread_buffer, 4)
 
         # =========================
         # PLACE PROTECTION ORDERS IMMEDIATELY

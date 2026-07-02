@@ -1456,82 +1456,73 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         vwap_val = m3['vwap']
         is_above_vwap = m3['close'] > vwap_val
         
-        # ห้ามสวน VWAP เด็ดขาด
-        if not is_above_vwap:
-            long_score -= 1000
-        if is_above_vwap:
-            short_score -= 1000
-            
         is_green = m3['close'] > m3['open']
         is_red = m3['close'] < m3['open']
-        
-        # PA & Volume Logic (STRICT ANTI-TRAP) removed to allow pullback scalps
 
-        # --- 3m EMA alignment (50pts) - Primary signal ---
         # =========================
-        # SCALPING LOGIC (Aligned with Backtest 3m)
+        # NEW SCORING SYSTEM (max 100 pts)
+        # ต้องผ่านหลาย conditions ถึงจะได้คะแนนสูง
         # =========================
 
-        # LONG SCORE
-        if m3['ema7'] > m3['ema25']: long_score += 50
-        if m15['ema7'] > m15['ema25']: long_score += 30
-        if m3['rsi'] <= 38:
-            long_score += 25
-        if m3['volume'] > m3['vol_avg'] * 1.5: long_score += 10
+        # 1. EMA Trend (3m) — 30 pts
+        #    ต้อง EMA7 ห่างจาก EMA25 จริง ไม่ใช่แค่เพิ่ง cross
+        ema_gap_pct = abs(m3['ema7'] - m3['ema25']) / m3['ema25'] * 100
+        if m3['ema7'] > m3['ema25'] and ema_gap_pct >= 0.05:
+            long_score += 30
+        if m3['ema7'] < m3['ema25'] and ema_gap_pct >= 0.05:
+            short_score += 30
 
-        # SHORT SCORE
-        if m3['ema7'] < m3['ema25']: short_score += 50
-        if m15['ema7'] < m15['ema25']: short_score += 30
-        if m3['rsi'] >= 62:
-            short_score += 25
-        if m3['volume'] > m3['vol_avg'] * 1.5: short_score += 10
+        # 2. 15m Confirmation — 20 pts
+        if m15['ema7'] > m15['ema25']: long_score += 20
+        if m15['ema7'] < m15['ema25']: short_score += 20
+
+        # 3. Candle Direction — 15 pts
+        #    เทียนล่าสุดต้องเป็นสีตรงกับทิศทาง
+        if is_green: long_score += 15
+        if is_red: short_score += 15
+
+        # 4. RSI Momentum Zone — 15 pts
+        #    RSI อยู่ใน sweet spot (มีแรงวิ่งต่อ)
+        if 40 <= m3['rsi'] <= 58: long_score += 15
+        if 42 <= m3['rsi'] <= 60: short_score += 15
+
+        # 5. VWAP Position — 10 pts (soft filter, ไม่ block)
+        if is_above_vwap: long_score += 10
+        if not is_above_vwap: short_score += 10
+
+        # 6. Volume — 10 pts
+        if m3['volume'] > m3['vol_avg'] * 1.5:
+            long_score += 10
+            short_score += 10
 
         # --- Exhaustion Penalty ---
         stoch_rsi = m3.get('stoch_rsi', 50)
         stretch_pct = abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100
 
-        # LONG Penalty
-        if stoch_rsi > 80: long_score -= 30
-        if m3['close'] > m3['ema25'] and stretch_pct > 1.0: long_score -= 20
+        if stoch_rsi > 80: long_score -= 20
+        if m3['close'] > m3['ema25'] and stretch_pct > 1.0: long_score -= 15
 
-        # SHORT Penalty
-        if stoch_rsi < 20: short_score -= 30
-        if m3['close'] < m3['ema25'] and stretch_pct > 1.0: short_score -= 20
+        if stoch_rsi < 20: short_score -= 20
+        if m3['close'] < m3['ema25'] and stretch_pct > 1.0: short_score -= 15
 
-        # === SCALPING EXTRA FILTERS ===
-        
-        # Pinbar Detection (ไส้เทียนยาว = rejection signal ที่แนวสำคัญ)
+        # --- Pinbar Bonus ---
         body_size = abs(m3['close'] - m3['open'])
         upper_wick = m3['high'] - max(m3['close'], m3['open'])
         lower_wick = min(m3['close'], m3['open']) - m3['low']
-        is_bearish_pinbar = (upper_wick > body_size * 2)   # ไส้บนยาว = Short signal
-        is_bullish_pinbar = (lower_wick > body_size * 2)   # ไส้ล่างยาว = Long signal
-        
-        # Volume Anomaly: volume พุ่ง 2x ขึ้นไป = ยืนยัน
-        strong_volume = m3['volume'] > m3['vol_avg'] * 2.0
-        
-        # ราคาอยู่ใกล้ VWAP หรือ EMA99 (แนวสำคัญ)
-        near_vwap   = abs(m3['close'] - m3['vwap']) / m3['vwap'] * 100 < 0.3
-        near_ema99  = abs(m3['close'] - m3['ema99']) / m3['ema99'] * 100 < 0.5
-        near_key_level = near_vwap or near_ema99
-        
-        # Bonus Scoring
-        if is_bearish_pinbar and near_key_level and strong_volume:
-            short_score += 20  # Sniper Short Signal
-        if is_bullish_pinbar and near_key_level and strong_volume:
-            long_score += 20   # Sniper Long Signal
+        if lower_wick > body_size * 2: long_score += 10
+        if upper_wick > body_size * 2: short_score += 10
 
         # =========================
-        # BTC FILTER (Strict Macro Alignment)
+        # BTC FILTER
         # =========================
         if symbol != 'BTC/USDT:USDT':
             if btc_trend == "bullish":
-                short_score = 0  # Forbid SHORT in Bull Market
+                short_score = 0
             elif btc_trend == "bearish":
-                long_score = 0   # Forbid LONG in Bear Market
+                long_score = 0
             elif btc_trend == "neutral":
-                long_score -= 20
-                short_score -= 20
+                long_score -= 15
+                short_score -= 15
 
         long_score  = min(long_score, 100)
         short_score = min(short_score, 100)
