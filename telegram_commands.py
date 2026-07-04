@@ -544,6 +544,15 @@ def heartbeat(message):
     current_regime = getattr(main_mod, 'CURRENT_REGIME', 'UNKNOWN')
     control_mode = getattr(main_mod, 'CONTROL_MODE', 'AUTO')
 
+    # Fetch portfolio balance
+    try:
+        balance = main_mod.exchange.fetch_balance()
+        current_usdt = float(balance['total'].get('USDT', 0.0))
+    except Exception:
+        current_usdt = 0.0
+        
+    loss_streak = getattr(main_mod, 'current_loss_streak', 0)
+
     text = f"""
 💓 HEARTBEAT
 
@@ -552,6 +561,8 @@ Uptime: {uptime_str}
 Active Trades: {active_count}
 Coins: {len(main_mod.symbols)}
 Auto Trade: {auto_trade_status}
+Portfolio: {round(current_usdt, 2)} USDT
+Loss Streak: {loss_streak}
 Market Mode: {market_mode}
 Market Regime: {current_regime}
 Control Mode: {control_mode}

@@ -1467,9 +1467,9 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # 1. EMA Trend (3m) — 30 pts
         #    ต้อง EMA7 ห่างจาก EMA25 จริง ไม่ใช่แค่เพิ่ง cross
         ema_gap_pct = abs(m3['ema7'] - m3['ema25']) / m3['ema25'] * 100
-        if m3['ema7'] > m3['ema25'] and ema_gap_pct >= 0.02:
+        if m3['ema7'] > m3['ema25'] and ema_gap_pct >= 0.03:
             long_score += 30
-        if m3['ema7'] < m3['ema25'] and ema_gap_pct >= 0.02:
+        if m3['ema7'] < m3['ema25'] and ema_gap_pct >= 0.03:
             short_score += 30
 
         # 2. 15m Confirmation — 20 pts
@@ -3941,6 +3941,13 @@ def heartbeat_thread():
             # Also show control mode in heartbeat
             control_mode_text = CONTROL_MODE
 
+            # Fetch portfolio balance
+            try:
+                balance = exchange.fetch_balance()
+                current_usdt = float(balance['total'].get('USDT', 0.0))
+            except Exception:
+                current_usdt = 0.0
+
             message = f"""
 💓 HEARTBEAT
 
@@ -3952,6 +3959,8 @@ Uptime: {uptime_str}
 Active Trades: {active_count}
 Coins: {len(symbols)}
 Auto Trade: {auto_trade_status}
+Portfolio: {round(current_usdt, 2)} USDT
+Loss Streak: {current_loss_streak}
 
 📈 MARKET
 
