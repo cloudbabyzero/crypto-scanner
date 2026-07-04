@@ -199,7 +199,8 @@ def ensure_headers():
             ],
             SHEET_TRADES: [
                 "Timestamp", "Symbol", "Side", "Entry", "Exit", "PnL",
-                "Result", "Grade", "Score", "RR", "Strategy", "Local_Regime", "BTC_Regime"
+                "Result", "Grade", "Score", "RR", "Strategy", "Local_Regime", "BTC_Regime",
+                "Margin_Used", "Portfolio_Balance"
             ],
             SHEET_STATS: [
                 "Timestamp", "Balance", "OpenPositions", "Wins", "Losses",
@@ -487,15 +488,15 @@ def log_signal(signal_id=None, symbol=None, side=None, grade=None, score=None, e
         return None
 
 
-def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy="", local_regime="", btc_regime=""):
+def log_trade(symbol, side, entry, exit_price, pnl, result, grade="C", score=0, rr=0, strategy="", local_regime="", btc_regime="", margin_used=0, portfolio_balance=0):
     """
-    Log a trade result to the Trades sheet.
+    Log a completed trade to the Trades sheet.
 
     Args:
         symbol: Trading pair symbol
         side: LONG or SHORT
         entry: Entry price
-        exit_price: Exit/fill price
+        exit_price: Exit price (SL or TP)
         pnl: Profit/Loss in USDT
         result: WIN, LOSS, or MANUAL_CLOSE
         grade: Signal grade
@@ -505,7 +506,7 @@ def log_trade(symbol, side, entry, exit_price, pnl, result, grade, score, rr, st
     """
     try:
         timestamp = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
-        row = [timestamp, symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy, local_regime, btc_regime]
+        row = [timestamp, symbol, side, entry, exit_price, pnl, result, grade, score, rr, strategy, local_regime, btc_regime, margin_used, portfolio_balance]
         _add_to_buffer(SHEET_TRADES, row)
     except Exception as e:
         print(f"[GOOGLE_SHEETS] log_trade error: {e}", flush=True)

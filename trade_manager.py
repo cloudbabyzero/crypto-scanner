@@ -765,7 +765,9 @@ def check_trades():
                                 grade=grade,
                                 score=score,
                                 rr=rr,
-                                strategy=strategy
+                                strategy=strategy,
+                                margin_used=trade.get('margin_used', 0),
+                                portfolio_balance=trade.get('portfolio_balance', 0)
                             )
                         except Exception as e:
                             print(f"[GOOGLE_SHEETS] Trade log error: {e}", flush=True)
@@ -817,8 +819,11 @@ def check_trades():
                                 grade=grade,
                                 score=score,
                                 rr=rr,
-                                strategy=strategy
+                                strategy=strategy,
+                                margin_used=trade.get('margin_used', 0),
+                                portfolio_balance=trade.get('portfolio_balance', 0)
                             )
+
                         except Exception as e:
                             print(f"[GOOGLE_SHEETS] Trade log error: {e}", flush=True)
 

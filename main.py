@@ -1467,9 +1467,9 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # 1. EMA Trend (3m) — 30 pts
         #    ต้อง EMA7 ห่างจาก EMA25 จริง ไม่ใช่แค่เพิ่ง cross
         ema_gap_pct = abs(m3['ema7'] - m3['ema25']) / m3['ema25'] * 100
-        if m3['ema7'] > m3['ema25'] and ema_gap_pct >= 0.05:
+        if m3['ema7'] > m3['ema25'] and ema_gap_pct >= 0.02:
             long_score += 30
-        if m3['ema7'] < m3['ema25'] and ema_gap_pct >= 0.05:
+        if m3['ema7'] < m3['ema25'] and ema_gap_pct >= 0.02:
             short_score += 30
 
         # 2. 15m Confirmation — 20 pts

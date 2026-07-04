@@ -150,7 +150,7 @@ def _evaluate(sig, main_mod):
     tp      = sig["tp"]
 
     try:
-        df = main_mod.get_dataframe(symbol, "15m")
+        df = main_mod.get_dataframe(symbol, "3m")
         recorded_at = sig.get('recorded_at', 0)
         
         # Ensure time column is datetime for filtering
@@ -160,7 +160,7 @@ def _evaluate(sig, main_mod):
         df_after = df[df['time'] > recorded_at * 1000]
         
         # เอาแค่ 16 candles หลัง signal = 4h
-        candles = df_after.head(16)
+        candles = df_after.head(80)
 
         tp_hit_idx  = None
         sl_hit_idx  = None
@@ -188,7 +188,7 @@ def _evaluate(sig, main_mod):
                 pnl_pct = round((current_price - entry) / entry * 100, 2)
             return {"result": "OPEN", "pnl_pct": pnl_pct, "note": "Neither TP nor SL hit in 4h"}
 
-        elif tp_hit_idx is not None and (sl_hit_idx is None or tp_hit_idx <= sl_hit_idx):
+        elif tp_hit_idx is not None and (sl_hit_idx is None or tp_hit_idx < sl_hit_idx):
             # TP ถูกชนก่อน = WIN
             rr = round(abs(tp - entry) / abs(sl - entry), 2)
             pnl_pct = round(abs(tp - entry) / entry * 100, 2)

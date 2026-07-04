@@ -850,10 +850,36 @@ def execute_scalp_trade(symbol, side):
         )
 
         # =========================
+        # DYNAMIC RISK SIZING (Auto Snowball)
+        # =========================
+
+        # ดึงยอดเงินจริงจาก Exchange
+        try:
+            balance = main_mod.exchange.fetch_balance()
+            current_usdt = float(balance['total'].get('USDT', 0.0))
+        except Exception:
+            current_usdt = cfg['MARGIN_PER_TRADE']  # fallback ถ้าดึงไม่ได้
+
+        # Tiered Risk — พอร์ตเล็กใช้ % สูง, พอร์ตโตค่อยลด
+        if current_usdt < 5:
+            risk_percent = 0.90   # Micro: ใช้ 90% (จำเป็นเพื่อให้ position size พอ)
+        elif current_usdt < 20:
+            risk_percent = 0.25   # Small: ใช้ 25%
+        else:
+            risk_percent = 0.125  # Medium+: ใช้ 12.5% (institutional standard)
+
+        calculated_margin = current_usdt * risk_percent
+
+        # Safety: ขั้นต่ำ 0.5 USDT (exchange minimum)
+        # ไม่มี cap สูงสุด — ให้ risk_percent ควบคุมขนาดเอง
+        MIN_MARGIN = 0.5
+        margin_to_use = max(MIN_MARGIN, calculated_margin)
+
+        # =========================
         # AMOUNT
         # =========================
 
-        raw_amount = (cfg['MARGIN_PER_TRADE'] * cfg['LEVERAGE']) / entry
+        raw_amount = (margin_to_use * cfg['LEVERAGE']) / entry
         amount = main_mod.exchange.amount_to_precision(symbol, raw_amount)
         amount = float(amount)
 
@@ -978,6 +1004,8 @@ def execute_scalp_trade(symbol, side):
                 "grade": _signal_grade,
                 "score": _signal_score,
                 "strategy": "SCALPING",
+                "margin_used": round(margin_to_use, 4),
+                "portfolio_balance": round(current_usdt, 4),
             }
 
         # =========================
@@ -1007,8 +1035,17 @@ TP:
 Leverage:
 x{cfg['LEVERAGE']}
 
-Margin:
-{cfg['MARGIN_PER_TRADE']} USDT
+💰 Portfolio:
+{round(current_usdt, 2)} USDT
+
+📊 Risk:
+{round(risk_percent * 100, 1)}%
+
+Margin Used:
+{round(margin_to_use, 2)} USDT
+
+Position Size:
+{round(margin_to_use * cfg['LEVERAGE'], 2)} USDT
 """
 
         main_mod.send_telegram(message)

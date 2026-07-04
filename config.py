@@ -153,7 +153,7 @@ STRATEGY_CONFIG = {
         "BASE_TF": "3m",
         "MACRO_TF": "15m",
         "SCAN_INTERVAL": 60,
-        "COOLDOWN": 300,
+        "COOLDOWN": 180,
         "PENDING_EXPIRY": 300,
         "ENTRY_TYPE": "MARKET",
         "LEVERAGE": 25,
