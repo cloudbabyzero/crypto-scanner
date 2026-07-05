@@ -421,7 +421,14 @@ def startup_market_scan():
         else:
             new_mode = determine_mode_from_regime(startup_regime)
             MARKET_MODE = new_mode
-            send_telegram(f"✅ {new_mode} Mode Activated (auto)")
+            if CONTROL_MODE == "SCALP_SIDEWAYS":
+                send_telegram("✅ Scalp & Sideways Mode Activated (SCALP_SIDEWAYS override)")
+            elif CONTROL_MODE == "FORCE_SCALPING":
+                send_telegram("✅ Scalping Mode Activated (FORCE_SCALPING override)")
+            elif CONTROL_MODE == "FORCE_MOMENTUM":
+                send_telegram("✅ Momentum Mode Activated (FORCE_MOMENTUM override)")
+            else:
+                send_telegram(f"✅ {new_mode} Mode Activated (auto)")
         
         # Save updated state to persistent storage
         save_regime_storage()
@@ -584,6 +591,19 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
             f"BTC ADX: {btc_adx}\n"
             f"BTC ATR: {btc_atr_pct}%\n\n"
             f"🔒 FORCE_SCALPING override active\n"
+            f"No mode switch applied."
+        )
+        CURRENT_REGIME = new_regime
+        return
+        
+    if CONTROL_MODE == "SCALP_SIDEWAYS":
+        print(f"Regime changed to {new_regime}, but SCALP_SIDEWAYS override active", flush=True)
+        send_telegram(
+            f"🚨 MARKET REGIME CHANGED\n\n"
+            f"{old_regime} → {new_regime}\n\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%\n\n"
+            f"🔒 SCALP_SIDEWAYS override active\n"
             f"No mode switch applied."
         )
         CURRENT_REGIME = new_regime
