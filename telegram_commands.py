@@ -972,7 +972,9 @@ def set_auto_mode(message):
                 f"Usage:\n"
                 f"/setauto auto      - Auto regime switching\n"
                 f"/setauto trend     - Force trend mode\n"
-                f"/setauto sideways  - Force sideways mode"
+                f"/setauto sideways  - Force sideways mode\n"
+                f"/setauto scalping  - Force scalping mode\n"
+                f"/setauto scalpside - Scalping & Sideways"
             )
             bot.reply_to(message, text)
             return
@@ -1023,7 +1025,33 @@ def set_auto_mode(message):
                 f"Old: {old}\n"
                 f"Auto regime switching disabled."
             )
-
+            
+        elif mode_arg == "scalping":
+            old = main_mod.CONTROL_MODE
+            main_mod.CONTROL_MODE = "FORCE_SCALPING"
+            main_mod.MARKET_MODE = "SCALPING"
+            main_mod.save_regime_storage()
+            
+            bot.reply_to(
+                message,
+                f"🔒 Control Mode: FORCE_SCALPING\n\n"
+                f"Old: {old}\n"
+                f"Bot is locked to Scalping mode."
+            )
+            
+        elif mode_arg == "scalpside":
+            old = main_mod.CONTROL_MODE
+            main_mod.CONTROL_MODE = "SCALP_SIDEWAYS"
+            main_mod.MARKET_MODE = "SCALPING" # default fallback
+            main_mod.save_regime_storage()
+            
+            bot.reply_to(
+                message,
+                f"🔄 Control Mode: SCALP_SIDEWAYS\n\n"
+                f"Old: {old}\n"
+                f"Bot will switch between Scalping and Sideways (Sideways triggers when BTC is Neutral)."
+            )
+            
         elif mode_arg == "momentum":
             old = main_mod.CONTROL_MODE
             main_mod.CONTROL_MODE = "FORCE_MOMENTUM"
@@ -1045,7 +1073,9 @@ def set_auto_mode(message):
                 f"/setauto auto      - Auto regime switching\n"
                 f"/setauto trend     - Force trend mode\n"
                 f"/setauto sideways  - Force sideways mode\n"
-                f"/setauto momentum  - Force momentum mode"
+                f"/setauto momentum  - Force momentum mode\n"
+                f"/setauto scalping  - Force scalping mode\n"
+                f"/setauto scalpside - Scalping & Sideways"
             )
             
     except Exception as e:
@@ -1223,6 +1253,12 @@ def help_command(message):
 
 /setauto sideways
 บังคับ SIDEWAYS mode ตลอด
+
+/setauto scalping
+บังคับ SCALPING mode ตลอด
+
+/setauto scalpside
+สลับ SCALPING คู่ SIDEWAYS อัตโนมัติ (ปิดโหมดเทรน)
 
 📈 Trend Strategy
 

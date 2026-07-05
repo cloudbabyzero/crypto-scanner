@@ -1333,6 +1333,12 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
         effective_mode = "SIDEWAYS"
     elif CONTROL_MODE == "FORCE_SCALPING":
         effective_mode = "SCALPING"
+    elif CONTROL_MODE == "SCALP_SIDEWAYS":
+        btc_trend_val = get_btc_trend()
+        if local_regime in ["SIDEWAYS", "PAUSE"] or btc_trend_val == "neutral":
+            effective_mode = "SIDEWAYS"
+        else:
+            effective_mode = "SCALPING"
     elif CONTROL_MODE == "FORCE_PAUSE":
         effective_mode = "PAUSE"
     elif CONTROL_MODE == "AUTO":
@@ -1467,9 +1473,10 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # 1. EMA Trend (3m) — 30 pts
         #    ต้อง EMA7 ห่างจาก EMA25 จริง ไม่ใช่แค่เพิ่ง cross
         ema_gap_pct = abs(m3['ema7'] - m3['ema25']) / m3['ema25'] * 100
-        if m3['ema7'] > m3['ema25'] and ema_gap_pct >= 0.03:
+        required_gap_pct = max(0.02, min(0.08, atr_percent * 0.3))
+        if m3['ema7'] > m3['ema25'] and ema_gap_pct >= required_gap_pct:
             long_score += 30
-        if m3['ema7'] < m3['ema25'] and ema_gap_pct >= 0.03:
+        if m3['ema7'] < m3['ema25'] and ema_gap_pct >= required_gap_pct:
             short_score += 30
 
         # 2. 15m Confirmation — 20 pts
@@ -1521,8 +1528,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             elif btc_trend == "bearish":
                 long_score = 0
             elif btc_trend == "neutral":
-                long_score -= 15
-                short_score -= 15
+                long_score = 0
+                short_score = 0
 
         long_score  = min(long_score, 100)
         short_score = min(short_score, 100)
@@ -2437,6 +2444,12 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # TREND LOGIC (Aligned with Backtest 15m)
         # =========================
 
+        # Dynamic EMA Gap calculation
+        ema_gap_pct = abs(m15['ema7'] - m15['ema25']) / m15['ema25'] * 100
+        required_gap_pct = max(0.05, min(0.2, atr_percent * 0.4))
+        has_long_gap = (m15['ema7'] > m15['ema25']) and (ema_gap_pct >= required_gap_pct)
+        has_short_gap = (m15['ema7'] < m15['ema25']) and (ema_gap_pct >= required_gap_pct)
+
         # Early Crossover Check (5 candles lookback)
         prev = df_15m.iloc[-7:-2]
         early_long_cross  = any(prev.iloc[i]['ema7'] < prev.iloc[i]['ema25'] and
@@ -2447,8 +2460,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
                                 for i in range(len(prev)-1))
 
         # LONG SCORE
-        if early_long_cross:           long_score += 60
-        elif m15['ema7'] > m15['ema25']: long_score += 25
+        if early_long_cross and has_long_gap: long_score += 60
+        elif has_long_gap:                    long_score += 25
         if m15['ema25'] > m15['ema99']: long_score += 20
         if m15['close'] > m15['ema7']:  long_score += 10
         if vol_high:                   long_score += 15
@@ -2456,8 +2469,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         elif adx_val > 45:             long_score -= 20
 
         # SHORT SCORE
-        if early_short_cross:            short_score += 60
-        elif m15['ema7'] < m15['ema25']:  short_score += 25
+        if early_short_cross and has_short_gap:  short_score += 60
+        elif has_short_gap:                      short_score += 25
         if m15['ema25'] < m15['ema99']:  short_score += 20
         if m15['close'] < m15['ema7']:   short_score += 10
         if vol_high:                     short_score += 15
@@ -2510,8 +2523,8 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # FAIL REASON LOGGING
         # =========================
         fail_reason = None
-        long_micro_aligned = (m15['close'] > m15['ema7'] and m15['ema7'] > m15['ema25'])
-        short_micro_aligned = (m15['close'] < m15['ema7'] and m15['ema7'] < m15['ema25'])
+        long_micro_aligned = (m15['close'] > m15['ema7'] and has_long_gap)
+        short_micro_aligned = (m15['close'] < m15['ema7'] and has_short_gap)
         
         if long_score < STRATEGY_CONFIG['TRENDING']['MIN_SCORE'] and short_score < STRATEGY_CONFIG['TRENDING']['MIN_SCORE']:
             fail_reason = f"Score Below MIN_SCORE ({max(long_score, short_score)})"
@@ -3424,8 +3437,10 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         ema25 = h1['ema25']
 
         # LONG: RSI < 45, Low <= BB Lower, ADX < 28
-        # + ต้องไม่ downtrend ชัด: ema7 ต้องไม่ต่ำกว่า ema25 มากเกิน 1%
-        long_trend_ok = ema7 >= ema25 * 0.99  # ยอมให้ต่ำกว่าได้นิดหน่อย แต่ไม่ downtrend ชัด
+        # + ต้องไม่ downtrend/uptrend ชัด โดยใช้ Dynamic ATR Buffer
+        dynamic_buffer = max(0.005, min(0.02, (atr_percent * 0.2) / 100))
+        
+        long_trend_ok = ema7 >= ema25 * (1.0 - dynamic_buffer)  # ยอมให้ต่ำกว่าได้ตาม volatility
         long_condition = (
             rsi < 45
             and h1['low'] <= bb_lower
@@ -3434,8 +3449,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         )
 
         # SHORT: RSI > 55, High >= BB Upper, ADX < 25
-        # + ต้องไม่ uptrend ชัด: ema7 ต้องไม่สูงกว่า ema25 มากเกิน 1%
-        short_trend_ok = ema7 <= ema25 * 1.01
+        short_trend_ok = ema7 <= ema25 * (1.0 + dynamic_buffer)
         short_condition = (
             rsi > 55
             and h1['high'] >= bb_upper
@@ -3527,7 +3541,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             elif btc_trend == "bearish" and side == "LONG":
                 sideways_score = 0   # Forbid LONG in Bear Market
             elif btc_trend == "neutral":
-                sideways_score -= 20
+                sideways_score += 10
 
         # =========================
         # GRADE (ขึ้นกับ score รวม)

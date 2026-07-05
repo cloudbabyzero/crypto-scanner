@@ -86,7 +86,7 @@ HEARTBEAT_INTERVAL = 3600
 DEBUG_ORDER_STATUS = False
 TOP_CANDIDATES_COUNT = 5
 
-MODE = "SCALPING"       # MOMENTUM, TRENDING, SCALPING, SIDEWAYS, AUTO
+MODE = "SCALP_SIDEWAYS"  # MOMENTUM, TRENDING, SCALPING, SIDEWAYS, AUTO, SCALP_SIDEWAYS
 
 MARKET_REGIME_ADX_TRENDING = 30
 MARKET_REGIME_ADX_SIDEWAYS = 25
@@ -139,7 +139,7 @@ STRATEGY_CONFIG = {
         "SL_ATR_MULT": 1.5,
         "TP_RR": 1.5,
         "MAX_TRADES": 2,
-        "MIN_SCORE": 70,
+        "MIN_SCORE": 75,
         "MIN_GRADE": "A+",
         "FILTERS": {
             "MIN_ADX": 20,
@@ -161,7 +161,7 @@ STRATEGY_CONFIG = {
         "SL_ATR_MULT": 1.5,
         "TP_RR": 2.0,
         "MAX_TRADES": 1,
-        "MIN_SCORE": 70,
+        "MIN_SCORE": 75,
         "MIN_GRADE": "A",
         "FILTERS": {
             "MIN_ADX": 15,
@@ -182,7 +182,7 @@ STRATEGY_CONFIG = {
         "SL_ATR_MULT": 1.5,
         "TP_RR": 1.5,
         "MAX_TRADES": 2,
-        "MIN_SCORE": 70,
+        "MIN_SCORE": 75,
         "MIN_GRADE": "A",
         "FILTERS": {
             "MAX_ADX": 25,
