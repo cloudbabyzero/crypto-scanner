@@ -860,13 +860,13 @@ def execute_scalp_trade(symbol, side):
         except Exception:
             current_usdt = cfg['MARGIN_PER_TRADE']  # fallback ถ้าดึงไม่ได้
 
-        # Tiered Risk — พอร์ตเล็กใช้ % สูง, พอร์ตโตค่อยลด
-        if current_usdt < 5:
-            risk_percent = 0.90   # Micro: ใช้ 90% (จำเป็นเพื่อให้ position size พอ)
-        elif current_usdt < 20:
-            risk_percent = 0.25   # Small: ใช้ 25%
+        # Tiered Risk — SAFE MODE (ป้องกันพอร์ตแตก)
+        if current_usdt < 10:
+            risk_percent = 0.20   # Micro: ใช้ 20% ของพอร์ต (Max)
+        elif current_usdt < 50:
+            risk_percent = 0.15   # Small: ใช้ 15%
         else:
-            risk_percent = 0.125  # Medium+: ใช้ 12.5% (institutional standard)
+            risk_percent = 0.10   # Medium+: ใช้ 10% (institutional standard)
 
         calculated_margin = current_usdt * risk_percent
 
