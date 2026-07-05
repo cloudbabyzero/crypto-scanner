@@ -233,6 +233,7 @@ def save_regime_storage():
             "MARKET_MODE": MARKET_MODE,
             "CONTROL_MODE": CONTROL_MODE,
             "CURRENT_REGIME": CURRENT_REGIME,
+            "CONFIG_MODE": MODE,
         }
         with open(REGIME_STORAGE_FILE, "w") as f:
             json.dump(data, f, indent=2)
@@ -252,8 +253,16 @@ def load_regime_storage():
             with open(REGIME_STORAGE_FILE, "r") as f:
                 data = json.load(f)
             MARKET_MODE = data.get("MARKET_MODE", MARKET_MODE)
-            CONTROL_MODE = data.get("CONTROL_MODE", CONTROL_MODE)
             CURRENT_REGIME = data.get("CURRENT_REGIME", CURRENT_REGIME)
+            
+            # User UX Fix: If config.py was edited while offline, prioritize it over saved state
+            saved_config_mode = data.get("CONFIG_MODE")
+            if saved_config_mode is not None and saved_config_mode != MODE:
+                print(f"[CONFIG OVERRIDE] config.py MODE ({MODE}) differs from saved ({saved_config_mode}). Using config.py.", flush=True)
+                CONTROL_MODE = MODE
+            else:
+                CONTROL_MODE = data.get("CONTROL_MODE", CONTROL_MODE)
+                
             print(f"Regime storage loaded: {data}", flush=True)
         else:
             print("No regime storage file found, using defaults", flush=True)
