@@ -22,10 +22,23 @@ def fetch_log_all(spreadsheet_name="Crypto Scanner Dashboard", sheet_name="Trade
         sh = gc.open(spreadsheet_name)
         worksheet = sh.worksheet(sheet_name)
         
-        # ดึงข้อมูลทั้งหมดส่งกลับไปให้ AI คัดกรอง
-        all_records = worksheet.get_all_records()
+        # ดึงข้อมูลทั้งหมดเป็น list of lists
+        all_values = worksheet.get_all_values()
         
-        print(json.dumps(all_records, indent=2, ensure_ascii=False))
+        if not all_values:
+            print(json.dumps([]))
+            return
+            
+        headers = all_values[0]
+        records = []
+        for row in all_values[1:]:
+            record = {}
+            for i, val in enumerate(row):
+                if i < len(headers) and headers[i].strip() != "":
+                    record[headers[i]] = val
+            records.append(record)
+            
+        print(json.dumps(records, indent=2, ensure_ascii=False))
     except Exception as e:
         print(f"Error: {str(e)}")
 

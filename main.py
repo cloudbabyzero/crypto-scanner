@@ -1502,15 +1502,19 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # 1. EMA Trend (3m) — 30 pts
         #    ต้อง EMA7 ห่างจาก EMA25 จริง ไม่ใช่แค่เพิ่ง cross
         ema_gap_pct = abs(m3['ema7'] - m3['ema25']) / m3['ema25'] * 100
-        required_gap_pct = max(0.02, min(0.08, atr_percent * 0.3))
+        required_gap_pct = max(0.04, min(0.1, atr_percent * 0.4))
         if m3['ema7'] > m3['ema25'] and ema_gap_pct >= required_gap_pct:
             long_score += 30
         if m3['ema7'] < m3['ema25'] and ema_gap_pct >= required_gap_pct:
             short_score += 30
 
         # 2. 15m Confirmation — 20 pts
-        if m15['ema7'] > m15['ema25']: long_score += 20
-        if m15['ema7'] < m15['ema25']: short_score += 20
+        ema_gap_pct_15m = abs(m15['ema7'] - m15['ema25']) / m15['ema25'] * 100
+        req_gap_15m = max(0.04, min(0.1, (m15['atr'] / m15['close'] * 100) * 0.4))
+        if m15['ema7'] > m15['ema25'] and ema_gap_pct_15m >= req_gap_15m: 
+            long_score += 20
+        if m15['ema7'] < m15['ema25'] and ema_gap_pct_15m >= req_gap_15m: 
+            short_score += 20
 
         # 3. Candle Direction — 15 pts
         #    เทียนล่าสุดต้องเป็นสีตรงกับทิศทาง
@@ -1602,7 +1606,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 google_sheet.log_debug(symbol, "BTC Bearish - no LONG scalp", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             side  = "LONG"
-            entry = round(m3['ema25'], 4)  # Limit order on 3m EMA25 pullback
+            entry = round(m3['close'], 4)  # Market order on 3m close
         elif short_score > long_score and short_score >= STRATEGY_CONFIG['SCALPING']['MIN_SCORE']:
             if rsi_val < STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']:
                 set_scan_result(symbol, {"status": "RSI Too Low", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
@@ -1614,7 +1618,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 google_sheet.log_debug(symbol, "BTC Bullish - no SHORT scalp", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             side  = "SHORT"
-            entry = round(m3['ema25'], 4)  # Limit order on 3m EMA25 pullback
+            entry = round(m3['close'], 4)  # Market order on 3m close
         else:
             set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             return {"symbol": symbol, "result": "skipped"}

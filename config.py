@@ -133,7 +133,7 @@ STRATEGY_CONFIG = {
         "SCAN_INTERVAL": 300,
         "COOLDOWN": 1800,
         "PENDING_EXPIRY": 3600,
-        "ENTRY_TYPE": "MARKET",
+        "ENTRY_TYPE": "LIMIT",
         "LEVERAGE": 25,
         "MARGIN_PER_TRADE": 0.84,
         "SL_ATR_MULT": 1.5,
@@ -166,6 +166,7 @@ STRATEGY_CONFIG = {
         "FILTERS": {
             "MIN_ADX": 15,
             "MAX_ADX": 28,
+            "MIN_ATR_PCT": 0.15,
             "RSI_SAFE_LONG_MAX": 65,
             "RSI_SAFE_SHORT_MIN": 35
         }
