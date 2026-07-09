@@ -750,7 +750,12 @@ def check_trades():
                                 pnl = round((exit_price - entry_price) * amount, 4)
                             else:
                                 pnl = round((entry_price - exit_price) * amount, 4)
-                            rr = 1.0
+                            
+                            tp2 = trade.get('tp2', entry_price)
+                            sl = trade.get('sl', entry_price)
+                            risk_val = abs(entry_price - sl)
+                            rr = round(abs(tp2 - entry_price) / risk_val, 2) if risk_val > 0 else 0
+                            
                             grade = trade.get('grade', 'C')
                             score = trade.get('score', 0)
                             strategy = trade.get('strategy', '')
@@ -804,7 +809,12 @@ def check_trades():
                                 pnl = round((exit_price - entry_price) * amount, 4)
                             else:
                                 pnl = round((entry_price - exit_price) * amount, 4)
-                            rr = 1.0
+                            
+                            tp2 = trade.get('tp2', entry_price)
+                            sl = trade.get('sl', entry_price)
+                            risk_val = abs(entry_price - sl)
+                            rr = round(abs(tp2 - entry_price) / risk_val, 2) if risk_val > 0 else 0
+                            
                             grade = trade.get('grade', 'C')
                             score = trade.get('score', 0)
                             strategy = trade.get('strategy', '')

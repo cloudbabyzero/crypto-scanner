@@ -1471,6 +1471,15 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         rsi_val     = round(m3['rsi'], 2)
 
         # =========================
+        # VOLATILITY FILTER
+        # =========================
+        scalp_min_atr = STRATEGY_CONFIG['SCALPING']['FILTERS'].get('MIN_ATR_PCT', 0)
+        if scalp_min_atr > 0 and atr_percent < scalp_min_atr:
+            set_scan_result(symbol, {"status": "ATR Too Low", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, f"ATR Too Low ({atr_val} < {scalp_min_atr})", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
         # FOMO FILTER
         # =========================
 
@@ -1561,8 +1570,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             elif btc_trend == "bearish":
                 long_score = 0
             elif btc_trend == "neutral":
-                long_score = 0
-                short_score = 0
+                long_score -= 15
+                short_score -= 15
 
         long_score  = min(long_score, 100)
         short_score = min(short_score, 100)

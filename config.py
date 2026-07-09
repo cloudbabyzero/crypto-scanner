@@ -161,7 +161,7 @@ STRATEGY_CONFIG = {
         "SL_ATR_MULT": 1.5,
         "TP_RR": 2.0,
         "MAX_TRADES": 1,
-        "MIN_SCORE": 75,
+        "MIN_SCORE": 80,
         "MIN_GRADE": "A",
         "FILTERS": {
             "MIN_ADX": 15,
