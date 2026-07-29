@@ -850,30 +850,30 @@ def execute_scalp_trade(symbol, side):
         )
 
         # =========================
-        # DYNAMIC RISK SIZING (Auto Snowball)
+        # FIXED MARGIN + BALANCE GUARD
         # =========================
 
-        # ดึงยอดเงินจริงจาก Exchange
+        # ดึงยอดเงินจริงจาก Exchange เพื่อเช็ค Balance Guard
         try:
             balance = main_mod.exchange.fetch_balance()
             current_usdt = float(balance['total'].get('USDT', 0.0))
         except Exception:
-            current_usdt = cfg['MARGIN_PER_TRADE']  # fallback ถ้าดึงไม่ได้
+            current_usdt = 0.0
 
-        # Tiered Risk — SAFE MODE (ป้องกันพอร์ตแตก)
-        if current_usdt < 10:
-            risk_percent = 0.20   # Micro: ใช้ 20% ของพอร์ต (Max)
-        elif current_usdt < 50:
-            risk_percent = 0.15   # Small: ใช้ 15%
-        else:
-            risk_percent = 0.10   # Medium+: ใช้ 10% (institutional standard)
+        # Balance Guard — ไม่เทรดถ้า balance ต่ำเกินไป
+        MIN_BALANCE_TO_TRADE = 1.0
+        if current_usdt < MIN_BALANCE_TO_TRADE:
+            main_mod.send_telegram(
+                f"🛑 BALANCE TOO LOW\n\n"
+                f"Balance: {current_usdt:.4f} USDT\n"
+                f"Min required: {MIN_BALANCE_TO_TRADE} USDT\n"
+                f"Trading paused for safety"
+            )
+            return
 
-        calculated_margin = current_usdt * risk_percent
-
-        # Safety: ขั้นต่ำ 0.5 USDT (exchange minimum)
-        # ไม่มี cap สูงสุด — ให้ risk_percent ควบคุมขนาดเอง
-        MIN_MARGIN = 0.5
-        margin_to_use = max(MIN_MARGIN, calculated_margin)
+        # Fixed margin — ป้องกัน Martingale effect
+        margin_to_use = cfg['MARGIN_PER_TRADE']  # Fixed USDT value from config
+        risk_percent = (margin_to_use / current_usdt) if current_usdt > 0 else 0.0
 
         # =========================
         # AMOUNT
@@ -928,16 +928,18 @@ def execute_scalp_trade(symbol, side):
         )
 
         # Recalculate SL/TP based on actual fill price
-        # Add spread buffer to TP to compensate for round-trip execution cost
+        # Set tp_trigger at 1.2 RR (bot trigger) and tp2 at 3.0 RR (exchange safety ceiling)
         spread_buffer = filled_entry * 0.0002  # 0.02% spread compensation
         if side == "long":
             sl   = round(filled_entry - atr * cfg['SL_ATR_MULT'], 4)
             risk = filled_entry - sl
-            tp2  = round(filled_entry + risk * cfg['TP_RR'] + spread_buffer, 4)
+            tp_trigger = round(filled_entry + risk * cfg['TP_RR'] + spread_buffer, 4)
+            tp2        = round(filled_entry + risk * (cfg['TP_RR'] * 2.5) + spread_buffer, 4) # Exchange Safety Ceiling (3.0 RR)
         else:
             sl   = round(filled_entry + atr * cfg['SL_ATR_MULT'], 4)
             risk = sl - filled_entry
-            tp2  = round(filled_entry - risk * cfg['TP_RR'] - spread_buffer, 4)
+            tp_trigger = round(filled_entry - risk * cfg['TP_RR'] - spread_buffer, 4)
+            tp2        = round(filled_entry - risk * (cfg['TP_RR'] * 2.5) - spread_buffer, 4) # Exchange Safety Ceiling (3.0 RR)
 
         # =========================
         # PLACE PROTECTION ORDERS IMMEDIATELY
@@ -995,6 +997,7 @@ def execute_scalp_trade(symbol, side):
                 "entry": filled_entry,
                 "sl": sl,
                 "tp2": tp2,
+                "tp_trigger": tp_trigger,
                 "status": "OPEN",  # Market order = already filled = OPEN
                 "order_id": order['id'],
                 "amount": amount,
@@ -1012,40 +1015,23 @@ def execute_scalp_trade(symbol, side):
         # TELEGRAM
         # =========================
 
-        message = f"""
-⚡ SCALP ORDER FILLED
+        side_icon = "🟩" if side.upper() == "LONG" else "🟥"
 
-{symbol}
+        message = f"""✅ SCALP ORDER EXECUTED
 
-Mode:
-SCALPING
+Symbol: {symbol}
+Side: {side_icon} {side.upper()} (x{cfg['LEVERAGE']} Leverage)
+Fill Price: {filled_entry}
 
-Side:
-{side.upper()}
+🛡️ Protection Setup:
+• SL: {sl} (1.2x ATR)
+• TP Trigger: {tp_trigger} (1.2 RR)
+• Safety Ceiling TP: {tp2} (3.0 RR)
 
-Entry (Fill):
-{filled_entry}
-
-SL:
-{sl}
-
-TP:
-{tp2}
-
-Leverage:
-x{cfg['LEVERAGE']}
-
-💰 Portfolio:
-{round(current_usdt, 2)} USDT
-
-📊 Risk:
-{round(risk_percent * 100, 1)}%
-
-Margin Used:
-{round(margin_to_use, 2)} USDT
-
-Position Size:
-{round(margin_to_use * cfg['LEVERAGE'], 2)} USDT
+💰 Position Info:
+• Margin: {round(margin_to_use, 2)} USDT
+• Notional: {round(margin_to_use * cfg['LEVERAGE'], 2)} USDT
+• Balance: {round(current_usdt, 2)} USDT
 """
 
         main_mod.send_telegram(message)

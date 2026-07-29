@@ -244,24 +244,33 @@ def _process_trailing_stop(trade, current_price):
     import bingx_client
     import google_sheet
     
-    # Only trail in TRENDING strategies
+    # Trailing allowed for TRENDING and SCALPING
     regime = trade.get('strategy') or trade.get('signal_regime')
-    if regime not in ["TRENDING", "TREND"]:
+    if regime not in ["TRENDING", "TREND", "SCALPING"]:
         return
+
+    # Use tighter config for SCALPING
+    is_scalping = regime == "SCALPING"
 
     side = trade.get('side', 'LONG')
     entry_price = trade.get('entry', 0)
     current_sl = trade.get('sl', 0)
     current_atr = trade.get('atr', 0)
-    tp_price = trade.get('tp2') or trade.get('tp')
+    tp_price = trade.get('tp_trigger') or trade.get('tp2') or trade.get('tp')
     phase = trade.get('trailing_phase', 1)
     
     if current_atr <= 0 or current_price <= 0 or entry_price <= 0:
         return
 
-    activation_dist = current_atr * TRAILING_ACTIVATION_ATR
-    trailing_buffer = current_atr * TRAILING_BUFFER_ATR
-    step_size = current_atr * TRAILING_STEP_ATR
+    if is_scalping:
+        from config import SCALP_TRAILING_ACTIVATION_ATR, SCALP_TRAILING_BUFFER_ATR, SCALP_TRAILING_STEP_ATR
+        activation_dist = current_atr * SCALP_TRAILING_ACTIVATION_ATR
+        trailing_buffer = current_atr * SCALP_TRAILING_BUFFER_ATR
+        step_size = current_atr * SCALP_TRAILING_STEP_ATR
+    else:
+        activation_dist = current_atr * TRAILING_ACTIVATION_ATR
+        trailing_buffer = current_atr * TRAILING_BUFFER_ATR
+        step_size = current_atr * TRAILING_STEP_ATR
     
     new_sl = current_sl
     
@@ -281,10 +290,13 @@ def _process_trailing_stop(trade, current_price):
                 trade['trailing_phase'] = 2
             phase = 2
             
-            msg = (f"🚀 [INFINITY RUN] ชนเป้า TP แล้ว บังคับยึดกำไรเป้าหมาย และปล่อยรันเทรนด์!\n\n"
-                   f"{trade['symbol']}\n"
-                   f"Side: LONG\n"
-                   f"Price: {current_price}")
+            side_icon = "🟩" if side == "LONG" else "🟥"
+            msg = (f"🚀 INFINITY RUN ACTIVATED! (Hit 1.2 RR Target)\n\n"
+                   f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
+                   f"Trigger Price: {current_price}\n\n"
+                   f"• Exchange TP Order Cancelled\n"
+                   f"• Min Profit Locked: {tp_price} (1.2 RR)\n"
+                   f"• 🟢 Unlimited Trend Run Active!")
             main_mod.send_telegram(msg)
             google_sheet.log_event(trade['symbol'], side, "TRAILING_PHASE_2", f"Price {current_price} >= TP {tp_price}. Phase 2 activated.")
             print(f"[TRAILING] {trade['symbol']} ENTERED PHASE 2", flush=True)
@@ -309,11 +321,19 @@ def _process_trailing_stop(trade, current_price):
                     trade['sl'] = new_sl
                     trade['sl_order_id'] = new_id
                 
-                prefix = "🚀 [INFINITY]" if phase == 2 else "🛡️ [TRAILING STOP]"
-                msg = (f"{prefix} ขยับบังทุน\n\n"
-                       f"{trade['symbol']}\n"
-                       f"Side: {side}\n"
-                       f"New SL: {new_sl}")
+                side_icon = "🟩" if side == "LONG" else "🟥"
+                if phase == 2:
+                    msg = (f"🚀 INFINITY RUN — PROFIT LOCK RAISED\n\n"
+                           f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
+                           f"Mark Price: {current_price}\n"
+                           f"New SL: {new_sl} (Trailed SL)\n"
+                           f"🟢 Locking Higher Profit")
+                else:
+                    msg = (f"🛡️ TRAILING STOP — BREAKEVEN LOCKED\n\n"
+                           f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
+                           f"Mark Price: {current_price}\n"
+                           f"New SL: {new_sl} (Breakeven + Buffer)\n"
+                           f"🟢 0% Risk Status (Protected)")
                 main_mod.send_telegram(msg)
                 print(f"[TRAILING] {trade['symbol']} LONG SL updated to {new_sl} (Phase {phase})", flush=True)
 
@@ -333,10 +353,13 @@ def _process_trailing_stop(trade, current_price):
                 trade['trailing_phase'] = 2
             phase = 2
             
-            msg = (f"🚀 [INFINITY RUN] ชนเป้า TP แล้ว บังคับยึดกำไรเป้าหมาย และปล่อยรันเทรนด์!\n\n"
-                   f"{trade['symbol']}\n"
-                   f"Side: SHORT\n"
-                   f"Price: {current_price}")
+            side_icon = "🟩" if side == "SHORT" else "🟥"
+            msg = (f"🚀 INFINITY RUN ACTIVATED! (Hit 1.2 RR Target)\n\n"
+                   f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
+                   f"Trigger Price: {current_price}\n\n"
+                   f"• Exchange TP Order Cancelled\n"
+                   f"• Min Profit Locked: {tp_price} (1.2 RR)\n"
+                   f"• 🟢 Unlimited Trend Run Active!")
             main_mod.send_telegram(msg)
             google_sheet.log_event(trade['symbol'], side, "TRAILING_PHASE_2", f"Price {current_price} <= TP {tp_price}. Phase 2 activated.")
             print(f"[TRAILING] {trade['symbol']} ENTERED PHASE 2", flush=True)
@@ -361,11 +384,19 @@ def _process_trailing_stop(trade, current_price):
                     trade['sl'] = new_sl
                     trade['sl_order_id'] = new_id
                 
-                prefix = "🚀 [INFINITY]" if phase == 2 else "🛡️ [TRAILING STOP]"
-                msg = (f"{prefix} ขยับบังทุน\n\n"
-                       f"{trade['symbol']}\n"
-                       f"Side: {side}\n"
-                       f"New SL: {new_sl}")
+                side_icon = "🟩" if side == "SHORT" else "🟥"
+                if phase == 2:
+                    msg = (f"🚀 INFINITY RUN — PROFIT LOCK RAISED\n\n"
+                           f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
+                           f"Mark Price: {current_price}\n"
+                           f"New SL: {new_sl} (Trailed SL)\n"
+                           f"🟢 Locking Higher Profit")
+                else:
+                    msg = (f"🛡️ TRAILING STOP — BREAKEVEN LOCKED\n\n"
+                           f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
+                           f"Mark Price: {current_price}\n"
+                           f"New SL: {new_sl} (Breakeven + Buffer)\n"
+                           f"🟢 0% Risk Status (Protected)")
                 main_mod.send_telegram(msg)
                 print(f"[TRAILING] {trade['symbol']} SHORT SL updated to {new_sl} (Phase {phase})", flush=True)
 
@@ -719,10 +750,13 @@ def check_trades():
 
                     if result == "WIN" or result == "TRAILED":
 
-                        msg_title = "🏆 WIN" if result == "WIN" else "🛡️ TRAILED (PROFIT)"
+                        side_icon = "🟩" if trade.get('side', 'LONG') == 'LONG' else "🟥"
+                        msg_title = "🏆 SCALP TRADE CLOSED — WIN 🚀" if result == "WIN" else "🛡️ SCALP TRADE CLOSED — TRAILED (PROFIT)"
                         main_mod.send_telegram(
                             f"{msg_title}\n\n"
-                            f"{trade['symbol']}"
+                            f"Symbol: {trade['symbol']} ({side_icon} {trade.get('side', 'LONG')})\n"
+                            f"Entry Price: {trade.get('entry', 'N/A')}\n"
+                            f"Status: Closed with Profit 🟢"
                         )
 
                         main_mod.update_signal_result(
@@ -779,9 +813,12 @@ def check_trades():
 
                     else:  # result == "LOSS"
 
+                        side_icon = "🟩" if trade.get('side', 'LONG') == 'LONG' else "🟥"
                         main_mod.send_telegram(
-                            f"❌ LOSS\n\n"
-                            f"{trade['symbol']}"
+                            f"❌ SCALP TRADE CLOSED — LOSS\n\n"
+                            f"Symbol: {trade['symbol']} ({side_icon} {trade.get('side', 'LONG')})\n"
+                            f"Entry Price: {trade.get('entry', 'N/A')}\n"
+                            f"Status: Stop Loss Hit 🔴"
                         )
 
                         main_mod.update_signal_result(
@@ -845,7 +882,7 @@ def check_trades():
 
                     continue
 
-            time.sleep(60)
+            time.sleep(5)  # Fast 5-second loop for real-time trailing stop & position tracking
 
         except Exception:
 

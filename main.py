@@ -423,8 +423,8 @@ def startup_market_scan():
             MARKET_MODE = new_mode
             if CONTROL_MODE == "SCALP_SIDEWAYS":
                 send_telegram("✅ Scalp & Sideways Mode Activated (SCALP_SIDEWAYS override)")
-            elif CONTROL_MODE == "FORCE_SCALPING":
-                send_telegram("✅ Scalping Mode Activated (FORCE_SCALPING override)")
+            elif CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]:
+                send_telegram("✅ Scalping Mode Activated (SCALPING override)")
             elif CONTROL_MODE == "FORCE_MOMENTUM":
                 send_telegram("✅ Momentum Mode Activated (FORCE_MOMENTUM override)")
             else:
@@ -583,14 +583,14 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
         CURRENT_REGIME = new_regime
         return
 
-    if CONTROL_MODE == "FORCE_SCALPING":
-        print(f"Regime changed to {new_regime}, but FORCE_SCALPING override active", flush=True)
+    if CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]:
+        print(f"Regime changed to {new_regime}, but SCALPING override active", flush=True)
         send_telegram(
             f"🚨 MARKET REGIME CHANGED\n\n"
             f"{old_regime} → {new_regime}\n\n"
             f"BTC ADX: {btc_adx}\n"
             f"BTC ATR: {btc_atr_pct}%\n\n"
-            f"🔒 FORCE_SCALPING override active\n"
+            f"🔒 SCALPING override active\n"
             f"No mode switch applied."
         )
         CURRENT_REGIME = new_regime
@@ -1360,7 +1360,7 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
         effective_mode = "TRENDING"
     elif CONTROL_MODE == "FORCE_SIDEWAY":
         effective_mode = "SIDEWAYS"
-    elif CONTROL_MODE == "FORCE_SCALPING":
+    elif CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]:
         effective_mode = "SCALPING"
     elif CONTROL_MODE == "SCALP_SIDEWAYS":
         btc_trend_val = get_btc_trend()
@@ -1532,8 +1532,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         # 4. RSI Momentum Zone — 15 pts
         #    RSI อยู่ใน sweet spot (มีแรงวิ่งต่อ)
-        if 40 <= m3['rsi'] <= 58: long_score += 15
-        if 42 <= m3['rsi'] <= 60: short_score += 15
+        if 45 <= m3['rsi'] <= 58: long_score += 15
+        if 35 <= m3['rsi'] <= 55: short_score += 15
 
         # 5. VWAP Position — 10 pts (soft filter, ไม่ block)
         if is_above_vwap: long_score += 10
@@ -1549,10 +1549,10 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         stretch_pct = abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100
 
         if stoch_rsi > 80: long_score -= 20
-        if m3['close'] > m3['ema25'] and stretch_pct > 1.0: long_score -= 15
+        if m3['close'] > m3['ema25'] and stretch_pct > 1.5: long_score -= 15
 
         if stoch_rsi < 20: short_score -= 20
-        if m3['close'] < m3['ema25'] and stretch_pct > 1.0: short_score -= 15
+        if m3['close'] < m3['ema25'] and stretch_pct > 1.5: short_score -= 15
 
         # --- Pinbar Bonus ---
         body_size = abs(m3['close'] - m3['open'])
@@ -1566,9 +1566,9 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         if symbol != 'BTC/USDT:USDT':
             if btc_trend == "bullish":
-                short_score = 0
+                short_score -= 10  # Soft deduction for scalping instead of hard zeroing
             elif btc_trend == "bearish":
-                long_score = 0
+                long_score -= 10   # Soft deduction for scalping instead of hard zeroing
             elif btc_trend == "neutral":
                 long_score -= 15
                 short_score -= 15
@@ -1633,6 +1633,20 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             return {"symbol": symbol, "result": "skipped"}
 
         # =========================
+        # 15m EMA99 MAJOR TREND GUARD
+        # =========================
+
+        ema99_15m = m15.get('ema99', m15['ema25'])
+        if side == "LONG" and m15['close'] < ema99_15m:
+            set_scan_result(symbol, {"status": "Below 15m EMA99", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, f"LONG blocked: Below 15m EMA99 ({round(m15['close'], 4)} < {round(ema99_15m, 4)})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+            return {"symbol": symbol, "result": "skipped"}
+        if side == "SHORT" and m15['close'] > ema99_15m:
+            set_scan_result(symbol, {"status": "Above 15m EMA99", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, f"SHORT blocked: Above 15m EMA99 ({round(m15['close'], 4)} > {round(ema99_15m, 4)})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
         # SL / TP (tight for scalping)
         # =========================
 
@@ -1656,51 +1670,25 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         icon = "\U0001f680" if side == "LONG" else "\U0001f53b"
 
-        message = f"""
-{icon} {side} SIGNAL
+        side_icon = "🟩" if side == "LONG" else "🟥"
+        message = f"""⚡ SCALPING SIGNAL
 
-{symbol}
+Symbol: {symbol} ({side_icon} {side})
+Grade: {grade} (Score: {score}/100)
 
-Strategy:
-SCALPING
+Entry: {entry}
+SL: {sl} (1.2x ATR)
+TP: {tp2} (1.2 RR)
 
-Grade:
-{grade}
+📊 Indicators:
+• RSI: {round(rsi_val, 2)}
+• ADX: {adx_val}
+• ATR %: {atr_val}%
+• BTC Trend: {btc_trend}
 
-Score:
-{score}/100
-
-Market Entry:
-{entry}
-
-SL:
-{sl}
-
-TP:
-{tp2}
-
-RR:
-1:{rr}
-
-RSI:
-{round(rsi_val, 2)}
-
-ADX:
-{adx_val}
-
-ATR %:
-{atr_val}
-
-Volume:
-{vol_status}
-
-BTC Trend:
-{btc_trend}
-
-Plan:
-- Market order entry
-- Tight SL ({STRATEGY_CONFIG['SCALPING']['SL_ATR_MULT']}x ATR)
-- TP at {STRATEGY_CONFIG['SCALPING']['TP_RR']}:1 RR
+💰 Risk Management:
+• Leverage: x{STRATEGY_CONFIG['SCALPING']['LEVERAGE']}
+• Margin: {STRATEGY_CONFIG['SCALPING']['MARGIN_PER_TRADE']} USDT
 """
 
         print(message, flush=True)

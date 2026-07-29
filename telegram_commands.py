@@ -1215,6 +1215,80 @@ Auto Trade: {"ON" if main_mod.config.AUTO_TRADE else "OFF"}
 
 
 # =========================
+# =========================
+# SET MARGIN COMMAND
+# =========================
+
+@bot.message_handler(commands=['set_margin'])
+def set_margin(message):
+    try:
+        value = parse_command_value(message.text, float)
+        if value < 0.5:
+            bot.reply_to(message, "❌ Minimum margin is 0.5 USDT (exchange minimum)")
+            return
+        if value > 50:
+            bot.reply_to(message, "❌ Maximum margin is 50 USDT (safety limit)")
+            return
+        
+        old_margin = STRATEGY_CONFIG['SCALPING']['MARGIN_PER_TRADE']
+        main_mod.config.STRATEGY_CONFIG['SCALPING']['MARGIN_PER_TRADE'] = value
+        
+        bot.reply_to(message, 
+            f"✅ SCALPING Margin Updated\n\n"
+            f"Old: {old_margin} USDT\n"
+            f"New: {value} USDT\n\n"
+            f"💡 Leverage: x{STRATEGY_CONFIG['SCALPING']['LEVERAGE']}\n"
+            f"Position Size: {value * STRATEGY_CONFIG['SCALPING']['LEVERAGE']:.1f} USDT"
+        )
+    except Exception:
+        bot.reply_to(message, 
+            f"Usage: /set_margin 0.8\n\n"
+            f"Current: {STRATEGY_CONFIG['SCALPING']['MARGIN_PER_TRADE']} USDT\n\n"
+            f"📊 Recommended Margin by Balance:\n"
+            f"10 USDT → 0.5\n"
+            f"20 USDT → 0.8\n"
+            f"40 USDT → 1.2\n"
+            f"80 USDT → 2.0"
+        )
+
+
+# =========================
+# SET MAX TRADES COMMAND
+# =========================
+
+@bot.message_handler(commands=['set_max_trades'])
+def set_max_trades(message):
+    try:
+        value = parse_command_value(message.text, int)
+        if value < 1:
+            bot.reply_to(message, "❌ Minimum is 1 trade")
+            return
+        if value > 5:
+            bot.reply_to(message, "❌ Maximum is 5 trades (safety limit)")
+            return
+        
+        old_max = STRATEGY_CONFIG['SCALPING']['MAX_TRADES']
+        main_mod.config.STRATEGY_CONFIG['SCALPING']['MAX_TRADES'] = value
+        
+        margin = STRATEGY_CONFIG['SCALPING']['MARGIN_PER_TRADE']
+        total_margin = margin * value
+        
+        bot.reply_to(message, 
+            f"✅ SCALPING Max Trades Updated\n\n"
+            f"Old: {old_max}\n"
+            f"New: {value}\n\n"
+            f"💰 Max Margin Locked: {total_margin:.1f} USDT\n"
+            f"({value} × {margin} USDT)"
+        )
+    except Exception:
+        bot.reply_to(message, 
+            f"Usage: /set_max_trades 2\n\n"
+            f"Current: {STRATEGY_CONFIG['SCALPING']['MAX_TRADES']}\n"
+            f"Range: 1-5"
+        )
+
+
+# =========================
 # HELP COMMAND
 # =========================
 
@@ -1343,6 +1417,24 @@ Example: /sideatr 0.20
 
 /dashboard
 ดู dashboard สถิติทั้งหมด
+
+💰 Risk Management
+
+/set_margin <value>
+เปลี่ยน margin ต่อไม้ (USDT)
+
+Example: /set_margin 0.8
+
+/set_max_trades <value>
+เปลี่ยนจำนวนไม้สูงสุด
+
+Example: /set_max_trades 2
+
+📊 Recommended Margin:
+10 USDT → 0.5
+20 USDT → 0.8
+40 USDT → 1.2
+80 USDT → 2.0
 
 ---
 
