@@ -34,16 +34,11 @@ symbols = [
 ]
 
 SCALPING_SYMBOLS = [
-    'BTC/USDT:USDT',
-    'ETH/USDT:USDT',
-    'SOL/USDT:USDT',
-    'LINK/USDT:USDT',
-    'SUI/USDT:USDT',
-    'AAVE/USDT:USDT',
-    'AVAX/USDT:USDT',
-    'NEAR/USDT:USDT',
-    'HYPE/USDT:USDT',
-    'TAO/USDT:USDT',
+    'BTC/USDT:USDT',   # WR 62-68% — Top performer
+    'SOL/USDT:USDT',   # WR 47-64%
+    'SUI/USDT:USDT',   # WR 50-52%
+    'AAVE/USDT:USDT',  # WR 45-84%
+    # Removed: ETH, LINK, AVAX, NEAR, TAO, HYPE — consistent underperformers in backtest
 ]
 
 # =========================
@@ -101,10 +96,11 @@ TRAILING_ACTIVATION_ATR = 1.5
 TRAILING_BUFFER_ATR = 1.0
 TRAILING_STEP_ATR = 0.5
 
-# SCALPING trailing (tighter)
-SCALP_TRAILING_ACTIVATION_ATR = 1.0
-SCALP_TRAILING_BUFFER_ATR = 0.7
-SCALP_TRAILING_STEP_ATR = 0.3
+# SCALPING trailing — widened from backtest optimisation
+# activation=2.0×ATR prevents early clip, buffer=1.0×ATR gives 1×ATR profit on trailing exit
+SCALP_TRAILING_ACTIVATION_ATR = 2.0   # ขึ้นจาก 1.0
+SCALP_TRAILING_BUFFER_ATR     = 1.0   # ขึ้นจาก 0.7
+SCALP_TRAILING_STEP_ATR       = 0.3
 
 # =========================
 # STRATEGY CONFIGURATION (ISOLATED)
@@ -156,25 +152,25 @@ STRATEGY_CONFIG = {
         }
     },
     "SCALPING": {
-        "BASE_TF": "3m",
-        "MACRO_TF": "15m",
-        "SCAN_INTERVAL": 60,
-        "COOLDOWN": 300,
-        "PENDING_EXPIRY": 300,
-        "ENTRY_TYPE": "MARKET",
-        "LEVERAGE": 25,
+        "BASE_TF":          "15m",   # ขึ้นจาก 3m — ลด noise, เพิ่ม WR
+        "MACRO_TF":         "1h",    # ขึ้นจาก 15m
+        "SCAN_INTERVAL":    300,
+        "COOLDOWN":         900,     # 15 min (1 candle @ 15m)
+        "PENDING_EXPIRY":   900,
+        "ENTRY_TYPE":       "LIMIT", # Maker order — fee 0.02% (จาก MARKET 0.05%)
+        "LEVERAGE":         15,      # ลดจาก 25x — ลด fee impact
         "MARGIN_PER_TRADE": 1.5,
-        "SL_ATR_MULT": 1.2,
-        "TP_RR": 1.2,
-        "MAX_TRADES": 3,
-        "MIN_SCORE": 80,
-        "MIN_GRADE": "A",
+        "SL_ATR_MULT":      1.2,
+        "TP_RR":            2.0,     # ขึ้นจาก 1.2 — ครอบ fee
+        "MAX_TRADES":       2,
+        "MIN_SCORE":        90,      # A+ only (ขึ้นจาก 80)
+        "MIN_GRADE":        "A+",
         "FILTERS": {
-            "MIN_ADX": 18,
-            "MAX_ADX": 35,
-            "MIN_ATR_PCT": 0.15,
+            "MIN_ADX":           18,
+            "MAX_ADX":           35,
+            "MIN_ATR_PCT":       0.15,
             "RSI_SAFE_LONG_MAX": 65,
-            "RSI_SAFE_SHORT_MIN": 25
+            "RSI_SAFE_SHORT_MIN":25
         }
     },
     "SIDEWAYS": {
