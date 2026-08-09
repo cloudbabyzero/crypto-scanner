@@ -38,7 +38,8 @@ SCALPING_SYMBOLS = [
     'SOL/USDT:USDT',   # WR 47-64%
     'SUI/USDT:USDT',   # WR 50-52%
     'AAVE/USDT:USDT',  # WR 45-84%
-    # Removed: ETH, LINK, AVAX, NEAR, TAO, HYPE — consistent underperformers in backtest
+    'HYPE/USDT:USDT',
+# Removed: ETH, LINK, AVAX, NEAR, TAO, — consistent underperformers in backtest
 ]
 
 # =========================
