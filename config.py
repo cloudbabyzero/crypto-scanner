@@ -47,9 +47,9 @@ SCALPING_SYMBOLS = [
 # =========================
 
 AUTO_TRADE = True
-MAX_ACTIVE_TRADES = 2  # Global limit for total active positions (LONG + SHORT)
-MAX_LONG_TRADES = 2
-MAX_SHORT_TRADES = 2
+MAX_ACTIVE_TRADES = 3  # Global limit for total active positions (LONG + SHORT)
+MAX_LONG_TRADES = 3
+MAX_SHORT_TRADES = 3
 
 
 PULLBACK_MIN_DISTANCE_PCT = 0.05
@@ -163,7 +163,7 @@ STRATEGY_CONFIG = {
         "MARGIN_PER_TRADE": 1.5,
         "SL_ATR_MULT":      1.2,
         "TP_RR":            2.0,     # ขึ้นจาก 1.2 — ครอบ fee
-        "MAX_TRADES":       2,
+        "MAX_TRADES":       3,
         "MIN_SCORE":        90,      # A+ only (ขึ้นจาก 80)
         "MIN_GRADE":        "A+",
         "FILTERS": {
