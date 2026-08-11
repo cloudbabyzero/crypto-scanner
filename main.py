@@ -424,6 +424,7 @@ def startup_market_scan():
             if CONTROL_MODE == "SCALP_SIDEWAYS":
                 send_telegram("✅ Scalp & Sideways Mode Activated (SCALP_SIDEWAYS override)")
             elif CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]:
+                MARKET_MODE = "SCALPING"  # FIX: ensure scan loop uses SCALPING_SYMBOLS
                 send_telegram("✅ Scalping Mode Activated (SCALPING override)")
             elif CONTROL_MODE == "FORCE_MOMENTUM":
                 send_telegram("✅ Momentum Mode Activated (FORCE_MOMENTUM override)")
@@ -585,6 +586,7 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
 
     if CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]:
         print(f"Regime changed to {new_regime}, but SCALPING override active", flush=True)
+        MARKET_MODE = "SCALPING"  # FIX: re-lock in case regime switch overwrote it
         send_telegram(
             f"🚨 MARKET REGIME CHANGED\n\n"
             f"{old_regime} → {new_regime}\n\n"
@@ -4233,7 +4235,8 @@ def main():
             reset_cycle_counters()
 
             # SCALPING mode uses dedicated symbol list; other modes use main list
-            scan_symbols = SCALPING_SYMBOLS if MARKET_MODE == "SCALPING" else symbols
+            # FIX: also check CONTROL_MODE so FORCE_SCALPING always uses SCALPING_SYMBOLS
+            scan_symbols = SCALPING_SYMBOLS if (MARKET_MODE == "SCALPING" or CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]) else symbols
 
             for symbol in scan_symbols:
 
