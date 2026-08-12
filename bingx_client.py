@@ -216,9 +216,11 @@ def place_protection_orders(
         - Other errors are raised normally.
     """
     # BingX hedge mode rejects reduceOnly on protection orders.
+    # FIX: removed 'closePosition': True — it conflicts with explicit amount param → BingX error 109400
+    # "parameter quantity or stopPrice is must" — BingX rejects when both closePosition+amount are sent
+    # Using explicit amount + positionSide is sufficient; BingX matches to position automatically
     base_params = {
         'positionSide': side_cfg['position_side'],
-        'closePosition': True
     }
 
     # Place SL order

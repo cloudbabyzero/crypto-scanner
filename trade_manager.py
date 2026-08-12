@@ -178,6 +178,12 @@ def _determine_trade_result(trade, symbol):
                     if 'TAKE' in order_type or 'PROFIT' in order_type or 'TP' in order_type:
                         print(f"[WIN/LOSS] {symbol}: Recent TP order found in closed orders → WIN ({order.get('id')})", flush=True)
                         return "WIN"
+                    
+                    # FIX: MARKET/LIMIT close = manual close by user → LOSS (not WIN)
+                    # Manual close means SL/TP was never hit — must not count as WIN
+                    if order_type in ['MARKET', 'LIMIT']:
+                        print(f"[WIN/LOSS] {symbol}: MARKET/LIMIT close found → manual close → LOSS ({order.get('id')})", flush=True)
+                        return "LOSS"
         except Exception as e:
             # fetch_closed_orders not available or failed
             pass
@@ -814,11 +820,23 @@ def check_trades():
                     else:  # result == "LOSS"
 
                         side_icon = "🟩" if trade.get('side', 'LONG') == 'LONG' else "🟥"
+
+                        # FIX: detect manual close vs actual SL hit for clearer Telegram message
+                        sl_order_id = trade.get('sl_order_id')
+                        sl_hit = False
+                        try:
+                            if sl_order_id and sl_order_id not in ["existing_sl", None]:
+                                sl_info = main_mod.exchange.fetch_order(sl_order_id, trade['symbol'])
+                                sl_hit = sl_info.get('status') == 'closed'
+                        except Exception:
+                            pass
+                        close_status = "Status: Stop Loss Hit 🔴" if sl_hit else "Status: Closed Manually ✋"
+
                         main_mod.send_telegram(
                             f"❌ SCALP TRADE CLOSED — LOSS\n\n"
                             f"Symbol: {trade['symbol']} ({side_icon} {trade.get('side', 'LONG')})\n"
                             f"Entry Price: {trade.get('entry', 'N/A')}\n"
-                            f"Status: Stop Loss Hit 🔴"
+                            f"{close_status}"
                         )
 
                         main_mod.update_signal_result(
