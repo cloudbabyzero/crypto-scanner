@@ -4101,6 +4101,7 @@ def main():
     global CURRENT_REGIME, LAST_REGIME, LAST_REGIME_CHECK
     global MARKET_MODE, CONTROL_MODE
     global ignore_cooldown_once
+        global pause_trading, pause_until, current_loss_streak
 
     # =========================
     # LOAD CONFIG
