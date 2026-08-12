@@ -100,11 +100,13 @@ TRAILING_BUFFER_ATR = 1.0
 TRAILING_STEP_ATR = 0.5
 
 # SCALPING trailing (tighter)
-# FIX: lowered activation 1.0→0.7 ATR (trail starts sooner)
-# lowered buffer 0.7→0.5 ATR (SL follows price closer)
-# lowered step 0.3→0.2 ATR (updates more frequently)
-SCALP_TRAILING_ACTIVATION_ATR = 0.7
-SCALP_TRAILING_BUFFER_ATR = 0.5
+# Trailing params tuned from actual trade log analysis (Aug 12-13):
+# - Avg SL hit distance = 1.62x ATR, min = 0.79x ATR
+# - Buffer must be >= 0.6 ATR to survive ETH/SOL micro-wicks
+# - Activation 0.8 = starts trail early enough without being too aggressive
+# - Step 0.2 = frequent updates, tight profit locking
+SCALP_TRAILING_ACTIVATION_ATR = 0.8
+SCALP_TRAILING_BUFFER_ATR = 0.6
 SCALP_TRAILING_STEP_ATR = 0.2
 
 # =========================
