@@ -324,7 +324,8 @@ def update_sl_order(symbol, side_cfg, old_sl_id, new_sl_price, amount):
 
     base_params = {
         'positionSide': side_cfg['position_side'],
-        'closePosition': True
+        # FIX: removed 'closePosition': True — conflicts with amount param → BingX error 109400
+        # same fix as place_protection_orders; positionSide alone is sufficient
     }
 
     try:
