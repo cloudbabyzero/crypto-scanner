@@ -125,6 +125,7 @@ current_wins = 0
 current_losses = 0
 current_loss_streak = 0
 pause_trading = False
+pause_until = 0  # timestamp when auto-resume kicks in (0 = no timer)
 
 def reset_cycle_counters():
     global cycle_counters
@@ -906,7 +907,7 @@ def update_signal_result(
     signal_id,
     result
 ):
-    global current_wins, current_losses, current_loss_streak, pause_trading
+    global current_wins, current_losses, current_loss_streak, pause_trading, pause_until
 
     rows = []
 
@@ -956,10 +957,18 @@ def update_signal_result(
         pause_trading = True
         # Send notification only on first trigger (False -> True transition)
         if not was_paused:
+            from config import PAUSE_RESUME_MINUTES
+            resume_minutes = PAUSE_RESUME_MINUTES if PAUSE_RESUME_MINUTES > 0 else 0
+            if resume_minutes > 0:
+                pause_until = time.time() + (resume_minutes * 60)
+                resume_note = f"\n\n⏱ Auto-resume in {resume_minutes} min"
+            else:
+                pause_until = 0
+                resume_note = "\n\nManual resume required (/resume)"
             send_telegram(
                 f"🛑 LOSS STREAK DETECTED\n\n"
-                f"Consecutive Losses: {current_loss_streak}\n\n"
-                f"Trading Paused"
+                f"Consecutive Losses: {current_loss_streak}"
+                f"{resume_note}"
             )
     else:
         pause_trading = False
@@ -4197,6 +4206,20 @@ def main():
     while True:
 
         try:
+
+            # =========================
+            # AUTO-RESUME AFTER PAUSE
+            # =========================
+            if pause_trading and pause_until > 0 and time.time() >= pause_until:
+                pause_trading = False
+                pause_until = 0
+                current_loss_streak = 0
+                send_telegram(
+                    f"✅ TRADING RESUMED\n\n"
+                    f"Auto-resume timer expired.\n"
+                    f"Loss streak reset. Bot is scanning again."
+                )
+                print("[PAUSE] Auto-resume triggered.", flush=True)
 
             print(
                 "Bot alive - scanning market...",

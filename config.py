@@ -29,8 +29,6 @@ symbols = [
     'AAVE/USDT:USDT',
     'AVAX/USDT:USDT',
     'NEAR/USDT:USDT',
-    'HYPE/USDT:USDT',
-    'TAO/USDT:USDT',
 ]
 
 SCALPING_SYMBOLS = [
@@ -42,8 +40,6 @@ SCALPING_SYMBOLS = [
     'AAVE/USDT:USDT',
     'AVAX/USDT:USDT',
     'NEAR/USDT:USDT',
-    'HYPE/USDT:USDT',
-    'TAO/USDT:USDT',
 ]
 
 # =========================
@@ -70,6 +66,8 @@ MIN_SCORE_GAP_TO_OVERRIDE = 3
 
 MAX_CONSECUTIVE_LOSSES = 3
 LOSS_STREAK_RESET_ON_WIN = True
+# Auto-resume trading after loss streak pause (minutes). Set 0 to disable auto-resume.
+PAUSE_RESUME_MINUTES = 60
 
 # =========================
 # BINGX API CONFIGURATION

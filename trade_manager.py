@@ -714,14 +714,29 @@ def check_trades():
                 # TRAILING STOP (If position is open)
                 # =========================
                 if contracts > 0 and trade.get('status') == "OPEN":
-                    if current_price == 0:
+                    # FIX: markPrice from fetch_positions can return 0/None on BingX
+                    # Always try fetch_ticker as primary fallback for accurate price
+                    if current_price <= 0:
                         try:
                             ticker = main_mod.exchange.fetch_ticker(trade['symbol'])
-                            current_price = float(ticker['last'])
+                            current_price = float(ticker.get('last') or ticker.get('close') or 0)
+                        except Exception as e:
+                            print(f"[TRAILING] fetch_ticker failed for {trade['symbol']}: {e}", flush=True)
+                    # Second fallback: entryPrice from position info
+                    if current_price <= 0:
+                        try:
+                            positions2 = main_mod.exchange.fetch_positions([trade['symbol']])
+                            for pos2 in positions2:
+                                ep = float(pos2.get('entryPrice') or pos2.get('info', {}).get('avgPrice') or 0)
+                                if ep > 0:
+                                    current_price = ep
+                                    break
                         except Exception:
                             pass
                     if current_price > 0:
                         _process_trailing_stop(trade, current_price)
+                    else:
+                        print(f"[TRAILING] {trade['symbol']}: could not resolve price, skip trail this cycle", flush=True)
 
                 # =========================
                 # POSITION CLOSED
