@@ -34,12 +34,16 @@ symbols = [
 ]
 
 SCALPING_SYMBOLS = [
-    'BTC/USDT:USDT',   # WR 62-68% — Top performer
-    'SOL/USDT:USDT',   # WR 47-64%
-    'SUI/USDT:USDT',   # WR 50-52%
-    'AAVE/USDT:USDT',  # WR 45-84%
+    'BTC/USDT:USDT',
+    'ETH/USDT:USDT',
+    'SOL/USDT:USDT',
+    'LINK/USDT:USDT',
+    'SUI/USDT:USDT',
+    'AAVE/USDT:USDT',
+    'AVAX/USDT:USDT',
+    'NEAR/USDT:USDT',
     'HYPE/USDT:USDT',
-# Removed: ETH, LINK, AVAX, NEAR, TAO, — consistent underperformers in backtest
+    'TAO/USDT:USDT',
 ]
 
 # =========================
@@ -47,9 +51,9 @@ SCALPING_SYMBOLS = [
 # =========================
 
 AUTO_TRADE = True
-MAX_ACTIVE_TRADES = 3  # Global limit for total active positions (LONG + SHORT)
-MAX_LONG_TRADES = 3
-MAX_SHORT_TRADES = 3
+MAX_ACTIVE_TRADES = 2  # Global limit for total active positions (LONG + SHORT)
+MAX_LONG_TRADES = 2
+MAX_SHORT_TRADES = 2
 
 
 PULLBACK_MIN_DISTANCE_PCT = 0.05
@@ -97,11 +101,10 @@ TRAILING_ACTIVATION_ATR = 1.5
 TRAILING_BUFFER_ATR = 1.0
 TRAILING_STEP_ATR = 0.5
 
-# SCALPING trailing — widened from backtest optimisation
-# activation=2.0×ATR prevents early clip, buffer=1.0×ATR gives 1×ATR profit on trailing exit
-SCALP_TRAILING_ACTIVATION_ATR = 2.0   # ขึ้นจาก 1.0
-SCALP_TRAILING_BUFFER_ATR     = 1.0   # ขึ้นจาก 0.7
-SCALP_TRAILING_STEP_ATR       = 0.3
+# SCALPING trailing (tighter)
+SCALP_TRAILING_ACTIVATION_ATR = 1.0
+SCALP_TRAILING_BUFFER_ATR = 0.7
+SCALP_TRAILING_STEP_ATR = 0.3
 
 # =========================
 # STRATEGY CONFIGURATION (ISOLATED)
@@ -153,25 +156,35 @@ STRATEGY_CONFIG = {
         }
     },
     "SCALPING": {
-        "BASE_TF":          "15m",   # ขึ้นจาก 3m — ลด noise, เพิ่ม WR
-        "MACRO_TF":         "1h",    # ขึ้นจาก 15m
-        "SCAN_INTERVAL":    300,
-        "COOLDOWN":         900,     # 15 min (1 candle @ 15m)
-        "PENDING_EXPIRY":   900,
-        "ENTRY_TYPE":       "LIMIT", # Maker order — fee 0.02% (จาก MARKET 0.05%)
-        "LEVERAGE":         15,      # ลดจาก 25x — ลด fee impact
+        "BASE_TF": "3m",
+        "MACRO_TF": "15m",
+        "SCAN_INTERVAL": 60,
+        "COOLDOWN": 300,
+        "PENDING_EXPIRY": 300,
+        "ENTRY_TYPE": "MARKET",
+        "LEVERAGE": 25,
         "MARGIN_PER_TRADE": 1.5,
-        "SL_ATR_MULT":      1.2,
-        "TP_RR":            2.0,     # ขึ้นจาก 1.2 — ครอบ fee
-        "MAX_TRADES":       3,
-        "MIN_SCORE":        90,      # A+ only (ขึ้นจาก 80)
-        "MIN_GRADE":        "A+",
+        "SL_ATR_MULT": 1.2,
+        # FIX: TP_RR raised 1.2 → 1.5 to cover BingX taker fee (0.05% x2 sides)
+        # notional = 1.5 USDT x25 lev = 37.5 USDT → fee ~0.038 USDT/side, need RR>1.3 to profit
+        "TP_RR": 1.5,
+        "MAX_TRADES": 3,
+        # Grade is relative to MIN_SCORE:
+        #   A+ = score >= MIN_SCORE+10  (85+)
+        #   A  = score >= MIN_SCORE     (75+)  ← target
+        #   B  = score >= MIN_SCORE-10  (65+)
+        # 75 is reachable even with BTC neutral -15 penalty when EMA+15m+candle+RSI all align
+        "MIN_SCORE": 75,
+        "MIN_GRADE": "A",
         "FILTERS": {
-            "MIN_ADX":           18,
-            "MAX_ADX":           35,
-            "MIN_ATR_PCT":       0.15,
-            "RSI_SAFE_LONG_MAX": 65,
-            "RSI_SAFE_SHORT_MIN":25
+            # FIX: MIN_ADX lowered 18 → 15 — allow weak trending moves that still have direction
+            "MIN_ADX": 15,
+            # FIX: MAX_ADX widened 35 → 45 — allow stronger momentum moves through
+            "MAX_ADX": 45,
+            # FIX: MIN_ATR_PCT lowered 0.15 → 0.10 — log median ATR is 0.11, 0.15 blocks everything
+            "MIN_ATR_PCT": 0.10,
+            "RSI_SAFE_LONG_MAX": 68,
+            "RSI_SAFE_SHORT_MIN": 32
         }
     },
     "SIDEWAYS": {
