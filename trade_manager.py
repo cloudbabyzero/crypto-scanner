@@ -180,8 +180,23 @@ def _determine_trade_result(trade, symbol):
                         return "WIN"
                     
                     # FIX: MARKET/LIMIT close = manual close by user → LOSS (not WIN)
-                    # Manual close means SL/TP was never hit — must not count as WIN
+                    # UNLESS actual PnL is positive — manual close with profit = WIN
                     if order_type in ['MARKET', 'LIMIT']:
+                        # Try to estimate PnL from fill price vs entry
+                        try:
+                            fill_price = float(order.get('average') or order.get('price') or 0)
+                            entry_p = float(trade.get('entry', 0))
+                            side_t = trade.get('side', 'LONG')
+                            if fill_price > 0 and entry_p > 0:
+                                if side_t == 'LONG':
+                                    pnl_est = fill_price - entry_p
+                                else:
+                                    pnl_est = entry_p - fill_price
+                                if pnl_est > 0:
+                                    print(f"[WIN/LOSS] {symbol}: Manual close with PROFIT (est PnL={pnl_est:.4f}) → WIN", flush=True)
+                                    return "WIN"
+                        except Exception:
+                            pass
                         print(f"[WIN/LOSS] {symbol}: MARKET/LIMIT close found → manual close → LOSS ({order.get('id')})", flush=True)
                         return "LOSS"
         except Exception as e:

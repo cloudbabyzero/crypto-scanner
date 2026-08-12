@@ -100,9 +100,12 @@ TRAILING_BUFFER_ATR = 1.0
 TRAILING_STEP_ATR = 0.5
 
 # SCALPING trailing (tighter)
-SCALP_TRAILING_ACTIVATION_ATR = 1.0
-SCALP_TRAILING_BUFFER_ATR = 0.7
-SCALP_TRAILING_STEP_ATR = 0.3
+# FIX: lowered activation 1.0→0.7 ATR (trail starts sooner)
+# lowered buffer 0.7→0.5 ATR (SL follows price closer)
+# lowered step 0.3→0.2 ATR (updates more frequently)
+SCALP_TRAILING_ACTIVATION_ATR = 0.7
+SCALP_TRAILING_BUFFER_ATR = 0.5
+SCALP_TRAILING_STEP_ATR = 0.2
 
 # =========================
 # STRATEGY CONFIGURATION (ISOLATED)
@@ -162,7 +165,9 @@ STRATEGY_CONFIG = {
         "ENTRY_TYPE": "MARKET",
         "LEVERAGE": 25,
         "MARGIN_PER_TRADE": 1.5,
-        "SL_ATR_MULT": 1.2,
+        # FIX: SL_ATR_MULT raised 1.2 → 1.5 — SL at 1.2 ATR = ~0.13% which is within normal noise,
+        # most losses were SL hit by only 0.09-0.20% move, wider SL needed to survive micro-chop
+        "SL_ATR_MULT": 1.5,
         # FIX: TP_RR raised 1.2 → 1.5 to cover BingX taker fee (0.05% x2 sides)
         # notional = 1.5 USDT x25 lev = 37.5 USDT → fee ~0.038 USDT/side, need RR>1.3 to profit
         "TP_RR": 1.5,

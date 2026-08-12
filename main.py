@@ -945,7 +945,8 @@ def update_signal_result(
 
     was_paused = pause_trading  # Track previous state
 
-    if result == "WIN":
+    # FIX: TRAILED = closed at profit via trailing SL = counts as WIN for streak purposes
+    if result in ("WIN", "TRAILED"):
         current_wins += 1
         current_loss_streak = 0  # Reset on win
     elif result == "LOSS":
@@ -1461,15 +1462,17 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 return {"symbol": symbol, "result": "skipped"}
 
         # =========================
-        # GET DATA (3m primary, 15m confirmation)
+        # GET DATA (base_tf primary, 15m confirmation)
         # =========================
+        base_tf = STRATEGY_CONFIG['SCALPING'].get('BASE_TF', '5m')
+        macro_tf = STRATEGY_CONFIG['SCALPING'].get('MACRO_TF', '15m')
 
-        df_3m = get_dataframe(symbol, '3m')
+        df_3m = get_dataframe(symbol, base_tf)   # renamed kept as df_3m for downstream compat
         if df_15m is None:
-            df_15m = get_dataframe(symbol, '15m')
+            df_15m = get_dataframe(symbol, macro_tf)
 
-        m3  = df_3m.iloc[-2]   # last closed 3m candle
-        m15 = df_15m.iloc[-2]  # last closed 15m candle
+        m3  = df_3m.iloc[-2]   # last closed base candle
+        m15 = df_15m.iloc[-2]  # last closed macro candle
 
         now_ts = time.time()
         signal_id = str(uuid.uuid4())[:8]
@@ -4101,7 +4104,7 @@ def main():
     global CURRENT_REGIME, LAST_REGIME, LAST_REGIME_CHECK
     global MARKET_MODE, CONTROL_MODE
     global ignore_cooldown_once
-    global pause_trading, pause_until, current_loss_streak
+    global pause_trading, pause_until, current_loss_streak  # FIX: needed for auto-resume timer in main loop
 
     # =========================
     # LOAD CONFIG
