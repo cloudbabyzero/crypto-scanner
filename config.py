@@ -154,7 +154,7 @@ STRATEGY_CONFIG = {
         }
     },
     "SCALPING": {
-        "BASE_TF": "3m",
+        "BASE_TF": "5m",
         "MACRO_TF": "15m",
         "SCAN_INTERVAL": 60,
         "COOLDOWN": 300,
