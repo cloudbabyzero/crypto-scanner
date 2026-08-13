@@ -1578,18 +1578,18 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         # BTC FILTER
         # =========================
-        # FIX: changed soft deduction (-10) → hard block (score=0)
-        # Soft -10 still allowed wrong-direction trades to score 75+ and enter
-        # Log shows 74% wrong direction, almost all during BTC trending periods
-        # BTC bullish → LONG only | BTC bearish → SHORT only | neutral → penalty both
-        if symbol != 'BTC/USDT:USDT':
-            if btc_trend == "bullish":
-                short_score = 0    # Hard block: no SHORT when BTC bullish
-            elif btc_trend == "bearish":
-                long_score = 0     # Hard block: no LONG when BTC bearish
-            elif btc_trend == "neutral":
-                long_score  -= 15  # Both sides penalized — choppy market
-                short_score -= 15
+        # BTC TREND FILTER
+        # =========================
+        # FIX: removed 'if symbol != BTC/USDT:USDT' exception
+        # BTC was excluded from its own trend filter → could SHORT BTC even when BTC is bullish
+        # All symbols including BTC must respect BTC trend direction
+        if btc_trend == "bullish":
+            short_score = 0    # Hard block: no SHORT when BTC bullish
+        elif btc_trend == "bearish":
+            long_score = 0     # Hard block: no LONG when BTC bearish
+        elif btc_trend == "neutral":
+            long_score  -= 15  # Both sides penalized — choppy market
+            short_score -= 15
 
         long_score  = min(long_score, 100)
         short_score = min(short_score, 100)
@@ -1627,10 +1627,10 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 set_scan_result(symbol, {"status": "RSI Too High", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, f"RSI Too High SCALPING ({round(rsi_val, 2)} > {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
-            # BTC trend filter for LONG
-            if btc_trend == "bearish":
-                set_scan_result(symbol, {"status": "BTC Bearish", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, "BTC Bearish - no LONG scalp", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            # BTC trend filter for LONG — redundant safety check after score zeroing
+            if btc_trend in ("bearish", "neutral"):
+                set_scan_result(symbol, {"status": f"BTC {btc_trend.title()}", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"BTC {btc_trend} - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             side  = "LONG"
             entry = round(m3['close'], 4)  # Market order on 3m close
@@ -1639,10 +1639,10 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 set_scan_result(symbol, {"status": "RSI Too Low", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, f"RSI Too Low SCALPING ({round(rsi_val, 2)} < {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
-            # BTC trend filter for SHORT
-            if btc_trend == "bullish":
-                set_scan_result(symbol, {"status": "BTC Bullish", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, "BTC Bullish - no SHORT scalp", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            # BTC trend filter for SHORT — redundant safety check after score zeroing
+            if btc_trend in ("bullish", "neutral"):
+                set_scan_result(symbol, {"status": f"BTC {btc_trend.title()}", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"BTC {btc_trend} - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             side  = "SHORT"
             entry = round(m3['close'], 4)  # Market order on 3m close
