@@ -271,6 +271,9 @@ def detect_momentum(symbol='BTC/USDT:USDT'):
 # BTC TREND
 # =========================
 
+_btc_trend_cache = {"value": None, "timestamp": 0}
+_BTC_TREND_CACHE_SECONDS = 180  # 3 min = ~3 scan cycles, still within one 5m candle
+
 def get_btc_trend():
     """Determine BTC trend using Hybrid Macro-Micro scoring system.
 
@@ -281,18 +284,17 @@ def get_btc_trend():
     - Micro (1H): Close > EMA25 → +1 pt   (price vs 1h structure)
     - Micro (1H): EMA25 > EMA99 → +1 pt   (1h structural alignment)
 
-    FIX: was 4-point system, "neutral" zone was too wide.
-    Old system: 4h macro still bullish but 1h fully bearish → score=2 → neutral
-    → allowed SHORT entries during bearish 1h when 4h EMA25 > EMA99 barely
-    New 6-point system catches reversal faster: need score>=4 for bullish,
-    <=2 for bearish. Full 1h bearish alignment reduces score to 2 → bearish
-    even if 4h EMA25 still above EMA99.
+    Score >= 4 → bullish | Score <= 2 → bearish | Score == 3 → neutral
 
-    Result:
-    - Score >= 4 → "bullish"
-    - Score <= 2 → "bearish"
-    - Score == 3 → "neutral"
+    FIX: Added 3-min cache — prevents regime flipping between symbols in same
+    scan cycle. Without cache: BTC/ETH/SOL see different regimes in same minute
+    → all symbols get hard-blocked → score never reaches MIN_SCORE → 0 signals.
     """
+    import time as _time
+
+    if _btc_trend_cache["value"] is not None:
+        if _time.time() - _btc_trend_cache["timestamp"] < _BTC_TREND_CACHE_SECONDS:
+            return _btc_trend_cache["value"]
 
     df_4h = get_dataframe('BTC/USDT:USDT', '4h')
     btc_4h = df_4h.iloc[-2]
@@ -301,24 +303,19 @@ def get_btc_trend():
     btc_1h = df_1h.iloc[-2]
 
     score = 0
-
-    # === Macro (4H) — 3 pts ===
-    if btc_4h['ema25'] > btc_4h['ema99']:
-        score += 2  # Structural bullish
-    if btc_4h['ema7'] > btc_4h['ema25']:
-        score += 1  # 4h short-term momentum
-
-    # === Micro (1H) — 3 pts ===
-    if btc_1h['ema7'] > btc_1h['ema25']:
-        score += 1  # 1h momentum
-    if btc_1h['close'] > btc_1h['ema25']:
-        score += 1  # Price above 1h structure
-    if btc_1h['ema25'] > btc_1h['ema99']:
-        score += 1  # 1h structural alignment
+    if btc_4h['ema25'] > btc_4h['ema99']: score += 2
+    if btc_4h['ema7']  > btc_4h['ema25']: score += 1
+    if btc_1h['ema7']  > btc_1h['ema25']: score += 1
+    if btc_1h['close'] > btc_1h['ema25']: score += 1
+    if btc_1h['ema25'] > btc_1h['ema99']: score += 1
 
     if score >= 4:
-        return "bullish"
+        result = "bullish"
     elif score <= 2:
-        return "bearish"
+        result = "bearish"
     else:
-        return "neutral"
+        result = "neutral"
+
+    _btc_trend_cache["value"] = result
+    _btc_trend_cache["timestamp"] = _time.time()
+    return result
