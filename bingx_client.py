@@ -1010,6 +1010,7 @@ def execute_scalp_trade(symbol, side):
                 "grade": _signal_grade,
                 "score": _signal_score,
                 "strategy": "SCALPING",
+                "atr": atr,
                 "margin_used": round(margin_to_use, 4),
                 "portfolio_balance": round(current_usdt, 4),
             }

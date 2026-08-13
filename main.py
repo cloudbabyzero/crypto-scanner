@@ -1728,6 +1728,7 @@ TP: {tp2} (1.2 RR)
                     "sl": sl,
                     "tp1": tp1,
                     "tp2": tp2,
+                    "atr": atr,
                     "signal_regime": signal_regime,
                     "created_at": time.time(),
                     "grade": grade,
