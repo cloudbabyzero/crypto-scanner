@@ -274,46 +274,51 @@ def detect_momentum(symbol='BTC/USDT:USDT'):
 def get_btc_trend():
     """Determine BTC trend using Hybrid Macro-Micro scoring system.
 
-    Scoring System (Max 4 points):
-    - Macro  (4H): EMA25 > EMA99  → +2 pts  (structural, high weight)
-    - Micro  (1H): EMA7  > EMA25  → +1 pt   (short-term momentum)
-    - Micro  (1H): Close > EMA25  → +1 pt   (price vs structure)
+    Scoring System (Max 6 points):
+    - Macro (4H): EMA25 > EMA99 → +2 pts  (structural)
+    - Macro (4H): EMA7  > EMA25 → +1 pt   (4h momentum)
+    - Micro (1H): EMA7  > EMA25 → +1 pt   (1h momentum)
+    - Micro (1H): Close > EMA25 → +1 pt   (price vs 1h structure)
+    - Micro (1H): EMA25 > EMA99 → +1 pt   (1h structural alignment)
+
+    FIX: was 4-point system, "neutral" zone was too wide.
+    Old system: 4h macro still bullish but 1h fully bearish → score=2 → neutral
+    → allowed SHORT entries during bearish 1h when 4h EMA25 > EMA99 barely
+    New 6-point system catches reversal faster: need score>=4 for bullish,
+    <=2 for bearish. Full 1h bearish alignment reduces score to 2 → bearish
+    even if 4h EMA25 still above EMA99.
 
     Result:
-    - Score >= 3 → "bullish"   (strong confirmation)
-    - Score <= 1 → "bearish"   (strong reversal)
-    - Score == 2 → "neutral"   (conflict / market reversal zone)
-
-    Uses last CLOSED candle (iloc[-2]) to avoid repainting signals.
+    - Score >= 4 → "bullish"
+    - Score <= 2 → "bearish"
+    - Score == 3 → "neutral"
     """
 
-    # 4h for macro/structural trend
     df_4h = get_dataframe('BTC/USDT:USDT', '4h')
-    btc_4h = df_4h.iloc[-2]  # last closed candle
+    btc_4h = df_4h.iloc[-2]
 
-    # 1h for micro/fast response
     df_1h = get_dataframe('BTC/USDT:USDT', '1h')
-    btc_1h = df_1h.iloc[-2]  # last closed candle
+    btc_1h = df_1h.iloc[-2]
 
     score = 0
 
-    # === Macro Signal (4H) — weight 2 pts ===
+    # === Macro (4H) — 3 pts ===
     if btc_4h['ema25'] > btc_4h['ema99']:
-        score += 2  # Bullish structural trend
+        score += 2  # Structural bullish
+    if btc_4h['ema7'] > btc_4h['ema25']:
+        score += 1  # 4h short-term momentum
 
-    # === Micro Signal (1H) — weight 1 pt ===
+    # === Micro (1H) — 3 pts ===
     if btc_1h['ema7'] > btc_1h['ema25']:
-        score += 1  # Short-term momentum bullish
-
-    # === Micro Price Signal (1H) — weight 1 pt ===
+        score += 1  # 1h momentum
     if btc_1h['close'] > btc_1h['ema25']:
-        score += 1  # Price above mid-term structure
+        score += 1  # Price above 1h structure
+    if btc_1h['ema25'] > btc_1h['ema99']:
+        score += 1  # 1h structural alignment
 
-    # === Evaluate Score (Max 4) ===
-    if score >= 3:
+    if score >= 4:
         return "bullish"
-    elif score <= 1:
+    elif score <= 2:
         return "bearish"
     else:
-        # score == 2: signals conflict → potential market reversal
         return "neutral"
