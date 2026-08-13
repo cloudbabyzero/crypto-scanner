@@ -1578,13 +1578,17 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         # BTC FILTER
         # =========================
+        # FIX: changed soft deduction (-10) → hard block (score=0)
+        # Soft -10 still allowed wrong-direction trades to score 75+ and enter
+        # Log shows 74% wrong direction, almost all during BTC trending periods
+        # BTC bullish → LONG only | BTC bearish → SHORT only | neutral → penalty both
         if symbol != 'BTC/USDT:USDT':
             if btc_trend == "bullish":
-                short_score -= 10  # Soft deduction for scalping instead of hard zeroing
+                short_score = 0    # Hard block: no SHORT when BTC bullish
             elif btc_trend == "bearish":
-                long_score -= 10   # Soft deduction for scalping instead of hard zeroing
+                long_score = 0     # Hard block: no LONG when BTC bearish
             elif btc_trend == "neutral":
-                long_score -= 15
+                long_score  -= 15  # Both sides penalized — choppy market
                 short_score -= 15
 
         long_score  = min(long_score, 100)
