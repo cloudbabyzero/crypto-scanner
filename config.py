@@ -110,8 +110,8 @@ TRAILING_STEP_ATR = 0.5
 # Old: 0.8-0.6=0.028% min profit → lost to fee on early trail exits
 # New: 1.5-0.8=0.105% min profit → covers fee even at earliest trail exit
 # At TP trigger (1.5 RR): profit locked = ~0.203% = ~0.97x RR after fee
-SCALP_TRAILING_ACTIVATION_ATR = 0.8  # 0.8 ATR from entry before trail starts
-SCALP_TRAILING_BUFFER_ATR = 0.6   # SL trails 0.6 ATR behind price
+SCALP_TRAILING_ACTIVATION_ATR = 1.5  # 0.8 ATR from entry before trail starts
+SCALP_TRAILING_BUFFER_ATR = 0.8   # SL trails 0.6 ATR behind price
 SCALP_TRAILING_STEP_ATR = 0.2     # updates every 0.2 ATR move
 
 # =========================
@@ -197,7 +197,7 @@ STRATEGY_CONFIG = {
             # FIX: MAX_ADX widened 35 → 45 — allow stronger momentum moves through
             "MAX_ADX": 45,
             # FIX: MIN_ATR_PCT = 0.11 — matches log median ATR for 5m candles
-            "MIN_ATR_PCT": 0.11,
+            "MIN_ATR_PCT": 0.20,
             "RSI_SAFE_LONG_MAX": 68,
             "RSI_SAFE_SHORT_MIN": 32
         }
