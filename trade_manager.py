@@ -14,6 +14,15 @@ from bingx_client import PositionNotExistError
 main_mod = sys.modules["__main__"]
 
 # =========================
+# POST-EXIT COOLDOWN STATE
+# =========================
+# Shared dict tracking the actual close time/result of the last trade per (symbol, strategy).
+# main.py reads this directly (trade_manager.last_closed_trade) to enforce WIN_COOLDOWN /
+# LOSS_COOLDOWN in analyze_scalping(). Always update under main_mod.state_lock.
+# Format: {(symbol, strategy): {"time": epoch_seconds, "result": "WIN"|"TRAILED"|"LOSS"}}
+last_closed_trade = {}
+
+# =========================
 # CLEANUP CLOSED TRADES
 # =========================
 
@@ -799,7 +808,16 @@ def check_trades():
                             signal_id,
                             "WIN" if result == "WIN" else "TRAILED"
                         )
-                        
+
+                        # Record actual close time/result for post-exit (WIN) cooldown in analyze_scalping
+                        strategy_key = trade.get('strategy', 'SCALPING')
+                        with main_mod.state_lock:
+                            last_closed_trade[(trade['symbol'], strategy_key)] = {
+                                "time": time.time(),
+                                "result": "WIN" if result == "WIN" else "TRAILED"
+                            }
+                        print(f"[WIN COOLDOWN] {trade['symbol']} win cooldown started ({result})", flush=True)
+
                         # Google Sheets logging for WIN/TRAILED
                         try:
                             entry_price = trade.get('entry', 0)
@@ -875,8 +893,13 @@ def check_trades():
                         )
 
                         # FIX: update per-symbol loss cooldown so same symbol can't re-enter too soon
+                        strategy_key = trade.get('strategy', 'SCALPING')
                         with main_mod.state_lock:
                             main_mod.last_loss[(trade['symbol'], "SCALPING")] = time.time()
+                            last_closed_trade[(trade['symbol'], strategy_key)] = {
+                                "time": time.time(),
+                                "result": "LOSS"
+                            }
                         print(f"[LOSS COOLDOWN] {trade['symbol']} loss cooldown started", flush=True)
                         
                         # Google Sheets logging for LOSS

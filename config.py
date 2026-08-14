@@ -111,7 +111,7 @@ TRAILING_STEP_ATR = 0.5
 # New: 1.5-0.8=0.105% min profit → covers fee even at earliest trail exit
 # At TP trigger (1.5 RR): profit locked = ~0.203% = ~0.97x RR after fee
 SCALP_TRAILING_ACTIVATION_ATR = 1.5  # 0.8 ATR from entry before trail starts
-SCALP_TRAILING_BUFFER_ATR = 0.8   # SL trails 0.6 ATR behind price
+SCALP_TRAILING_BUFFER_ATR = 1.0   # SL trails 1.0 ATR behind price
 SCALP_TRAILING_STEP_ATR = 0.2     # updates every 0.2 ATR move
 
 # =========================
@@ -169,9 +169,11 @@ STRATEGY_CONFIG = {
         "SCAN_INTERVAL": 60,
         # FIX: COOLDOWN raised 300→900s — NEAR entered 9x in 48min, 900s=15min gap between re-entries
         "COOLDOWN": 900,
+        # Post-exit cooldowns, keyed off the actual close result of the last trade (last_closed_trade)
+        "WIN_COOLDOWN": 600,       # พัก 10 นาทีหลังปิดไม้กำไร (TRAILED / TP)
         # FIX: LOSS_COOLDOWN — after a LOSS, block same symbol for 30 min
         # NEAR had 3 consecutive losses = 78% of total losses; 1800s prevents re-entry too soon
-        "LOSS_COOLDOWN": 1800,
+        "LOSS_COOLDOWN": 1800,     # พัก 30 นาทีหลังปิดไม้แพ้ (SL)
         "PENDING_EXPIRY": 300,
         "ENTRY_TYPE": "MARKET",
         "LEVERAGE": 25,
