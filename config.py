@@ -105,8 +105,13 @@ TRAILING_STEP_ATR = 0.5
 # - Buffer must be >= 0.6 ATR to survive ETH/SOL micro-wicks
 # - Activation 0.8 = starts trail early enough without being too aggressive
 # - Step 0.2 = frequent updates, tight profit locking
-SCALP_TRAILING_ACTIVATION_ATR = 0.8
-SCALP_TRAILING_BUFFER_ATR = 0.6
+# FIX: activation raised 0.8→1.5, buffer raised 0.6→0.8
+# activation - buffer must exceed fee threshold (0.10% on 37.5 USDT notional)
+# Old: 0.8-0.6=0.028% min profit → lost to fee on early trail exits
+# New: 1.5-0.8=0.105% min profit → covers fee even at earliest trail exit
+# At TP trigger (1.5 RR): profit locked = ~0.203% = ~0.97x RR after fee
+SCALP_TRAILING_ACTIVATION_ATR = 1.0
+SCALP_TRAILING_BUFFER_ATR = 0.8
 SCALP_TRAILING_STEP_ATR = 0.2
 
 # =========================
@@ -162,7 +167,8 @@ STRATEGY_CONFIG = {
         "BASE_TF": "5m",
         "MACRO_TF": "15m",
         "SCAN_INTERVAL": 60,
-        "COOLDOWN": 300,
+        # FIX: COOLDOWN raised 300→900s — NEAR entered 9x in 48min, 900s=15min gap between re-entries
+        "COOLDOWN": 900,
         "PENDING_EXPIRY": 300,
         "ENTRY_TYPE": "MARKET",
         "LEVERAGE": 25,
@@ -173,6 +179,7 @@ STRATEGY_CONFIG = {
         # FIX: TP_RR raised 1.2 → 1.5 to cover BingX taker fee (0.05% x2 sides)
         # notional = 1.5 USDT x25 lev = 37.5 USDT → fee ~0.038 USDT/side, need RR>1.3 to profit
         "TP_RR": 1.5,
+        # FIX: MAX_TRADES 3→2 — 3 concurrent = 3 simultaneous losses on reversal
         "MAX_TRADES": 3,
         # Grade is relative to MIN_SCORE:
         #   A+ = score >= MIN_SCORE+10  (85+)
@@ -182,8 +189,8 @@ STRATEGY_CONFIG = {
         "MIN_SCORE": 75,
         "MIN_GRADE": "A",
         "FILTERS": {
-            # FIX: MIN_ADX lowered 18 → 15 — allow weak trending moves that still have direction
-            "MIN_ADX": 15,
+            # FIX: MIN_ADX raised to 18 — NEAR entered with ADX 11-14 (no momentum = noise)
+            "MIN_ADX": 18,
             # FIX: MAX_ADX widened 35 → 45 — allow stronger momentum moves through
             "MAX_ADX": 45,
             # FIX: MIN_ATR_PCT lowered 0.15 → 0.10 — log median ATR is 0.11, 0.15 blocks everything

@@ -1493,6 +1493,19 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             google_sheet.log_debug(symbol, f"ATR Too Low ({atr_val} < {scalp_min_atr})", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
 
+        # FIX: Added ADX filter — was missing from SCALPING entirely
+        # NEAR had ADX 11-14 (sideways/no momentum) but still entered → noise trades
+        scalp_min_adx = STRATEGY_CONFIG['SCALPING']['FILTERS'].get('MIN_ADX', 15)
+        scalp_max_adx = STRATEGY_CONFIG['SCALPING']['FILTERS'].get('MAX_ADX', 45)
+        if adx_val < scalp_min_adx:
+            set_scan_result(symbol, {"status": "ADX Too Low", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, f"ADX Too Low ({adx_val} < {scalp_min_adx})", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
+            return {"symbol": symbol, "result": "skipped"}
+        if adx_val > scalp_max_adx:
+            set_scan_result(symbol, {"status": "ADX Too High", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, f"ADX Too High ({adx_val} > {scalp_max_adx})", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
+            return {"symbol": symbol, "result": "skipped"}
+
         # =========================
         # FOMO FILTER
         # =========================
@@ -1695,8 +1708,8 @@ Symbol: {symbol} ({side_icon} {side})
 Grade: {grade} (Score: {score}/100)
 
 Entry: {entry}
-SL: {sl} (1.2x ATR)
-TP: {tp2} (1.2 RR)
+SL: {sl} ({STRATEGY_CONFIG['SCALPING']['SL_ATR_MULT']}x ATR)
+TP: {tp2} ({STRATEGY_CONFIG['SCALPING']['TP_RR']} RR)
 
 📊 Indicators:
 • RSI: {round(rsi_val, 2)}

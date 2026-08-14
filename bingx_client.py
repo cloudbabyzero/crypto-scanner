@@ -1028,8 +1028,8 @@ Side: {side_icon} {side.upper()} (x{cfg['LEVERAGE']} Leverage)
 Fill Price: {filled_entry}
 
 🛡️ Protection Setup:
-• SL: {sl} (1.2x ATR)
-• TP Trigger: {tp_trigger} (1.2 RR)
+• SL: {sl} ({cfg['SL_ATR_MULT']}x ATR)
+• TP Trigger: {tp_trigger} ({cfg['TP_RR']} RR)
 • Safety Ceiling TP: {tp2} (3.0 RR)
 
 💰 Position Info:
