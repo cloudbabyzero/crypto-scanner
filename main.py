@@ -1498,13 +1498,31 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         atr_val     = round(atr_percent, 2)
         rsi_val     = round(m3['rsi'], 2)
 
-        # =========================
-        # VOLATILITY FILTER
-        # =========================
-        scalp_min_atr = STRATEGY_CONFIG['SCALPING']['FILTERS'].get('MIN_ATR_PCT', 0)
-        if scalp_min_atr > 0 and round(atr_percent, 2) < scalp_min_atr:  # FIX: round before compare to avoid floating point mismatch
-            set_scan_result(symbol, {"status": "ATR Too Low", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, f"ATR Too Low ({atr_val} < {scalp_min_atr})", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+        # =========================================================
+        # 5-CANDLE ROLLING & 20-CANDLE AUTO-DYNAMIC VOLATILITY FILTER
+        # target_min_atr derives from the 20-candle rolling median of the
+        # symbol's own recent ATR%, adapting automatically to each symbol's
+        # current volatility regime instead of a static per-symbol value.
+        # =========================================================
+        # 1. Market baseline for this symbol: median ATR% over last 20 closed candles (100 min)
+        window_20_candles = df_3m.iloc[-21:-1]
+        rolling_20_atr_series = (window_20_candles['atr'] / window_20_candles['close']) * 100
+        market_baseline_atr = rolling_20_atr_series.median()
+
+        # 2. Dynamic threshold = 85% of baseline, floored at 0.20% (raised from 0.10%
+        #    — below 0.20% baseline the symbol is considered too dead/illiquid to scalp)
+        FEE_SAFETY_FLOOR = 0.15
+        target_min_atr = round(max(FEE_SAFETY_FLOOR, market_baseline_atr * 0.85), 2)
+
+        # 3. Recent momentum check: 5-candle rolling average ATR% (25 min)
+        recent_5_candles = df_3m.iloc[-6:-1]
+        rolling_atr_series = (recent_5_candles['atr'] / recent_5_candles['close']) * 100
+        avg_atr_5c = round(rolling_atr_series.mean(), 2)
+
+        if avg_atr_5c < target_min_atr:
+            status_msg = f"Avg ATR Too Low ({avg_atr_5c}% < Auto-Target {target_min_atr}%)"
+            set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
 
         # FIX: Added ADX filter — was missing from SCALPING entirely
@@ -4038,6 +4056,27 @@ def heartbeat_thread():
             except Exception:
                 current_usdt = 0.0
 
+            # =========================
+            # COMPILE VOLATILITY STATUS
+            # =========================
+            vol_report = "\n🌊 VOLATILITY STATUS (5m Scalping)\n"
+            target_symbols = SCALPING_SYMBOLS if MODE in ["FORCE_SCALPING", "SCALPING"] else symbols
+            for sym in target_symbols:
+                try:
+                    df = get_dataframe(sym, '5m')
+                    w20 = df.iloc[-21:-1]
+                    med_20 = (w20['atr'] / w20['close'] * 100).median()
+                    tgt = round(max(0.15, med_20 * 0.85), 2)  # floor matches analyze_scalping FEE_SAFETY_FLOOR
+
+                    r5 = df.iloc[-6:-1]
+                    cur_avg = round((r5['atr'] / r5['close'] * 100).mean(), 2)
+
+                    short_name = sym.split('/')[0]
+                    status_tag = "🟢 (Ready)" if cur_avg >= tgt else "🔴 (Chop)"
+                    vol_report += f"• {short_name:<5}: {cur_avg:.2f}% / Target {tgt:.2f}% {status_tag}\n"
+                except Exception:
+                    vol_report += f"• {sym.split('/')[0]:<5}: N/A\n"
+
             message = f"""
 💓 HEARTBEAT
 
@@ -4057,7 +4096,7 @@ Loss Streak: {current_loss_streak}
 Market Mode: {market_mode_text}
 Market Regime: {current_regime_text}
 Control Mode: {control_mode_text}
-
+{vol_report}
 📋 SCAN STATS
 
 Signals Generated: {scan_counters['Signal Generated']}
@@ -4220,6 +4259,27 @@ def main():
 
     market_mode_text = MARKET_MODE
 
+    # =========================
+    # COMPILE STARTUP VOLATILITY STATUS
+    # =========================
+    vol_report = "\n\n🌊 VOLATILITY STATUS (5m Scalping)\n"
+    target_symbols = SCALPING_SYMBOLS if MODE in ["FORCE_SCALPING", "SCALPING"] else symbols
+    for sym in target_symbols:
+        try:
+            df = get_dataframe(sym, '5m')
+            w20 = df.iloc[-21:-1]
+            med_20 = (w20['atr'] / w20['close'] * 100).median()
+            tgt = round(max(0.15, med_20 * 0.85), 2)  # floor matches analyze_scalping FEE_SAFETY_FLOOR
+
+            r5 = df.iloc[-6:-1]
+            cur_avg = round((r5['atr'] / r5['close'] * 100).mean(), 2)
+
+            short_name = sym.split('/')[0]
+            status_tag = "🟢 (Ready)" if cur_avg >= tgt else "🔴 (Chop)"
+            vol_report += f"• {short_name:<5}: {cur_avg:.2f}% / Target {tgt:.2f}% {status_tag}\n"
+        except Exception:
+            vol_report += f"• {sym.split('/')[0]:<5}: N/A\n"
+
     send_telegram(
         f"🚀 STARTUP REPORT\n\n"
         f"Status: STARTED\n"
@@ -4229,6 +4289,7 @@ def main():
         f"Auto Trade: {auto_status}\n"
         f"Market Mode: {market_mode_text}\n"
         f"Market Regime: {CURRENT_REGIME}"
+        f"{vol_report}"
     )
 
     # =========================
