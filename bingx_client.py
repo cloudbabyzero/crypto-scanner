@@ -890,16 +890,19 @@ def execute_scalp_trade(symbol, side):
         # SL / TP
         # =========================
 
-        
+        # Dynamic/Adaptive SL Multiplier — use signal-provided value if present,
+        # otherwise fall back to strategy config default
+        sl_atr_mult = signal.get("sl_atr_mult", cfg.get("SL_ATR_MULT", 1.5))
+        tp_rr = cfg.get("TP_RR", 2.0)
 
         if side == "long":
-            sl   = round(entry - atr * cfg['SL_ATR_MULT'], 4)
+            sl   = round(entry - atr * sl_atr_mult, 4)
             risk = entry - sl
-            tp2  = round(entry + risk * cfg['TP_RR'], 4)
+            tp2  = round(entry + risk * tp_rr, 4)
         else:
-            sl   = round(entry + atr * cfg['SL_ATR_MULT'], 4)
+            sl   = round(entry + atr * sl_atr_mult, 4)
             risk = sl - entry
-            tp2  = round(entry - risk * cfg['TP_RR'], 4)
+            tp2  = round(entry - risk * tp_rr, 4)
 
         # =========================
         # MARKET ORDER (instant fill)
@@ -934,15 +937,15 @@ def execute_scalp_trade(symbol, side):
         # Set tp_trigger at 1.2 RR (bot trigger) and tp2 at 3.0 RR (exchange safety ceiling)
         spread_buffer = filled_entry * 0.0002  # 0.02% spread compensation
         if side == "long":
-            sl   = round(filled_entry - atr * cfg['SL_ATR_MULT'], 4)
+            sl   = round(filled_entry - atr * sl_atr_mult, 4)
             risk = filled_entry - sl
-            tp_trigger = round(filled_entry + risk * cfg['TP_RR'] + spread_buffer, 4)
-            tp2        = round(filled_entry + risk * (cfg['TP_RR'] * 2.5) + spread_buffer, 4) # Exchange Safety Ceiling (3.0 RR)
+            tp_trigger = round(filled_entry + risk * tp_rr + spread_buffer, 4)
+            tp2        = round(filled_entry + risk * (tp_rr * 2.5) + spread_buffer, 4) # Exchange Safety Ceiling (3.0 RR)
         else:
-            sl   = round(filled_entry + atr * cfg['SL_ATR_MULT'], 4)
+            sl   = round(filled_entry + atr * sl_atr_mult, 4)
             risk = sl - filled_entry
-            tp_trigger = round(filled_entry - risk * cfg['TP_RR'] - spread_buffer, 4)
-            tp2        = round(filled_entry - risk * (cfg['TP_RR'] * 2.5) - spread_buffer, 4) # Exchange Safety Ceiling (3.0 RR)
+            tp_trigger = round(filled_entry - risk * tp_rr - spread_buffer, 4)
+            tp2        = round(filled_entry - risk * (tp_rr * 2.5) - spread_buffer, 4) # Exchange Safety Ceiling (3.0 RR)
 
         # =========================
         # PLACE PROTECTION ORDERS IMMEDIATELY
@@ -1011,6 +1014,7 @@ def execute_scalp_trade(symbol, side):
                 "score": _signal_score,
                 "strategy": "SCALPING",
                 "atr": atr,
+                "sl_atr_mult": sl_atr_mult,
                 "margin_used": round(margin_to_use, 4),
                 "portfolio_balance": round(current_usdt, 4),
             }
@@ -1028,8 +1032,8 @@ Side: {side_icon} {side.upper()} (x{cfg['LEVERAGE']} Leverage)
 Fill Price: {filled_entry}
 
 🛡️ Protection Setup:
-• SL: {sl} ({cfg['SL_ATR_MULT']}x ATR)
-• TP Trigger: {tp_trigger} ({cfg['TP_RR']} RR)
+• SL: {sl} ({sl_atr_mult}x ATR)
+• TP Trigger: {tp_trigger} ({tp_rr} RR)
 • Safety Ceiling TP: {tp2} (3.0 RR)
 
 💰 Position Info:
