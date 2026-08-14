@@ -1481,11 +1481,11 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         base_tf = STRATEGY_CONFIG['SCALPING'].get('BASE_TF', '5m')
         macro_tf = STRATEGY_CONFIG['SCALPING'].get('MACRO_TF', '15m')
 
-        df_3m = get_dataframe(symbol, base_tf)   # renamed kept as df_3m for downstream compat
+        df_3m = get_dataframe(symbol, base_tf)   # NOTE: variable name is legacy — base_tf = "5m" per config, so this is actually 5m data
         if df_15m is None:
             df_15m = get_dataframe(symbol, macro_tf)
 
-        m3  = df_3m.iloc[-2]   # last closed base candle
+        m3  = df_3m.iloc[-2]   # last closed base candle (5m, despite variable name)
         m15 = df_15m.iloc[-2]  # last closed macro candle
 
         now_ts = time.time()
@@ -1567,7 +1567,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # ต้องผ่านหลาย conditions ถึงจะได้คะแนนสูง
         # =========================
 
-        # 1. EMA Trend (3m) — 30 pts
+        # 1. EMA Trend (5m) — 30 pts
         #    ต้อง EMA7 ห่างจาก EMA25 จริง ไม่ใช่แค่เพิ่ง cross
         ema_gap_pct = abs(m3['ema7'] - m3['ema25']) / m3['ema25'] * 100
         required_gap_pct = max(0.04, min(0.1, atr_percent * 0.4))
@@ -1678,7 +1678,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 google_sheet.log_debug(symbol, f"BTC {btc_trend} - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             side  = "LONG"
-            entry = round(m3['close'], 4)  # Market order on 3m close
+            entry = round(m3['close'], 4)  # Market order on 5m close
         elif short_score > long_score and short_score >= STRATEGY_CONFIG['SCALPING']['MIN_SCORE']:
             if rsi_val < STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']:
                 set_scan_result(symbol, {"status": "RSI Too Low", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
@@ -1690,7 +1690,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 google_sheet.log_debug(symbol, f"BTC {btc_trend} - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
             side  = "SHORT"
-            entry = round(m3['close'], 4)  # Market order on 3m close
+            entry = round(m3['close'], 4)  # Market order on 5m close
         else:
             set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             return {"symbol": symbol, "result": "skipped"}
@@ -1714,14 +1714,29 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
 
         atr = m3['atr']
+
+        # --- Dynamic / Adaptive Stop Loss (per-asset ATR% profile) ---
+        _dyn_sl_cfg = STRATEGY_CONFIG['SCALPING']
+        _dyn_threshold = _dyn_sl_cfg.get('DYNAMIC_SL_ATR_THRESHOLD', 0.22)
+        if _dyn_sl_cfg.get('DYNAMIC_SL_ENABLED', False):
+            if atr_val >= _dyn_threshold:
+                sl_atr_mult = _dyn_sl_cfg.get('DYNAMIC_SL_MULT_HIGH_NOISE', 1.8)
+                dynamic_sl_mode = "HIGH_NOISE"
+            else:
+                sl_atr_mult = _dyn_sl_cfg.get('DYNAMIC_SL_MULT_NORMAL', 1.5)
+                dynamic_sl_mode = "NORMAL"
+        else:
+            sl_atr_mult = _dyn_sl_cfg['SL_ATR_MULT']
+            dynamic_sl_mode = "NORMAL"
+
         if side == "LONG":
-            sl   = round(entry - atr * STRATEGY_CONFIG['SCALPING']['SL_ATR_MULT'], 4)
+            sl   = round(entry - atr * sl_atr_mult, 4)
             risk = entry - sl
             tp2  = round(entry + risk * STRATEGY_CONFIG['SCALPING']['TP_RR'], 4)
             tp1  = round(entry + risk, 4)
             rr   = round((tp2 - entry) / (entry - sl), 2)
         else:
-            sl   = round(entry + atr * STRATEGY_CONFIG['SCALPING']['SL_ATR_MULT'], 4)
+            sl   = round(entry + atr * sl_atr_mult, 4)
             risk = sl - entry
             tp2  = round(entry - risk * STRATEGY_CONFIG['SCALPING']['TP_RR'], 4)
             tp1  = round(entry - risk, 4)
@@ -1734,14 +1749,23 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         icon = "\U0001f680" if side == "LONG" else "\U0001f53b"
 
         side_icon = "🟩" if side == "LONG" else "🟥"
+
+        if dynamic_sl_mode == "HIGH_NOISE":
+            dynamic_sl_line = f"🛡️ Dynamic SL: 🔥 HIGH NOISE ({sl_atr_mult}x ATR)"
+        else:
+            dynamic_sl_line = f"🛡️ Dynamic SL: 🟢 NORMAL ({sl_atr_mult}x ATR)"
+
         message = f"""⚡ SCALPING SIGNAL
 
 Symbol: {symbol} ({side_icon} {side})
 Grade: {grade} (Score: {score}/100)
 
 Entry: {entry}
-SL: {sl} ({STRATEGY_CONFIG['SCALPING']['SL_ATR_MULT']}x ATR)
+SL: {sl} ({sl_atr_mult}x ATR)
 TP: {tp2} ({STRATEGY_CONFIG['SCALPING']['TP_RR']} RR)
+
+{dynamic_sl_line}
+   ATR%: {atr_val}% (Threshold: {_dyn_threshold}%)
 
 📊 Indicators:
 • RSI: {round(rsi_val, 2)}
@@ -1774,6 +1798,8 @@ TP: {tp2} ({STRATEGY_CONFIG['SCALPING']['TP_RR']} RR)
                     "tp1": tp1,
                     "tp2": tp2,
                     "atr": atr,
+                    "sl_atr_mult": sl_atr_mult,
+                    "dynamic_sl_mode": dynamic_sl_mode,
                     "signal_regime": signal_regime,
                     "created_at": time.time(),
                     "grade": grade,
