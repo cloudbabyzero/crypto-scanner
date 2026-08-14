@@ -873,6 +873,11 @@ def check_trades():
                             signal_id,
                             "LOSS"
                         )
+
+                        # FIX: update per-symbol loss cooldown so same symbol can't re-enter too soon
+                        with main_mod.state_lock:
+                            main_mod.last_loss[(trade['symbol'], "SCALPING")] = time.time()
+                        print(f"[LOSS COOLDOWN] {trade['symbol']} loss cooldown started", flush=True)
                         
                         # Google Sheets logging for LOSS
                         try:

@@ -110,9 +110,9 @@ TRAILING_STEP_ATR = 0.5
 # Old: 0.8-0.6=0.028% min profit → lost to fee on early trail exits
 # New: 1.5-0.8=0.105% min profit → covers fee even at earliest trail exit
 # At TP trigger (1.5 RR): profit locked = ~0.203% = ~0.97x RR after fee
-SCALP_TRAILING_ACTIVATION_ATR = 1.0
-SCALP_TRAILING_BUFFER_ATR = 0.8
-SCALP_TRAILING_STEP_ATR = 0.2
+SCALP_TRAILING_ACTIVATION_ATR = 0.8  # 0.8 ATR from entry before trail starts
+SCALP_TRAILING_BUFFER_ATR = 0.6   # SL trails 0.6 ATR behind price
+SCALP_TRAILING_STEP_ATR = 0.2     # updates every 0.2 ATR move
 
 # =========================
 # STRATEGY CONFIGURATION (ISOLATED)
@@ -169,6 +169,9 @@ STRATEGY_CONFIG = {
         "SCAN_INTERVAL": 60,
         # FIX: COOLDOWN raised 300→900s — NEAR entered 9x in 48min, 900s=15min gap between re-entries
         "COOLDOWN": 900,
+        # FIX: LOSS_COOLDOWN — after a LOSS, block same symbol for 30 min
+        # NEAR had 3 consecutive losses = 78% of total losses; 1800s prevents re-entry too soon
+        "LOSS_COOLDOWN": 1800,
         "PENDING_EXPIRY": 300,
         "ENTRY_TYPE": "MARKET",
         "LEVERAGE": 25,
@@ -176,11 +179,11 @@ STRATEGY_CONFIG = {
         # FIX: SL_ATR_MULT raised 1.2 → 1.5 — SL at 1.2 ATR = ~0.13% which is within normal noise,
         # most losses were SL hit by only 0.09-0.20% move, wider SL needed to survive micro-chop
         "SL_ATR_MULT": 1.5,
-        # FIX: TP_RR raised 1.2 → 1.5 to cover BingX taker fee (0.05% x2 sides)
-        # notional = 1.5 USDT x25 lev = 37.5 USDT → fee ~0.038 USDT/side, need RR>1.3 to profit
-        "TP_RR": 1.5,
+        # FIX: TP_RR raised 1.5→2.0 — actual RR was 0.61x (WIN avg +0.087 vs LOSS avg -0.143)
+        # At 2.0 RR: net WIN ≈ +0.120 USDT vs net LOSS ≈ -0.117 USDT → break-even at 49.4% win rate
+        "TP_RR": 2.0,
         # FIX: MAX_TRADES 3→2 — 3 concurrent = 3 simultaneous losses on reversal
-        "MAX_TRADES": 3,
+        "MAX_TRADES": 2,  # FIX: 3→2, limit concurrent losses on reversal
         # Grade is relative to MIN_SCORE:
         #   A+ = score >= MIN_SCORE+10  (85+)
         #   A  = score >= MIN_SCORE     (75+)  ← target
@@ -193,8 +196,8 @@ STRATEGY_CONFIG = {
             "MIN_ADX": 18,
             # FIX: MAX_ADX widened 35 → 45 — allow stronger momentum moves through
             "MAX_ADX": 45,
-            # FIX: MIN_ATR_PCT lowered 0.15 → 0.10 — log median ATR is 0.11, 0.15 blocks everything
-            "MIN_ATR_PCT": 0.10,
+            # FIX: MIN_ATR_PCT = 0.11 — matches log median ATR for 5m candles
+            "MIN_ATR_PCT": 0.11,
             "RSI_SAFE_LONG_MAX": 68,
             "RSI_SAFE_SHORT_MIN": 32
         }

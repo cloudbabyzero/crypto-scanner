@@ -85,6 +85,7 @@ import trade_manager
 import backtest
 
 last_alert = {}
+last_loss = {}   # FIX: per-symbol loss cooldown — tracks last LOSS time per symbol
 
 active_trades = {}
 state_lock = threading.RLock()
@@ -1459,6 +1460,19 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             if last_time and now - last_time < STRATEGY_CONFIG['SCALPING']['COOLDOWN']:
                 set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
                 google_sheet.log_debug(symbol, "Cooldown (SCALPING)", strategy="SCALPING", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                return {"symbol": symbol, "result": "skipped"}
+
+        # FIX: per-symbol LOSS cooldown — after a LOSS, block same symbol for LOSS_COOLDOWN seconds
+        # NEAR had 3 LOSS trades accounting for 78% of total losses (avg -0.184 USDT each)
+        # Normal cooldown 900s resets on any signal; loss cooldown is separate and longer
+        LOSS_COOLDOWN = STRATEGY_CONFIG['SCALPING'].get('LOSS_COOLDOWN', 1800)  # default 30 min
+        if not bypass_cooldown and not ignore_cooldown_once:
+            with state_lock:
+                last_loss_time = last_loss.get((symbol, "SCALPING"))
+            if last_loss_time and now - last_loss_time < LOSS_COOLDOWN:
+                remaining = int((LOSS_COOLDOWN - (now - last_loss_time)) / 60)
+                set_scan_result(symbol, {"status": f"Loss Cooldown ({remaining}m left)", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                google_sheet.log_debug(symbol, f"Loss Cooldown ({remaining}m left)", strategy="SCALPING", score=0, adx=0, atr=0, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
                 return {"symbol": symbol, "result": "skipped"}
 
         # =========================
