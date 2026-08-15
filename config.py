@@ -205,8 +205,10 @@ STRATEGY_CONFIG = {
             "MIN_ADX": 18,
             # FIX: MAX_ADX widened 35 → 45 — allow stronger momentum moves through
             "MAX_ADX": 45,
-            # FIX: MIN_ATR_PCT = 0.11 — matches log median ATR for 5m candles
-            "MIN_ATR_PCT": 0.20,
+            # --- ATR Volatility Guard Settings ---
+            "MIN_ATR_PCT": 0.15,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม
+            "MAX_ATR_PCT": 0.45,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
+            "MIN_CEILING_ATR_PCT": 0.30,  # [Minimum Ceiling เพดานขั้นต่ำ] ยกเพดานให้เหรียญใหญ่ (BTC/ETH) เพื่อให้มีช่วงว่างวิ่งเทรดได้
             "RSI_SAFE_LONG_MAX": 68,
             "RSI_SAFE_SHORT_MIN": 32
         }

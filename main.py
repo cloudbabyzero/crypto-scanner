@@ -1516,8 +1516,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         rsi_val     = round(m3['rsi'], 2)
 
         # =========================================================
-        # 5-CANDLE ROLLING & 20-CANDLE AUTO-DYNAMIC VOLATILITY FILTER
-        # target_min_atr derives from the 20-candle rolling median of the
+        # 5-CANDLE ROLLING & 20-CANDLE AUTO-DYNAMIC VOLATILITY FILTER (Floor + Ceiling Guard)
+        # target_min_atr / target_max_atr derive from the 20-candle rolling median of the
         # symbol's own recent ATR%, adapting automatically to each symbol's
         # current volatility regime instead of a static per-symbol value.
         # =========================================================
@@ -1526,18 +1526,33 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         rolling_20_atr_series = (window_20_candles['atr'] / window_20_candles['close']) * 100
         market_baseline_atr = rolling_20_atr_series.median()
 
-        # 2. Dynamic threshold = 85% of baseline, floored at 0.20% (raised from 0.10%
-        #    — below 0.20% baseline the symbol is considered too dead/illiquid to scalp)
-        FEE_SAFETY_FLOOR = 0.15
-        target_min_atr = round(max(FEE_SAFETY_FLOOR, market_baseline_atr * 0.85), 2)
+        # 2. Pull floor/ceiling settings from config
+        scalp_filters = STRATEGY_CONFIG['SCALPING']['FILTERS']
+        fee_safety_floor = scalp_filters.get('MIN_ATR_PCT', 0.15)     # Floor พื้นล่างสุด
+        hard_max_cap = scalp_filters.get('MAX_ATR_PCT', 0.45)         # Hard Ceiling เพดานสูงสุด
+        min_ceiling = scalp_filters.get('MIN_CEILING_ATR_PCT', 0.30)  # Minimum Ceiling เพดานขั้นต่ำ
 
-        # 3. Recent momentum check: 5-candle rolling average ATR% (25 min)
+        # 3. Dynamic Floor = 85% of baseline, floored at fee_safety_floor
+        target_min_atr = round(max(fee_safety_floor, market_baseline_atr * 0.85), 2)
+
+        # 4. Dynamic Ceiling = 180% of baseline, floored at min_ceiling, capped at hard_max_cap
+        target_max_atr = round(min(hard_max_cap, max(min_ceiling, market_baseline_atr * 1.80)), 2)
+
+        # 5. Recent momentum check: 5-candle rolling average ATR% (25 min)
         recent_5_candles = df_3m.iloc[-6:-1]
         rolling_atr_series = (recent_5_candles['atr'] / recent_5_candles['close']) * 100
         avg_atr_5c = round(rolling_atr_series.mean(), 2)
 
+        # --- Check Floor: ป้องกันตลาดนิ่ง (Dead Market) ---
         if avg_atr_5c < target_min_atr:
             status_msg = f"Avg ATR Too Low ({avg_atr_5c}% < Auto-Target {target_min_atr}%)"
+            set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            return {"symbol": symbol, "result": "skipped"}
+
+        # --- Check Ceiling: ป้องกันตลาดคลั่ง / ไส้เทียนลาก SL (Spike / Extreme Volatility) ---
+        if avg_atr_5c > target_max_atr or atr_val > target_max_atr:
+            status_msg = f"Avg ATR Too Wild ({max(avg_atr_5c, atr_val)}% > Auto-Max {target_max_atr}%)"
             set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
@@ -4104,21 +4119,31 @@ def heartbeat_thread():
             # =========================
             vol_report = "\n🌊 VOLATILITY STATUS (5m Scalping)\n"
             target_symbols = SCALPING_SYMBOLS if MODE in ["FORCE_SCALPING", "SCALPING"] else symbols
+            scalp_filters_hb = STRATEGY_CONFIG['SCALPING']['FILTERS']
+            hb_fee_floor = scalp_filters_hb.get('MIN_ATR_PCT', 0.15)
+            hb_hard_max = scalp_filters_hb.get('MAX_ATR_PCT', 0.45)
+            hb_min_ceiling = scalp_filters_hb.get('MIN_CEILING_ATR_PCT', 0.30)
             for sym in target_symbols:
                 try:
                     df = get_dataframe(sym, '5m')
                     w20 = df.iloc[-21:-1]
                     med_20 = (w20['atr'] / w20['close'] * 100).median()
-                    tgt = round(max(0.15, med_20 * 0.85), 2)  # floor matches analyze_scalping FEE_SAFETY_FLOOR
+                    target_min_atr = round(max(hb_fee_floor, med_20 * 0.85), 2)  # floor matches analyze_scalping
+                    target_max_atr = round(min(hb_hard_max, max(hb_min_ceiling, med_20 * 1.80)), 2)  # ceiling matches analyze_scalping
 
                     r5 = df.iloc[-6:-1]
                     cur_avg = round((r5['atr'] / r5['close'] * 100).mean(), 2)
 
-                    short_name = sym.split('/')[0]
-                    status_tag = "🟢 (Ready)" if cur_avg >= tgt else "🔴 (Chop)"
-                    vol_report += f"• {short_name:<5}: {cur_avg:.2f}% / Target {tgt:.2f}% {status_tag}\n"
+                    symbol_short = sym.split('/')[0]
+                    if cur_avg < target_min_atr:
+                        status_emoji, status_label = "🔴", "Chop"
+                    elif cur_avg > target_max_atr:
+                        status_emoji, status_label = "⚠️", "Wild"
+                    else:
+                        status_emoji, status_label = "🟢", "Ready"
+                    vol_report += f"• {symbol_short:<4} : {cur_avg:.2f}% [{target_min_atr:.2f}% - {target_max_atr:.2f}%] {status_emoji} ({status_label})\n"
                 except Exception:
-                    vol_report += f"• {sym.split('/')[0]:<5}: N/A\n"
+                    vol_report += f"• {sym.split('/')[0]:<4} : N/A\n"
 
             message = f"""
 💓 HEARTBEAT
@@ -4307,21 +4332,31 @@ def main():
     # =========================
     vol_report = "\n\n🌊 VOLATILITY STATUS (5m Scalping)\n"
     target_symbols = SCALPING_SYMBOLS if MODE in ["FORCE_SCALPING", "SCALPING"] else symbols
+    scalp_filters_su = STRATEGY_CONFIG['SCALPING']['FILTERS']
+    su_fee_floor = scalp_filters_su.get('MIN_ATR_PCT', 0.15)
+    su_hard_max = scalp_filters_su.get('MAX_ATR_PCT', 0.45)
+    su_min_ceiling = scalp_filters_su.get('MIN_CEILING_ATR_PCT', 0.30)
     for sym in target_symbols:
         try:
             df = get_dataframe(sym, '5m')
             w20 = df.iloc[-21:-1]
             med_20 = (w20['atr'] / w20['close'] * 100).median()
-            tgt = round(max(0.15, med_20 * 0.85), 2)  # floor matches analyze_scalping FEE_SAFETY_FLOOR
+            target_min_atr = round(max(su_fee_floor, med_20 * 0.85), 2)  # floor matches analyze_scalping
+            target_max_atr = round(min(su_hard_max, max(su_min_ceiling, med_20 * 1.80)), 2)  # ceiling matches analyze_scalping
 
             r5 = df.iloc[-6:-1]
             cur_avg = round((r5['atr'] / r5['close'] * 100).mean(), 2)
 
-            short_name = sym.split('/')[0]
-            status_tag = "🟢 (Ready)" if cur_avg >= tgt else "🔴 (Chop)"
-            vol_report += f"• {short_name:<5}: {cur_avg:.2f}% / Target {tgt:.2f}% {status_tag}\n"
+            symbol_short = sym.split('/')[0]
+            if cur_avg < target_min_atr:
+                status_emoji, status_label = "🔴", "Chop"
+            elif cur_avg > target_max_atr:
+                status_emoji, status_label = "⚠️", "Wild"
+            else:
+                status_emoji, status_label = "🟢", "Ready"
+            vol_report += f"• {symbol_short:<4} : {cur_avg:.2f}% [{target_min_atr:.2f}% - {target_max_atr:.2f}%] {status_emoji} ({status_label})\n"
         except Exception:
-            vol_report += f"• {sym.split('/')[0]:<5}: N/A\n"
+            vol_report += f"• {sym.split('/')[0]:<4} : N/A\n"
 
     send_telegram(
         f"🚀 STARTUP REPORT\n\n"
