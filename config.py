@@ -198,7 +198,7 @@ STRATEGY_CONFIG = {
         #   A  = score >= MIN_SCORE     (75+)  ← target
         #   B  = score >= MIN_SCORE-10  (65+)
         # 75 is reachable even with BTC neutral -15 penalty when EMA+15m+candle+RSI all align
-        "MIN_SCORE": 75,
+        "MIN_SCORE": 80,
         "MIN_GRADE": "A",
         "FILTERS": {
             # FIX: MIN_ADX raised to 18 — NEAR entered with ADX 11-14 (no momentum = noise)
