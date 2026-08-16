@@ -28,8 +28,7 @@ symbols = [
     'SUI/USDT:USDT',
     'AAVE/USDT:USDT',
     'AVAX/USDT:USDT',
-    #'NEAR/USDT:USDT',  <--- แพ้บ่อย แพ้บ่อยมาก แพ้แบบ 100%
-
+    'XRP/USDT:USDT',
 ]
 
 SCALPING_SYMBOLS = [
@@ -40,8 +39,7 @@ SCALPING_SYMBOLS = [
     'SUI/USDT:USDT',
     'AAVE/USDT:USDT',
     'AVAX/USDT:USDT',
-    #'NEAR/USDT:USDT',  <--- แพ้บ่อย แพ้บ่อยมาก แพ้แบบ 100%
-
+    'XRP/USDT:USDT',
 ]
 
 # =========================
