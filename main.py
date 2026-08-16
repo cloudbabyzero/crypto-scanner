@@ -1544,8 +1544,9 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         avg_atr_5c = round(rolling_atr_series.mean(), 2)
 
         # --- Check Floor: ป้องกันตลาดนิ่ง (Dead Market) ---
-        if avg_atr_5c < target_min_atr:
-            status_msg = f"Avg ATR Too Low ({avg_atr_5c}% < Auto-Target {target_min_atr}%)"
+        if avg_atr_5c < target_min_atr or atr_val < fee_safety_floor:
+            cur_low_val = min(avg_atr_5c, atr_val)
+            status_msg = f"Avg ATR Too Low ({cur_low_val}% < Auto-Target {target_min_atr}%)"
             set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
