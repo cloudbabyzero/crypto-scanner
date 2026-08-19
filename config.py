@@ -62,7 +62,7 @@ GRADE_PRIORITY = {
 ALLOW_PENDING_OVERRIDE = True
 MIN_SCORE_GAP_TO_OVERRIDE = 3
 
-MAX_CONSECUTIVE_LOSSES = 3
+MAX_CONSECUTIVE_LOSSES = 2  # FIX (Aug 19): 3→2, pause bot sooner after consecutive losses
 LOSS_STREAK_RESET_ON_WIN = True
 # Auto-resume trading after loss streak pause (minutes). Set 0 to disable auto-resume.
 PAUSE_RESUME_MINUTES = 60
@@ -178,14 +178,17 @@ STRATEGY_CONFIG = {
         "MARGIN_PER_TRADE": 1.5,
         # FIX: SL_ATR_MULT raised 1.2 → 1.5 — SL at 1.2 ATR = ~0.13% which is within normal noise,
         # most losses were SL hit by only 0.09-0.20% move, wider SL needed to survive micro-chop
-        "SL_ATR_MULT": 1.5,
+        # FIX 2 (Aug 19): tightened 1.5 → 1.1 — losses were outsizing wins (avg loss > avg win),
+        # tighter SL cuts loss size; paired with BTC 5m micro-trigger + tighter FOMO filter
+        # to compensate for higher SL-hit frequency by avoiding weak/late entries.
+        "SL_ATR_MULT": 1.1,
         # --- Dynamic / Adaptive Stop Loss (per-asset volatility profile) ---
         # If ATR% at signal time >= threshold -> High Noise / Shield Mode (wider SL mult)
         # If ATR% < threshold -> Normal Mode (base SL mult above)
         "DYNAMIC_SL_ENABLED": True,
         "DYNAMIC_SL_ATR_THRESHOLD": 0.22,   # ATR% breakpoint
-        "DYNAMIC_SL_MULT_NORMAL": 1.5,      # used when ATR% < threshold
-        "DYNAMIC_SL_MULT_HIGH_NOISE": 1.8,  # used when ATR% >= threshold
+        "DYNAMIC_SL_MULT_NORMAL": 1.1,      # used when ATR% < threshold
+        "DYNAMIC_SL_MULT_HIGH_NOISE": 1.3,  # used when ATR% >= threshold
         # FIX: TP_RR raised 1.5→2.0 — actual RR was 0.61x (WIN avg +0.087 vs LOSS avg -0.143)
         # At 2.0 RR: net WIN ≈ +0.120 USDT vs net LOSS ≈ -0.117 USDT → break-even at 49.4% win rate
         "TP_RR": 2.0,

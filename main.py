@@ -1576,7 +1576,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
 
         candle_size = abs(m3['close'] - m3['open'])
-        if candle_size > m3['atr'] * 2.0:
+        # FIX (Aug 19): tightened 2.0x → 1.4x ATR — avoid buying into exhausted/blown-out candles
+        if candle_size > m3['atr'] * 1.4:
             set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             google_sheet.log_debug(symbol, "Candle Too Big (SCALPING)", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
@@ -1710,6 +1711,19 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 set_scan_result(symbol, {"status": f"BTC {btc_trend.title()}", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, f"BTC {btc_trend} - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
+
+            # FIX (Aug 19): BTC 5m Micro Trigger — don't catch a falling knife on LONG.
+            # Require BTC's own last closed 5m candle to be green AND above its EMA7,
+            # i.e. BTC must not be actively pulling back on the micro timeframe.
+            btc_df_5m = get_dataframe('BTC/USDT:USDT', '5m')
+            btc_m5 = btc_df_5m.iloc[-2]
+            btc_5m_green = btc_m5['close'] > btc_m5['open']
+            btc_5m_above_ema7 = btc_m5['close'] > btc_m5['ema7']
+            if not (btc_5m_green and btc_5m_above_ema7):
+                set_scan_result(symbol, {"status": "BTC 5m Pulling Back", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "BTC 5m Micro Trigger failed - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
             side  = "LONG"
             entry = round(m3['close'], 4)  # Market order on 5m close
         elif short_score > long_score and short_score >= STRATEGY_CONFIG['SCALPING']['MIN_SCORE']:
