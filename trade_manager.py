@@ -335,6 +335,21 @@ def _process_scalping_trailing_stop(trade, current_price):
                 trade['sl_order_id'] = new_id
                 trade['profit_phase'] = new_phase
 
+            # Infinity Run (Aug 20): entering Phase 2 means the trailing stop takes
+            # over profit management entirely — cancel the fixed 2.0 RR take-profit
+            # order so price isn't capped there, and let the trail run the trade
+            # as far as the trend goes.
+            if new_phase == 2:
+                tp_order_id = trade.get('tp2_order_id') or trade.get('tp_order_id')
+                if tp_order_id:
+                    try:
+                        bingx_client.cancel_order(tp_order_id, trade['symbol'])
+                        print(f"[INFINITY RUN] Cancelled TP order — trailing profit freely", flush=True)
+                    except Exception as e:
+                        print(f"[INFINITY RUN] Failed to cancel TP order for {trade['symbol']}: {e}", flush=True)
+                    with main_mod.state_lock:
+                        trade['tp2_order_id'] = None
+
             side_icon = "🟩" if side == "LONG" else "🟥"
             if new_phase == 1:
                 msg = (f"🛡️ [AUTO-BREAKEVEN ACTIVATED]\n"
@@ -348,7 +363,7 @@ def _process_scalping_trailing_stop(trade, current_price):
                        f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
                        f"Mark Price: {current_price}\n"
                        f"New SL: {new_sl} (Trailing {SCALP_TRAILING_BUFFER_ATR}x ATR behind)\n"
-                       f"🟢 Locking Higher Profit")
+                       f"🟢 Infinity Run — TP Cancelled, Locking Higher Profit")
             main_mod.send_telegram(msg)
             print(f"[TRAILING] {trade['symbol']} {side} SL updated to {new_sl} (Phase {new_phase})", flush=True)
     elif new_phase == 2 and phase == 2 and step_satisfied and moved:
