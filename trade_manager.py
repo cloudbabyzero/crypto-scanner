@@ -269,6 +269,186 @@ def _determine_trade_result(trade, symbol):
 # TRAILING STOP
 # =========================
 
+def _process_scalping_trailing_stop(trade, current_price):
+    """2-Phase profit management for SCALPING (Aug 20 upgrade).
+
+    Phase 1 (Auto-Breakeven): once price reaches +SCALP_BREAKEVEN_ACTIVATION_ATR
+    from entry, SL is pulled to entry +/- SCALP_BREAKEVEN_OFFSET_PCT (locks in a
+    risk-free trade that also covers round-trip taker fees).
+
+    Phase 2 (Trailing): once price reaches +SCALP_TRAILING_ACTIVATION_ATR from
+    entry, SL trails price at SCALP_TRAILING_BUFFER_ATR behind, stepping forward
+    every SCALP_TRAILING_STEP_ATR of additional favorable movement.
+    """
+    from config import (
+        SCALP_BREAKEVEN_ACTIVATION_ATR, SCALP_BREAKEVEN_OFFSET_PCT,
+        SCALP_TRAILING_ACTIVATION_ATR, SCALP_TRAILING_BUFFER_ATR, SCALP_TRAILING_STEP_ATR,
+    )
+    import bingx_client
+
+    side = trade.get('side', 'LONG')
+    entry_price = trade.get('entry', 0)
+    current_sl = trade.get('sl', 0)
+    current_atr = trade.get('atr', 0)
+    phase = trade.get('profit_phase', 0)  # 0 = neither triggered yet, 1 = breakeven locked, 2 = trailing
+
+    if current_atr <= 0 or current_price <= 0 or entry_price <= 0:
+        return
+
+    breakeven_dist = current_atr * SCALP_BREAKEVEN_ACTIVATION_ATR
+    trailing_dist = current_atr * SCALP_TRAILING_ACTIVATION_ATR
+    trailing_buffer = current_atr * SCALP_TRAILING_BUFFER_ATR
+    step_size = current_atr * SCALP_TRAILING_STEP_ATR
+
+    new_sl = current_sl
+    new_phase = phase
+
+    if side == "LONG":
+        # Phase 2 check first (higher trigger) — can skip straight from 0 to 2 on a fast move
+        if current_price >= (entry_price + trailing_dist):
+            new_phase = 2
+            proposed_sl = current_price - trailing_buffer
+            new_sl = max(current_sl, proposed_sl)
+        elif current_price >= (entry_price + breakeven_dist) and phase < 1:
+            new_phase = 1
+            new_sl = max(current_sl, entry_price * (1 + SCALP_BREAKEVEN_OFFSET_PCT / 100))
+    else:  # SHORT
+        if current_price <= (entry_price - trailing_dist):
+            new_phase = 2
+            proposed_sl = current_price + trailing_buffer
+            new_sl = min(current_sl, proposed_sl) if current_sl else proposed_sl
+        elif current_price <= (entry_price - breakeven_dist) and phase < 1:
+            new_phase = 1
+            new_sl = min(current_sl, entry_price * (1 - SCALP_BREAKEVEN_OFFSET_PCT / 100)) if current_sl else entry_price * (1 - SCALP_BREAKEVEN_OFFSET_PCT / 100)
+
+    moved = (side == "LONG" and new_sl > current_sl) or (side == "SHORT" and new_sl < current_sl and (current_sl == 0 or new_sl != current_sl))
+    step_satisfied = new_phase == 2 and (phase != 2 or abs(new_sl - current_sl) >= step_size)
+    just_entered_breakeven = new_phase == 1 and phase < 1
+
+    if new_phase != phase and (just_entered_breakeven or (new_phase == 2 and moved)):
+        side_cfg = main_mod.get_side_config(side)
+        amount = trade.get('amount')
+        new_id = bingx_client.update_sl_order(trade['symbol'], side_cfg, trade.get('sl_order_id'), new_sl, amount)
+        if new_id:
+            with main_mod.state_lock:
+                trade['sl'] = new_sl
+                trade['sl_order_id'] = new_id
+                trade['profit_phase'] = new_phase
+
+            side_icon = "🟩" if side == "LONG" else "🟥"
+            if new_phase == 1:
+                msg = (f"🛡️ [AUTO-BREAKEVEN ACTIVATED]\n"
+                       f"Symbol: {trade['symbol']} ({side})\n"
+                       f"Entry: {entry_price}\n"
+                       f"New SL: {new_sl} (Locked \u00b1{SCALP_BREAKEVEN_OFFSET_PCT}% Cover Fees)\n"
+                       f"Current Price: {current_price}\n"
+                       f"Status: Risk-Free Trade")
+            else:
+                msg = (f"🚀 [TRAILING STOP ACTIVATED — PHASE 2]\n\n"
+                       f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
+                       f"Mark Price: {current_price}\n"
+                       f"New SL: {new_sl} (Trailing {SCALP_TRAILING_BUFFER_ATR}x ATR behind)\n"
+                       f"🟢 Locking Higher Profit")
+            main_mod.send_telegram(msg)
+            print(f"[TRAILING] {trade['symbol']} {side} SL updated to {new_sl} (Phase {new_phase})", flush=True)
+    elif new_phase == 2 and phase == 2 and step_satisfied and moved:
+        side_cfg = main_mod.get_side_config(side)
+        amount = trade.get('amount')
+        new_id = bingx_client.update_sl_order(trade['symbol'], side_cfg, trade.get('sl_order_id'), new_sl, amount)
+        if new_id:
+            with main_mod.state_lock:
+                trade['sl'] = new_sl
+                trade['sl_order_id'] = new_id
+            side_icon = "🟩" if side == "LONG" else "🟥"
+            msg = (f"🚀 TRAILING STOP — PROFIT LOCK RAISED\n\n"
+                   f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
+                   f"Mark Price: {current_price}\n"
+                   f"New SL: {new_sl} (Trailed SL)\n"
+                   f"🟢 Locking Higher Profit")
+            main_mod.send_telegram(msg)
+            print(f"[TRAILING] {trade['symbol']} {side} SL trailed to {new_sl} (Phase 2)", flush=True)
+
+
+def _process_scalping_time_stop(trade, current_price):
+    """Time-based exit for SCALPING (Aug 20 upgrade).
+
+    - MAX_HOLDING_HOURS: hard cap, force-close regardless of PnL once exceeded.
+    - INACTIVITY_TIMEOUT_MIN: if held longer than this and PnL%% has been stuck
+      within +-INACTIVITY_PNL_BAND_PCT, force-close to free up margin.
+
+    Returns True if the trade was closed (caller should stop further processing
+    of this trade this cycle), False otherwise.
+    """
+    from config import STRATEGY_CONFIG
+    import bingx_client
+    import time as time_mod
+
+    scalp_cfg = STRATEGY_CONFIG.get('SCALPING', {})
+    max_holding_hours = scalp_cfg.get('MAX_HOLDING_HOURS')
+    inactivity_timeout_min = scalp_cfg.get('INACTIVITY_TIMEOUT_MIN')
+    pnl_band_pct = scalp_cfg.get('INACTIVITY_PNL_BAND_PCT', 0.3)
+
+    if not max_holding_hours and not inactivity_timeout_min:
+        return False
+
+    entry_price = trade.get('entry', 0)
+    side = trade.get('side', 'LONG')
+    opened_at = trade.get('opened_at') or trade.get('created_at')
+    if not opened_at or entry_price <= 0 or current_price <= 0:
+        return False
+
+    now = time_mod.time()
+    holding_hours = (now - opened_at) / 3600.0
+    holding_minutes = holding_hours * 60.0
+
+    if side == "LONG":
+        pnl_pct = (current_price - entry_price) / entry_price * 100
+    else:
+        pnl_pct = (entry_price - current_price) / entry_price * 100
+
+    reason = None
+    if max_holding_hours and holding_hours >= max_holding_hours:
+        reason = "Max Holding Time Exceeded"
+    elif inactivity_timeout_min and holding_minutes >= inactivity_timeout_min and abs(pnl_pct) <= pnl_band_pct:
+        reason = "Inactivity Timeout (Release Margin)"
+
+    if not reason:
+        return False
+
+    try:
+        amount = trade.get('amount')
+        bingx_client.close_position_market(trade['symbol'], side, amount)
+    except Exception as e:
+        print(f"[TIME-STOP] Failed to close {trade['symbol']}: {e}", flush=True)
+        return False
+
+    margin = trade.get('margin') or trade.get('margin_used', 0)
+    pnl_usdt = margin * (pnl_pct / 100) * STRATEGY_CONFIG['SCALPING'].get('LEVERAGE', 1) if margin else None
+    pnl_line = f"{round(pnl_usdt, 3)} USDT ({round(pnl_pct, 3)}%)" if pnl_usdt is not None else f"{round(pnl_pct, 3)}%"
+
+    msg = (f"⏱️ [TIME-STOP EXIT]\n"
+           f"Symbol: {trade['symbol']} ({side})\n"
+           f"Holding Time: {round(holding_hours, 2)}h\n"
+           f"PnL: {pnl_line}\n"
+           f"Reason: {reason}")
+    main_mod.send_telegram(msg)
+    print(f"[TIME-STOP] {trade['symbol']} closed — {reason} (held {round(holding_hours, 2)}h, PnL {round(pnl_pct, 3)}%)", flush=True)
+
+    # FIX (Aug 20): don't set trade['closed'] = True here — that flag gates the
+    # WIN/LOSS resolution, Google Sheets logging, cooldown tracking, and
+    # active_trades.pop() in the POSITION CLOSED block of check_trades()
+    # (`if contracts <= 0 and not trade.get('closed')`). Setting it early made
+    # time-stopped trades a zombie: never logged, never popped, cooldown never
+    # started. Just flag it here; check_trades() will see contracts <= 0 on its
+    # next pass (now that the market close order has gone through) and run the
+    # normal close-out path itself.
+    with main_mod.state_lock:
+        trade['time_stop_triggered'] = True
+        trade['close_reason'] = reason
+
+    return True
+
+
 def _process_trailing_stop(trade, current_price):
     from config import TRAILING_ACTIVATION_ATR, TRAILING_BUFFER_ATR, TRAILING_STEP_ATR
     import bingx_client
@@ -279,8 +459,13 @@ def _process_trailing_stop(trade, current_price):
     if regime not in ["TRENDING", "TREND", "SCALPING"]:
         return
 
-    # Use tighter config for SCALPING
-    is_scalping = regime == "SCALPING"
+    # SCALPING now uses its own dedicated 2-phase breakeven/trailing handler (Aug 20),
+    # plus a time-stop check for stale/inactive positions.
+    if regime == "SCALPING":
+        if _process_scalping_time_stop(trade, current_price):
+            return
+        _process_scalping_trailing_stop(trade, current_price)
+        return
 
     side = trade.get('side', 'LONG')
     entry_price = trade.get('entry', 0)
@@ -292,15 +477,9 @@ def _process_trailing_stop(trade, current_price):
     if current_atr <= 0 or current_price <= 0 or entry_price <= 0:
         return
 
-    if is_scalping:
-        from config import SCALP_TRAILING_ACTIVATION_ATR, SCALP_TRAILING_BUFFER_ATR, SCALP_TRAILING_STEP_ATR
-        activation_dist = current_atr * SCALP_TRAILING_ACTIVATION_ATR
-        trailing_buffer = current_atr * SCALP_TRAILING_BUFFER_ATR
-        step_size = current_atr * SCALP_TRAILING_STEP_ATR
-    else:
-        activation_dist = current_atr * TRAILING_ACTIVATION_ATR
-        trailing_buffer = current_atr * TRAILING_BUFFER_ATR
-        step_size = current_atr * TRAILING_STEP_ATR
+    activation_dist = current_atr * TRAILING_ACTIVATION_ATR
+    trailing_buffer = current_atr * TRAILING_BUFFER_ATR
+    step_size = current_atr * TRAILING_STEP_ATR
     
     new_sl = current_sl
     
@@ -640,9 +819,13 @@ def check_trades():
 
                         strategy = trade.get('strategy', '')
                         if strategy == 'SCALPING':
-                            from config import SCALPING_PENDING_EXPIRY
-                            expiry_seconds = SCALPING_PENDING_EXPIRY  # 300s (5 min)
-                            expiry_label = f"{SCALPING_PENDING_EXPIRY // 60} minutes (SCALPING)"
+                            # FIX (Aug 20): SCALPING_PENDING_EXPIRY doesn't exist as a top-level
+                            # config constant — value lives in STRATEGY_CONFIG['SCALPING']['PENDING_EXPIRY'].
+                            # The old `from config import SCALPING_PENDING_EXPIRY` raised ImportError
+                            # and crashed the bot any time a SCALPING order was still PENDING.
+                            from config import STRATEGY_CONFIG
+                            expiry_seconds = STRATEGY_CONFIG.get('SCALPING', {}).get('PENDING_EXPIRY', 300)
+                            expiry_label = f"{expiry_seconds // 60} minutes (SCALPING)"
                         elif strategy == 'MOMENTUM':
                             expiry_seconds = 300  # 5 minutes
                             expiry_label = "5 minutes (MOMENTUM)"
@@ -1181,6 +1364,11 @@ def restore_open_positions():
             tp_price = protection['tp_price']
             
             trailing_phase = 1
+            # profit_phase mirrors the new 2-Phase SCALPING trailing system:
+            # 0 = neither breakeven nor trailing triggered yet, 2 = TP already
+            # cancelled by a prior Phase-2 hand-off (Infinity Run), so treat as
+            # already trailing rather than re-detecting breakeven from scratch.
+            profit_phase = 0
             
             # Log when protection orders are not found
             if sl_price is None and tp_price is None:
@@ -1190,6 +1378,16 @@ def restore_open_positions():
             elif tp_price is None:
                 print(f"[RESTORE] TP order not found for {symbol} (SL found: {sl_price}). Assuming Phase 2 Infinity Run.", flush=True)
                 trailing_phase = 2
+                profit_phase = 2
+
+            # FIX (Aug 20): restored trades were missing 'strategy', 'atr',
+            # 'profit_phase', and 'opened_at'/'created_at' — without these,
+            # _process_trailing_stop() silently skips restored positions entirely
+            # (regime resolves to None -> early return), and
+            # _process_scalping_time_stop() returns False immediately with no
+            # opened_at to measure holding time from. This bot runs
+            # CONTROL_MODE = "FORCE_SCALPING" only, so strategy is always SCALPING.
+            restored_atr = atr if 'atr' in locals() else entry_price * 0.015
 
             # Create trade object with all required fields for consistency
             # This ensures restored trades have the same structure as non-restored trades
@@ -1204,6 +1402,11 @@ def restore_open_positions():
                 "sl_order_id": protection['sl_order_id'],
                 "tp2_order_id": protection['tp_order_id'],
                 "trailing_phase": trailing_phase,
+                "profit_phase": profit_phase,
+                "strategy": "SCALPING",
+                "atr": restored_atr,
+                "opened_at": time.time(),
+                "created_at": time.time(),
                 # Set default grade/score for consistency with non-restored trades
                 # These may be refined later if metadata is available
                 "grade": "C",
@@ -1286,9 +1489,9 @@ def reconcile_closed_trades_on_restart(pre_restart_trades):
                 )
 
                 main_mod.send_telegram(
-                    f"🔄 RECONCILE\\n\\n"
-                    f"{symbol}\\n"
-                    f"ปิดระหว่าง downtime\\n"
+                    f"🔄 RECONCILE\n\n"
+                    f"{symbol}\n"
+                    f"ปิดระหว่าง downtime\n"
                     f"Result: {result}"
                 )
 

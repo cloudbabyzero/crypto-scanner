@@ -97,20 +97,23 @@ TRAILING_ACTIVATION_ATR = 1.5
 TRAILING_BUFFER_ATR = 1.0
 TRAILING_STEP_ATR = 0.5
 
-# SCALPING trailing (tighter)
-# Trailing params tuned from actual trade log analysis (Aug 12-13):
-# - Avg SL hit distance = 1.62x ATR, min = 0.79x ATR
-# - Buffer must be >= 0.6 ATR to survive ETH/SOL micro-wicks
-# - Activation 0.8 = starts trail early enough without being too aggressive
-# - Step 0.2 = frequent updates, tight profit locking
-# FIX: activation raised 0.8→1.5, buffer raised 0.6→0.8
-# activation - buffer must exceed fee threshold (0.10% on 37.5 USDT notional)
-# Old: 0.8-0.6=0.028% min profit → lost to fee on early trail exits
-# New: 1.5-0.8=0.105% min profit → covers fee even at earliest trail exit
-# At TP trigger (1.5 RR): profit locked = ~0.203% = ~0.97x RR after fee
-SCALP_TRAILING_ACTIVATION_ATR = 1.5  # 0.8 ATR from entry before trail starts
-SCALP_TRAILING_BUFFER_ATR = 1.0   # SL trails 1.0 ATR behind price
-SCALP_TRAILING_STEP_ATR = 0.2     # updates every 0.2 ATR move
+# SCALPING trailing — used by the Phase 2 (post-breakeven) trailing stage of the
+# 2-Phase profit management system below. This replaced the old single-phase
+# 1.5/1.0/0.2 tuning (Aug 12-13) — that logic path no longer runs, so the values
+# were changed in place rather than kept as a second unused set.
+SCALP_TRAILING_ACTIVATION_ATR = 2.0
+SCALP_TRAILING_BUFFER_ATR = 1.2  # trail sits 1.2x ATR behind price (locks in >= 0.8x ATR profit)
+SCALP_TRAILING_STEP_ATR = 0.3    # SL steps forward every 0.3x ATR of additional favorable movement
+
+# =========================
+# 2-PHASE PROFIT MANAGEMENT (SCALPING, Aug 20 upgrade)
+# =========================
+# Phase 1 — Auto-Breakeven: as soon as price reaches this many ATR in profit,
+# pull SL to entry +/- a small offset so the trade is risk-free.
+SCALP_BREAKEVEN_ACTIVATION_ATR = 1.2
+SCALP_BREAKEVEN_OFFSET_PCT = 0.15   # locked at entry +/- 0.15% to cover round-trip taker fees
+
+# Phase 2 uses SCALP_TRAILING_ACTIVATION_ATR / BUFFER / STEP above.
 
 # =========================
 # STRATEGY CONFIGURATION (ISOLATED)
@@ -162,8 +165,13 @@ STRATEGY_CONFIG = {
         }
     },
     "SCALPING": {
-        "BASE_TF": "5m",
-        "MACRO_TF": "15m",
+        # FIX (Aug 20): BASE_TF 5m → 15m — 5m bottom wicks routinely run -0.15% to -0.25%,
+        # which swallowed the old 1.1x ATR SL (-0.13% to -0.22%) mid-wick. 15m candles have
+        # proportionally smaller noise-to-range ratio, so a same-multiple ATR SL survives normal chop.
+        "BASE_TF": "15m",
+        # FIX (Aug 20): MACRO_TF 15m → 1h — confirmation timeframe raised to match new base TF,
+        # keeps macro trend read one full step above entry TF.
+        "MACRO_TF": "1h",
         "SCAN_INTERVAL": 60,
         # FIX: COOLDOWN raised 300→900s — NEAR entered 9x in 48min, 900s=15min gap between re-entries
         "COOLDOWN": 900,
@@ -175,41 +183,40 @@ STRATEGY_CONFIG = {
         "PENDING_EXPIRY": 300,
         "ENTRY_TYPE": "MARKET",
         "LEVERAGE": 25,
-        "MARGIN_PER_TRADE": 1.5,
-        # FIX: SL_ATR_MULT raised 1.2 → 1.5 — SL at 1.2 ATR = ~0.13% which is within normal noise,
-        # most losses were SL hit by only 0.09-0.20% move, wider SL needed to survive micro-chop
-        # FIX 2 (Aug 19): tightened 1.5 → 1.1 — losses were outsizing wins (avg loss > avg win),
-        # tighter SL cuts loss size; paired with BTC 5m micro-trigger + tighter FOMO filter
-        # to compensate for higher SL-hit frequency by avoiding weak/late entries.
-        "SL_ATR_MULT": 1.1,
+        "MARGIN_PER_TRADE": 1.0,
+        # FIX (Aug 20): SL_ATR_MULT 1.1 → 1.5 — restore wider SL now that it's measured against
+        # 15m ATR (proportionally larger candles), so 1.5x ATR gives room to survive normal wicks
+        # without ballooning the actual % risk versus the old 5m 1.1x setting.
+        "SL_ATR_MULT": 1.5,
         # --- Dynamic / Adaptive Stop Loss (per-asset volatility profile) ---
         # If ATR% at signal time >= threshold -> High Noise / Shield Mode (wider SL mult)
         # If ATR% < threshold -> Normal Mode (base SL mult above)
         "DYNAMIC_SL_ENABLED": True,
-        "DYNAMIC_SL_ATR_THRESHOLD": 0.22,   # ATR% breakpoint
-        "DYNAMIC_SL_MULT_NORMAL": 1.1,      # used when ATR% < threshold
-        "DYNAMIC_SL_MULT_HIGH_NOISE": 1.3,  # used when ATR% >= threshold
-        # FIX: TP_RR raised 1.5→2.0 — actual RR was 0.61x (WIN avg +0.087 vs LOSS avg -0.143)
-        # At 2.0 RR: net WIN ≈ +0.120 USDT vs net LOSS ≈ -0.117 USDT → break-even at 49.4% win rate
+        "DYNAMIC_SL_ATR_THRESHOLD": 0.50,   # ATR% breakpoint, recalibrated for 15m candles
+        "DYNAMIC_SL_MULT_NORMAL": 1.5,      # used when ATR% < threshold
+        "DYNAMIC_SL_MULT_HIGH_NOISE": 1.8,  # used when ATR% >= threshold
+        # TP_RR kept at 2.0 — net WIN should stay meaningfully larger than net LOSS after fees
         "TP_RR": 2.0,
         # FIX: MAX_TRADES 3→2 — 3 concurrent = 3 simultaneous losses on reversal
         "MAX_TRADES": 2,  # FIX: 3→2, limit concurrent losses on reversal
         # Grade is relative to MIN_SCORE:
-        #   A+ = score >= MIN_SCORE+10  (85+)
-        #   A  = score >= MIN_SCORE     (75+)  ← target
-        #   B  = score >= MIN_SCORE-10  (65+)
-        # 75 is reachable even with BTC neutral -15 penalty when EMA+15m+candle+RSI all align
+        #   A+ = score >= MIN_SCORE+10  (90+)
+        #   A  = score >= MIN_SCORE     (80+)  ← target
+        #   B  = score >= MIN_SCORE-10  (70+)
         "MIN_SCORE": 80,
         "MIN_GRADE": "A",
+        # --- Max holding time & inactivity exit (new: Aug 20) ---
+        "MAX_HOLDING_HOURS": 8,          # hard cap — force-close any position held longer than this
+        "INACTIVITY_TIMEOUT_MIN": 360,   # after 6h, if PnL is stuck within +-0.3%, force-close to free margin
+        "INACTIVITY_PNL_BAND_PCT": 0.3,  # PnL%% band considered "stuck" for the inactivity exit
         "FILTERS": {
-            # FIX: MIN_ADX raised to 18 — NEAR entered with ADX 11-14 (no momentum = noise)
-            "MIN_ADX": 18,
+            "MIN_ADX": 20,
             # FIX: MAX_ADX widened 35 → 45 — allow stronger momentum moves through
-            "MAX_ADX": 45,
-            # --- ATR Volatility Guard Settings ---
-            "MIN_ATR_PCT": 0.15,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม
-            "MAX_ATR_PCT": 0.45,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
-            "MIN_CEILING_ATR_PCT": 0.30,  # [Minimum Ceiling เพดานขั้นต่ำ] ยกเพดานให้เหรียญใหญ่ (BTC/ETH) เพื่อให้มีช่วงว่างวิ่งเทรดได้
+            "MAX_ADX": 50,
+            # --- ATR Volatility Guard Settings, recalibrated for 15m candles ---
+            "MIN_ATR_PCT": 0.35,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม
+            "MAX_ATR_PCT": 1.50,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
+            "MIN_CEILING_ATR_PCT": 0.60,  # [Minimum Ceiling เพดานขั้นต่ำ] ยกเพดานให้เหรียญใหญ่ (BTC/ETH) เพื่อให้มีช่วงว่างวิ่งเทรดได้
             "RSI_SAFE_LONG_MAX": 68,
             "RSI_SAFE_SHORT_MIN": 32
         }

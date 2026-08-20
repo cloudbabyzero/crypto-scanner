@@ -1425,15 +1425,18 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
 # =========================
 
 def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, df_1h=None, local_regime="", btc_regime=""):
-    """Scalping regime analysis — fast entry via market order on 5m timeframe.
+    """Scalping regime analysis — fast entry via market order on 15m timeframe.
 
-    Key differences from other strategies:
-    - Uses 5m as primary TF (15m for confirmation only)
+    Key differences from other strategies (updated Aug 20):
+    - Uses 15m as primary TF (1h for macro confirmation) — moved up from 5m/15m
+      to avoid 5m candle wick noise stopping out otherwise-correct trades
     - Market order entry (no pullback wait)
-    - Tight SL: ATR(5m) * 0.8
-    - TP: risk * 1.5 (modest RR, high win-rate target)
-    - Cooldown: 300s (vs 1800s for Trend)
-    - Max 1 position
+    - SL: ATR(15m) * 1.5 (dynamic 1.5/1.8 depending on noise regime)
+    - TP: risk * 2.0 RR
+    - 2-phase profit management: auto-breakeven at +1.2x ATR, trailing at +2.0x ATR
+    - Cooldown: 900s, plus separate WIN/LOSS post-exit cooldowns
+    - Max holding time / inactivity time-stop to free up margin on stale trades
+    - Max 2 concurrent positions
     """
 
     global pause_trading
@@ -1576,8 +1579,9 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
 
         candle_size = abs(m3['close'] - m3['open'])
-        # FIX (Aug 19): tightened 2.0x → 1.4x ATR — avoid buying into exhausted/blown-out candles
-        if candle_size > m3['atr'] * 1.4:
+        # FIX (Aug 20): 1.4x → 1.5x ATR — recalibrated FOMO ceiling for 15m candles
+        # (previously tuned for 5m candle size, which run smaller in ATR-relative terms)
+        if candle_size > m3['atr'] * 1.5:
             set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             google_sheet.log_debug(symbol, "Candle Too Big (SCALPING)", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
@@ -1595,6 +1599,17 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         
         is_green = m3['close'] > m3['open']
         is_red = m3['close'] < m3['open']
+
+        # =========================
+        # ANTI-PEAK & ANTI-BOTTOM FILTER (Aug 20)
+        # ============================================================
+        # Blocks entries that are already too far stretched from EMA7 —
+        # i.e. don't buy the top of a spike (LONG) or short the bottom of a
+        # dump (SHORT). Distance measured as % of EMA7.
+        # ============================================================
+        ema7_dist_pct = (m3['close'] - m3['ema7']) / m3['ema7'] * 100
+        anti_peak_blocked = ema7_dist_pct > 0.25       # too far above EMA7 → don't chase LONG
+        anti_bottom_blocked = ema7_dist_pct < -0.25    # too far below EMA7 → don't chase SHORT
 
         # =========================
         # NEW SCORING SYSTEM (max 100 pts)
@@ -1712,20 +1727,26 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 google_sheet.log_debug(symbol, f"BTC {btc_trend} - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
 
-            # FIX (Aug 19): BTC 5m Micro Trigger — don't catch a falling knife on LONG.
-            # Require BTC's own last closed 5m candle to be green AND above its EMA7,
-            # i.e. BTC must not be actively pulling back on the micro timeframe.
-            btc_df_5m = get_dataframe('BTC/USDT:USDT', '5m')
-            btc_m5 = btc_df_5m.iloc[-2]
-            btc_5m_green = btc_m5['close'] > btc_m5['open']
-            btc_5m_above_ema7 = btc_m5['close'] > btc_m5['ema7']
-            if not (btc_5m_green and btc_5m_above_ema7):
-                set_scan_result(symbol, {"status": "BTC 5m Pulling Back", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, "BTC 5m Micro Trigger failed - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+            # Anti-Peak Filter — don't buy a candle that's already stretched too far above EMA7
+            if anti_peak_blocked:
+                set_scan_result(symbol, {"status": "Anti-Peak (Stretched Above EMA7)", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"Anti-Peak filter - LONG blocked (EMA7 dist {round(ema7_dist_pct, 3)}%)", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # FIX (Aug 20): BTC Micro Trigger — now on macro_tf (15m) to match the new base TF,
+            # applied symmetrically on both LONG and SHORT. Require BTC's own last closed
+            # macro-TF candle to be green AND above its EMA7 (i.e. not actively pulling back).
+            btc_df_macro = get_dataframe('BTC/USDT:USDT', macro_tf)
+            btc_macro = btc_df_macro.iloc[-2]
+            btc_macro_green = btc_macro['close'] > btc_macro['open']
+            btc_macro_above_ema7 = btc_macro['close'] > btc_macro['ema7']
+            if not (btc_macro_green and btc_macro_above_ema7):
+                set_scan_result(symbol, {"status": f"BTC {macro_tf} Pulling Back", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"BTC {macro_tf} Micro Trigger failed - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
             side  = "LONG"
-            entry = round(m3['close'], 4)  # Market order on 5m close
+            entry = round(m3['close'], 4)  # Market order on base_tf close
         elif short_score > long_score and short_score >= STRATEGY_CONFIG['SCALPING']['MIN_SCORE']:
             if rsi_val < STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']:
                 set_scan_result(symbol, {"status": "RSI Too Low", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
@@ -1736,8 +1757,27 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 set_scan_result(symbol, {"status": f"BTC {btc_trend.title()}", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, f"BTC {btc_trend} - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
+
+            # Anti-Bottom Filter — don't short a candle that's already stretched too far below EMA7
+            if anti_bottom_blocked:
+                set_scan_result(symbol, {"status": "Anti-Bottom (Stretched Below EMA7)", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"Anti-Bottom filter - SHORT blocked (EMA7 dist {round(ema7_dist_pct, 3)}%)", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # FIX (Aug 20): BTC Micro Trigger — symmetric SHORT-side check on macro_tf (15m).
+            # Require BTC's own last closed macro-TF candle to be red AND below its EMA7,
+            # i.e. BTC must not be actively bouncing on the micro timeframe.
+            btc_df_macro = get_dataframe('BTC/USDT:USDT', macro_tf)
+            btc_macro = btc_df_macro.iloc[-2]
+            btc_macro_red = btc_macro['close'] < btc_macro['open']
+            btc_macro_below_ema7 = btc_macro['close'] < btc_macro['ema7']
+            if not (btc_macro_red and btc_macro_below_ema7):
+                set_scan_result(symbol, {"status": f"BTC {macro_tf} Bouncing", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"BTC {macro_tf} Micro Trigger failed - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
             side  = "SHORT"
-            entry = round(m3['close'], 4)  # Market order on 5m close
+            entry = round(m3['close'], 4)  # Market order on base_tf close
         else:
             set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             return {"symbol": symbol, "result": "skipped"}
