@@ -1733,16 +1733,18 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 google_sheet.log_debug(symbol, f"Anti-Peak filter - LONG blocked (EMA7 dist {round(ema7_dist_pct, 3)}%)", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
-            # FIX (Aug 20): BTC Micro Trigger — now on macro_tf (15m) to match the new base TF,
-            # applied symmetrically on both LONG and SHORT. Require BTC's own last closed
-            # macro-TF candle to be green AND above its EMA7 (i.e. not actively pulling back).
-            btc_df_macro = get_dataframe('BTC/USDT:USDT', macro_tf)
-            btc_macro = btc_df_macro.iloc[-2]
-            btc_macro_green = btc_macro['close'] > btc_macro['open']
-            btc_macro_above_ema7 = btc_macro['close'] > btc_macro['ema7']
-            if not (btc_macro_green and btc_macro_above_ema7):
-                set_scan_result(symbol, {"status": f"BTC {macro_tf} Pulling Back", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, f"BTC {macro_tf} Micro Trigger failed - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+            # FIX (Aug 20): BTC Micro Trigger — switched from macro_tf (1h) to base_tf (15m)
+            # so BTC's momentum check reacts on the same timeframe as the actual entry signal,
+            # instead of lagging up to an hour behind. Applied symmetrically on both LONG and SHORT.
+            # Require BTC's own last closed base-TF candle to be green AND above its EMA7
+            # (i.e. not actively pulling back).
+            btc_df_base = get_dataframe('BTC/USDT:USDT', base_tf)
+            btc_base = btc_df_base.iloc[-2]
+            btc_base_green = btc_base['close'] > btc_base['open']
+            btc_base_above_ema7 = btc_base['close'] > btc_base['ema7']
+            if not (btc_base_green and btc_base_above_ema7):
+                set_scan_result(symbol, {"status": f"BTC {base_tf} Pulling Back", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"BTC {base_tf} Micro Trigger failed - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
             side  = "LONG"
@@ -1764,16 +1766,16 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 google_sheet.log_debug(symbol, f"Anti-Bottom filter - SHORT blocked (EMA7 dist {round(ema7_dist_pct, 3)}%)", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
-            # FIX (Aug 20): BTC Micro Trigger — symmetric SHORT-side check on macro_tf (15m).
-            # Require BTC's own last closed macro-TF candle to be red AND below its EMA7,
-            # i.e. BTC must not be actively bouncing on the micro timeframe.
-            btc_df_macro = get_dataframe('BTC/USDT:USDT', macro_tf)
-            btc_macro = btc_df_macro.iloc[-2]
-            btc_macro_red = btc_macro['close'] < btc_macro['open']
-            btc_macro_below_ema7 = btc_macro['close'] < btc_macro['ema7']
-            if not (btc_macro_red and btc_macro_below_ema7):
-                set_scan_result(symbol, {"status": f"BTC {macro_tf} Bouncing", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, f"BTC {macro_tf} Micro Trigger failed - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+            # FIX (Aug 20): BTC Micro Trigger — switched from macro_tf (1h) to base_tf (15m),
+            # symmetric with the LONG side above. Require BTC's own last closed base-TF
+            # candle to be red AND below its EMA7, i.e. BTC must not be actively bouncing.
+            btc_df_base = get_dataframe('BTC/USDT:USDT', base_tf)
+            btc_base = btc_df_base.iloc[-2]
+            btc_base_red = btc_base['close'] < btc_base['open']
+            btc_base_below_ema7 = btc_base['close'] < btc_base['ema7']
+            if not (btc_base_red and btc_base_below_ema7):
+                set_scan_result(symbol, {"status": f"BTC {base_tf} Bouncing", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"BTC {base_tf} Micro Trigger failed - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
             side  = "SHORT"
@@ -4172,7 +4174,8 @@ def heartbeat_thread():
             # =========================
             # COMPILE VOLATILITY STATUS
             # =========================
-            vol_report = "\n🌊 VOLATILITY STATUS (5m Scalping)\n"
+            hb_base_tf = STRATEGY_CONFIG['SCALPING'].get('BASE_TF', '15m')
+            vol_report = f"\n🌊 VOLATILITY STATUS ({hb_base_tf} Scalping)\n"
             target_symbols = SCALPING_SYMBOLS if MODE in ["FORCE_SCALPING", "SCALPING"] else symbols
             scalp_filters_hb = STRATEGY_CONFIG['SCALPING']['FILTERS']
             hb_fee_floor = scalp_filters_hb.get('MIN_ATR_PCT', 0.15)
@@ -4180,7 +4183,7 @@ def heartbeat_thread():
             hb_min_ceiling = scalp_filters_hb.get('MIN_CEILING_ATR_PCT', 0.30)
             for sym in target_symbols:
                 try:
-                    df = get_dataframe(sym, '5m')
+                    df = get_dataframe(sym, hb_base_tf)
                     w20 = df.iloc[-21:-1]
                     med_20 = (w20['atr'] / w20['close'] * 100).median()
                     target_min_atr = round(max(hb_fee_floor, med_20 * 0.85), 2)  # floor matches analyze_scalping
@@ -4385,7 +4388,8 @@ def main():
     # =========================
     # COMPILE STARTUP VOLATILITY STATUS
     # =========================
-    vol_report = "\n\n🌊 VOLATILITY STATUS (5m Scalping)\n"
+    su_base_tf = STRATEGY_CONFIG['SCALPING'].get('BASE_TF', '15m')
+    vol_report = f"\n\n🌊 VOLATILITY STATUS ({su_base_tf} Scalping)\n"
     target_symbols = SCALPING_SYMBOLS if MODE in ["FORCE_SCALPING", "SCALPING"] else symbols
     scalp_filters_su = STRATEGY_CONFIG['SCALPING']['FILTERS']
     su_fee_floor = scalp_filters_su.get('MIN_ATR_PCT', 0.15)
@@ -4393,7 +4397,7 @@ def main():
     su_min_ceiling = scalp_filters_su.get('MIN_CEILING_ATR_PCT', 0.30)
     for sym in target_symbols:
         try:
-            df = get_dataframe(sym, '5m')
+            df = get_dataframe(sym, su_base_tf)
             w20 = df.iloc[-21:-1]
             med_20 = (w20['atr'] / w20['close'] * 100).median()
             target_min_atr = round(max(su_fee_floor, med_20 * 0.85), 2)  # floor matches analyze_scalping
