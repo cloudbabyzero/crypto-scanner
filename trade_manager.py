@@ -269,20 +269,69 @@ def _determine_trade_result(trade, symbol):
 # TRAILING STOP
 # =========================
 
+def calculate_tiered_trailing_sl(entry_price, initial_sl, mark_price, atr, side, current_sl):
+    """Tiered dynamic trailing SL for SCALPING Phase 2 (Aug 20 refactor).
+
+    Replaces the old fixed-multiplier (1.2x ATR) step trail: the trailing
+    buffer now tightens as the trade's current RR (relative to the ORIGINAL
+    stop distance, not the moved SL) climbs through configured tiers, so
+    winners get locked in tighter the further they run.
+
+    Returns (new_sl, multiplier, current_rr, tier_name). SL only ever moves
+    in the favorable direction (never loosens) — enforced by max()/min()
+    against current_sl.
+    """
+    from config import TRAILING_TIER_1_ATR_MULT, TRAILING_TIER_2_ATR_MULT, TRAILING_TIER_3_ATR_MULT
+
+    # 1. Initial Risk (1.0 R) — distance from entry to the ORIGINAL stop
+    initial_risk = abs(entry_price - initial_sl)
+    if initial_risk <= 0:
+        return current_sl, None, None, None
+
+    # 2. Current RR
+    current_gain = (mark_price - entry_price) if side.upper() == "LONG" else (entry_price - mark_price)
+    current_rr = current_gain / initial_risk
+
+    # 3. Tier selection
+    if current_rr >= 3.0:
+        multiplier = TRAILING_TIER_3_ATR_MULT
+        tier_name = "Tier 3 (Locked Tight)"
+    elif current_rr >= 2.0:
+        multiplier = TRAILING_TIER_2_ATR_MULT
+        tier_name = "Tier 2 (Tight)"
+    else:
+        multiplier = TRAILING_TIER_1_ATR_MULT
+        tier_name = "Tier 1 (Normal)"
+
+    # 4. New SL — must only move forward, never back
+    if side.upper() == "LONG":
+        target_sl = mark_price - (atr * multiplier)
+        new_sl = max(current_sl, target_sl)
+    else:
+        target_sl = mark_price + (atr * multiplier)
+        new_sl = min(current_sl, target_sl) if current_sl else target_sl
+
+    return new_sl, multiplier, current_rr, tier_name
+
+
 def _process_scalping_trailing_stop(trade, current_price):
-    """2-Phase profit management for SCALPING (Aug 20 upgrade).
+    """2-Phase profit management for SCALPING (Aug 20 upgrade, Aug 20 refactor).
 
     Phase 1 (Auto-Breakeven): once price reaches +SCALP_BREAKEVEN_ACTIVATION_ATR
     from entry, SL is pulled to entry +/- SCALP_BREAKEVEN_OFFSET_PCT (locks in a
     risk-free trade that also covers round-trip taker fees).
 
-    Phase 2 (Trailing): once price reaches +SCALP_TRAILING_ACTIVATION_ATR from
-    entry, SL trails price at SCALP_TRAILING_BUFFER_ATR behind, stepping forward
-    every SCALP_TRAILING_STEP_ATR of additional favorable movement.
+    Phase 2 (Trailing): once price first reaches +SCALP_TRAILING_ACTIVATION_ATR
+    from entry, SL hands off to SCALP_TRAILING_BUFFER_ATR behind price (Infinity
+    Run — the fixed TP is cancelled at this point, see below). From then on,
+    each further SL update uses calculate_tiered_trailing_sl() instead of a
+    fixed multiplier — the trailing buffer tightens as current RR climbs
+    through TRAILING_TIER_1/2/3_ATR_MULT (config.py), locking in more profit
+    the further the trade runs.
     """
     from config import (
         SCALP_BREAKEVEN_ACTIVATION_ATR, SCALP_BREAKEVEN_OFFSET_PCT,
-        SCALP_TRAILING_ACTIVATION_ATR, SCALP_TRAILING_BUFFER_ATR, SCALP_TRAILING_STEP_ATR,
+        SCALP_TRAILING_ACTIVATION_ATR, SCALP_TRAILING_BUFFER_ATR,
     )
     import bingx_client
 
@@ -295,10 +344,17 @@ def _process_scalping_trailing_stop(trade, current_price):
     if current_atr <= 0 or current_price <= 0 or entry_price <= 0:
         return
 
+    # Lazily capture the ORIGINAL stop distance the first time this trade is
+    # seen, since 'sl' itself gets overwritten as breakeven/trailing move it.
+    # Needed by calculate_tiered_trailing_sl() to measure current RR correctly.
+    if not trade.get('initial_sl'):
+        with main_mod.state_lock:
+            trade['initial_sl'] = current_sl
+    initial_sl = trade.get('initial_sl') or current_sl
+
     breakeven_dist = current_atr * SCALP_BREAKEVEN_ACTIVATION_ATR
     trailing_dist = current_atr * SCALP_TRAILING_ACTIVATION_ATR
     trailing_buffer = current_atr * SCALP_TRAILING_BUFFER_ATR
-    step_size = current_atr * SCALP_TRAILING_STEP_ATR
 
     new_sl = current_sl
     new_phase = phase
@@ -322,7 +378,6 @@ def _process_scalping_trailing_stop(trade, current_price):
             new_sl = min(current_sl, entry_price * (1 - SCALP_BREAKEVEN_OFFSET_PCT / 100)) if current_sl else entry_price * (1 - SCALP_BREAKEVEN_OFFSET_PCT / 100)
 
     moved = (side == "LONG" and new_sl > current_sl) or (side == "SHORT" and new_sl < current_sl and (current_sl == 0 or new_sl != current_sl))
-    step_satisfied = new_phase == 2 and (phase != 2 or abs(new_sl - current_sl) >= step_size)
     just_entered_breakeven = new_phase == 1 and phase < 1
 
     if new_phase != phase and (just_entered_breakeven or (new_phase == 2 and moved)):
@@ -366,22 +421,31 @@ def _process_scalping_trailing_stop(trade, current_price):
                        f"🟢 Infinity Run — TP Cancelled, Locking Higher Profit")
             main_mod.send_telegram(msg)
             print(f"[TRAILING] {trade['symbol']} {side} SL updated to {new_sl} (Phase {new_phase})", flush=True)
-    elif new_phase == 2 and phase == 2 and step_satisfied and moved:
-        side_cfg = main_mod.get_side_config(side)
-        amount = trade.get('amount')
-        new_id = bingx_client.update_sl_order(trade['symbol'], side_cfg, trade.get('sl_order_id'), new_sl, amount)
-        if new_id:
-            with main_mod.state_lock:
-                trade['sl'] = new_sl
-                trade['sl_order_id'] = new_id
-            side_icon = "🟩" if side == "LONG" else "🟥"
-            msg = (f"🚀 TRAILING STOP — PROFIT LOCK RAISED\n\n"
-                   f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
-                   f"Mark Price: {current_price}\n"
-                   f"New SL: {new_sl} (Trailed SL)\n"
-                   f"🟢 Locking Higher Profit")
-            main_mod.send_telegram(msg)
-            print(f"[TRAILING] {trade['symbol']} {side} SL trailed to {new_sl} (Phase 2)", flush=True)
+    elif new_phase == 2 and phase == 2 and moved:
+        # Tiered Dynamic Tightening (Aug 20 refactor) — replaces the old fixed
+        # 1.2x ATR step trail. new_sl/moved above were computed with the fixed
+        # SCALP_TRAILING_BUFFER_ATR just to detect that price moved favorably;
+        # the actual SL used now comes from the tiered calculation below.
+        tiered_sl, multiplier, current_rr, tier_name = calculate_tiered_trailing_sl(
+            entry_price, initial_sl, current_price, current_atr, side, current_sl
+        )
+        tiered_moved = (side == "LONG" and tiered_sl > current_sl) or (side == "SHORT" and tiered_sl < current_sl)
+        if multiplier is not None and tiered_moved:
+            side_cfg = main_mod.get_side_config(side)
+            amount = trade.get('amount')
+            new_id = bingx_client.update_sl_order(trade['symbol'], side_cfg, trade.get('sl_order_id'), tiered_sl, amount)
+            if new_id:
+                with main_mod.state_lock:
+                    trade['sl'] = tiered_sl
+                    trade['sl_order_id'] = new_id
+                side_icon = "🟩" if side == "LONG" else "🟥"
+                tier_num = tier_name.split()[1] if tier_name else "?"
+                msg = (f"🚀 [TRAILING UPDATED - TIER {tier_num}]\n\n"
+                       f"Symbol: {trade['symbol']} ({side_icon} {side})\n"
+                       f"SL: {round(tiered_sl, 6)} ({multiplier}x ATR | Current RR: {round(current_rr, 2)})\n"
+                       f"🟢 {tier_name}")
+                main_mod.send_telegram(msg)
+                print(f"[TRAILING] {trade['symbol']} {side} SL tiered to {tiered_sl} (RR {round(current_rr, 2)}, {tier_name})", flush=True)
 
 
 def _process_scalping_time_stop(trade, current_price):

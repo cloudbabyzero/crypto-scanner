@@ -97,13 +97,13 @@ TRAILING_ACTIVATION_ATR = 1.5
 TRAILING_BUFFER_ATR = 1.0
 TRAILING_STEP_ATR = 0.5
 
-# SCALPING trailing — used by the Phase 2 (post-breakeven) trailing stage of the
-# 2-Phase profit management system below. This replaced the old single-phase
-# 1.5/1.0/0.2 tuning (Aug 12-13) — that logic path no longer runs, so the values
-# were changed in place rather than kept as a second unused set.
+# SCALPING trailing — SCALP_TRAILING_ACTIVATION_ATR/BUFFER_ATR are used for the
+# initial Phase 1->2 hand-off only (the first SL move once trailing takes over).
+# This replaced the old single-phase 1.5/1.0/0.2 tuning (Aug 12-13) — that logic
+# path no longer runs, so the values were changed in place rather than kept as
+# a second unused set.
 SCALP_TRAILING_ACTIVATION_ATR = 2.0
 SCALP_TRAILING_BUFFER_ATR = 1.2  # trail sits 1.2x ATR behind price (locks in >= 0.8x ATR profit)
-SCALP_TRAILING_STEP_ATR = 0.3    # SL steps forward every 0.3x ATR of additional favorable movement
 
 # =========================
 # 2-PHASE PROFIT MANAGEMENT (SCALPING, Aug 20 upgrade)
@@ -113,7 +113,19 @@ SCALP_TRAILING_STEP_ATR = 0.3    # SL steps forward every 0.3x ATR of additional
 SCALP_BREAKEVEN_ACTIVATION_ATR = 1.2
 SCALP_BREAKEVEN_OFFSET_PCT = 0.15   # locked at entry +/- 0.15% to cover round-trip taker fees
 
-# Phase 2 uses SCALP_TRAILING_ACTIVATION_ATR / BUFFER / STEP above.
+# Phase 2 hand-off (first move into trailing) uses SCALP_TRAILING_ACTIVATION_ATR / BUFFER above.
+# Every subsequent SL update while already in Phase 2 uses the Tiered Dynamic
+# Tightening below instead of a fixed multiplier — replaces the old fixed
+# 0.3x ATR step trail (Aug 20 refactor, SCALPING only).
+
+# =========================
+# TIERED TRAILING STOP (SCALPING Phase 2, Aug 20 refactor)
+# =========================
+# Trailing buffer tightens as current RR (relative to the trade's ORIGINAL
+# stop distance) climbs — locks in more profit the further price runs.
+TRAILING_TIER_1_ATR_MULT = 1.2  # RR < 2.0
+TRAILING_TIER_2_ATR_MULT = 0.8  # 2.0 <= RR < 3.0
+TRAILING_TIER_3_ATR_MULT = 0.5  # RR >= 3.0
 
 # =========================
 # STRATEGY CONFIGURATION (ISOLATED)
@@ -214,9 +226,9 @@ STRATEGY_CONFIG = {
             # FIX: MAX_ADX widened 35 → 45 — allow stronger momentum moves through
             "MAX_ADX": 50,
             # --- ATR Volatility Guard Settings, recalibrated for 15m candles ---
-            "MIN_ATR_PCT": 0.35,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม
+            "MIN_ATR_PCT": 0.20,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม (ผ่อนจาก 0.35 — BTC/AAVE ~0.25-0.30% เดิมโดนบล็อกเป็น Chop ทั้งที่วิ่งปกติ)
             "MAX_ATR_PCT": 1.50,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
-            "MIN_CEILING_ATR_PCT": 0.60,  # [Minimum Ceiling เพดานขั้นต่ำ] ยกเพดานให้เหรียญใหญ่ (BTC/ETH) เพื่อให้มีช่วงว่างวิ่งเทรดได้
+            "MIN_CEILING_ATR_PCT": 0.45,  # [Minimum Ceiling เพดานขั้นต่ำ] ยกเพดานให้เหรียญใหญ่ (BTC/ETH) เพื่อให้มีช่วงว่างวิ่งเทรดได้
             "RSI_SAFE_LONG_MAX": 68,
             "RSI_SAFE_SHORT_MIN": 32
         }
@@ -250,8 +262,8 @@ def get_strategy_config(mode):
 # Auto-Detection Thresholds
 SCALPING_DETECT_ADX_MIN = 15
 SCALPING_DETECT_ADX_MAX = 28
-SCALPING_DETECT_ATR_MIN = 0.15
-SCALPING_DETECT_ATR_MAX = 0.50
+SCALPING_DETECT_ATR_MIN = 0.20
+SCALPING_DETECT_ATR_MAX = 1.20
 PAUSE_MAX_ADX = 15
 PAUSE_MAX_ATR = 0.15
 
