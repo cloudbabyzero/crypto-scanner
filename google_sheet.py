@@ -644,6 +644,43 @@ def log_aplus_override(symbol, strategy, grade, cancelled_symbol, cancelled_grad
     except Exception as e:
         print(f"[GOOGLE_SHEETS] log_aplus_override error: {e}", flush=True)
 
+
+def clear_debug_sheet():
+    """Clear all rows in the Debug sheet except the header row."""
+    try:
+        spreadsheet = get_sheet()
+        if not spreadsheet:
+            return False, "Google Sheets connection failed"
+
+        # 1. Drop any queued Debug-sheet rows in the buffer so they don't get
+        #    written back right after the clear.
+        with _buffer_lock:
+            global _buffer
+            _buffer = deque([item for item in _buffer if item[0] != SHEET_DEBUG])
+
+        # 2. Access the Debug worksheet
+        worksheet = spreadsheet.worksheet(SHEET_DEBUG)
+
+        # 3. Preserve the header row
+        headers = worksheet.row_values(1)
+        if not headers:
+            headers = [
+                "Timestamp", "Symbol", "Strategy", "Reason", "Grade", "Score", "ADX", "ATR", "Details",
+                "VWAP_Position", "StochRSI_Value", "Stretch_Percent", "Candle_Color",
+                "Local_Regime", "BTC_Regime"
+            ]
+
+        # 4. Clear the sheet and restore the header
+        worksheet.clear()
+        worksheet.append_row(headers)
+
+        print("[GOOGLE_SHEETS] Debug sheet cleared successfully", flush=True)
+        return True, "Debug sheet cleared (header row preserved)"
+    except Exception as e:
+        print(f"[GOOGLE_SHEETS] clear_debug_sheet error: {e}", flush=True)
+        return False, str(e)
+
+
 def update_stats(balance, open_positions, wins, losses, win_rate, profit_usdt, current_loss_streak):
     """
     Update stats to the Stats sheet.

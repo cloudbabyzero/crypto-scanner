@@ -204,7 +204,7 @@ STRATEGY_CONFIG = {
         # If ATR% at signal time >= threshold -> High Noise / Shield Mode (wider SL mult)
         # If ATR% < threshold -> Normal Mode (base SL mult above)
         "DYNAMIC_SL_ENABLED": True,
-        "DYNAMIC_SL_ATR_THRESHOLD": 0.50,   # ATR% breakpoint, recalibrated for 15m candles
+        "DYNAMIC_SL_ATR_THRESHOLD": 1.00,   # ATR% breakpoint, recalibrated for 15m candles
         "DYNAMIC_SL_MULT_NORMAL": 1.5,      # used when ATR% < threshold
         "DYNAMIC_SL_MULT_HIGH_NOISE": 1.8,  # used when ATR% >= threshold
         # TP_RR kept at 2.0 — net WIN should stay meaningfully larger than net LOSS after fees

@@ -1262,9 +1262,8 @@ def get_latest_signal(symbol, side=None):
                 "entry": trade['entry'],
                 "sl": trade['sl'],
                 "tp": trade['tp2'],
-                "atr": abs(
-                    trade['entry'] - trade['sl']
-                ) / 1.5,
+                "atr": trade.get('atr', abs(trade['entry'] - trade['sl']) / 1.5),
+                "sl_atr_mult": trade.get('sl_atr_mult', 1.5),
                 "signal_regime": trade.get("signal_regime", "UNKNOWN"),
                 "strategy": trade.get("strategy", "UNKNOWN"),
                 "grade": trade.get("grade", "C"),
@@ -1806,7 +1805,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         # --- Dynamic / Adaptive Stop Loss (per-asset ATR% profile) ---
         _dyn_sl_cfg = STRATEGY_CONFIG['SCALPING']
-        _dyn_threshold = _dyn_sl_cfg.get('DYNAMIC_SL_ATR_THRESHOLD', 0.22)
+        _dyn_threshold = _dyn_sl_cfg.get('DYNAMIC_SL_ATR_THRESHOLD', 1.00)
         if _dyn_sl_cfg.get('DYNAMIC_SL_ENABLED', False):
             if atr_val >= _dyn_threshold:
                 sl_atr_mult = _dyn_sl_cfg.get('DYNAMIC_SL_MULT_HIGH_NOISE', 1.8)

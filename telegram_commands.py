@@ -132,6 +132,25 @@ def cleartrades(message):
         pass
         
     bot.reply_to(message, f"✅ Cleared {count} ghost trades from memory and volume!\n\nNote: Any actually open positions on BingX will be re-detected on next bot restart.")
+
+
+@bot.message_handler(commands=['cleardebug'])
+def cleardebug_command(message):
+    bot.reply_to(message, "⏳ กำลังล้างข้อมูลใน Google Sheets (Debug)...")
+
+    def _run():
+        try:
+            import google_sheet
+            success, msg = google_sheet.clear_debug_sheet()
+            if success:
+                bot.send_message(message.chat.id, f"✅ {msg}")
+            else:
+                bot.send_message(message.chat.id, f"❌ เกิดข้อผิดพลาด: {msg}")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"❌ Error: {str(e)}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
 # =========================
 # COINS COMMAND
 # =========================
@@ -1307,6 +1326,9 @@ def help_command(message):
 
 /cleartrades
 ล้างออเดอร์ค้างในหน่วยความจำของบอท
+
+/cleardebug
+ล้างข้อมูลใน Google Sheets (Debug) โดยคงแถว Header ไว้
 
 /config
 ดู config ปัจจุบัน
