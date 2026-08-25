@@ -1725,6 +1725,14 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
 
         if long_score >= short_score and long_score >= STRATEGY_CONFIG['SCALPING']['MIN_SCORE']:
+            # Hard Candle Direction Trigger — score can be bullish on structure while the
+            # live candle is still a red pullback/consolidation tick. Don't market-buy into
+            # a red candle; wait for an actual green trigger candle to confirm the move.
+            if not is_green:
+                set_scan_result(symbol, {"status": "Candle Not Green - LONG blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "Candle Not Green - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
             if rsi_val > STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']:
                 set_scan_result(symbol, {"status": "RSI Too High", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, f"RSI Too High SCALPING ({round(rsi_val, 2)} > {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
@@ -1759,6 +1767,28 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             side  = "LONG"
             entry = round(m3['close'], 4)  # Market order on base_tf close
         elif short_score > long_score and short_score >= STRATEGY_CONFIG['SCALPING']['MIN_SCORE']:
+            # Hard Candle Direction Trigger — score can be bearish on structure while the live
+            # candle is a green rebound/dead-cat-bounce tick. Don't market-sell into a green
+            # candle; wait for an actual red trigger candle confirming the breakdown continues.
+            if not is_red:
+                set_scan_result(symbol, {"status": "Candle Not Red - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "Candle Not Red - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # Swing Low Distance Check — don't SHORT right on top of a recent swing low.
+            # If price is still hugging the prior 12-candle low (within 0.15%, either just
+            # above it or just barely broken through), that level is still "in play" as
+            # support and is the exact spot a rebound/bounce is most likely to trigger,
+            # blowing out a fresh SHORT before the structure actually breaks down. A close
+            # that has already broken clearly below the old low is a valid continuation
+            # signal, not a rebound risk, so it's measured as absolute distance, not signed.
+            swing_low_12 = df_3m.iloc[-14:-2]['low'].min()
+            swing_low_dist_pct = abs(m3['close'] - swing_low_12) / swing_low_12 * 100
+            if swing_low_dist_pct < 0.15:
+                set_scan_result(symbol, {"status": "Too Close to Swing Low - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"Too close to swing low ({round(swing_low_dist_pct, 3)}% from {round(swing_low_12, 4)}) - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
             if rsi_val < STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']:
                 set_scan_result(symbol, {"status": "RSI Too Low", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, f"RSI Too Low SCALPING ({round(rsi_val, 2)} < {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
