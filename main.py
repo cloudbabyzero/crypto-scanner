@@ -1642,9 +1642,13 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         if 45 <= m3['rsi'] <= 58: long_score += 15
         if 35 <= m3['rsi'] <= 55: short_score += 15
 
-        # 5. VWAP Position — 10 pts (soft filter, ไม่ block)
-        if is_above_vwap: long_score += 10
-        if not is_above_vwap: short_score += 10
+        # 5. VWAP Position — Direction Gatekeeper (hard penalty against counter-trend side)
+        if is_above_vwap:
+            long_score += 10
+            short_score -= 40
+        else:
+            short_score += 10
+            long_score -= 40
 
         # 6. Volume — 10 pts
         if m3['volume'] > m3['vol_avg'] * 1.5:
@@ -1673,16 +1677,21 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         # BTC TREND FILTER
         # =========================
-        # FIX: removed 'if symbol != BTC/USDT:USDT' exception
-        # BTC was excluded from its own trend filter → could SHORT BTC even when BTC is bullish
-        # All symbols including BTC must respect BTC trend direction
+        # FIX (Structural Flaw fix): BTC Hard Block removed → Dynamic Confluence.
+        # Previously btc_trend == "bullish"/"bearish" force-zeroed the opposite side,
+        # meaning a coin that was clearly breaking down under VWAP could never SHORT
+        # just because BTC happened to be green (and vice versa for LONG).
+        # Now BTC trend only nudges score up/down — the coin's own VWAP/EMA/structure
+        # (scored above) decides direction, BTC trend is confluence, not a veto.
         if btc_trend == "bullish":
-            short_score = 0    # Hard block: no SHORT when BTC bullish
-        elif btc_trend == "bearish":
-            long_score = 0     # Hard block: no LONG when BTC bearish
-        elif btc_trend == "neutral":
-            long_score  -= 15  # Both sides penalized — choppy market
+            long_score  += 10
             short_score -= 15
+        elif btc_trend == "bearish":
+            short_score += 10
+            long_score  -= 15
+        elif btc_trend == "neutral":
+            long_score  -= 10  # Both sides penalized — choppy market
+            short_score -= 10
 
         long_score  = min(long_score, 100)
         short_score = min(short_score, 100)
@@ -1720,10 +1729,12 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 set_scan_result(symbol, {"status": "RSI Too High", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, f"RSI Too High SCALPING ({round(rsi_val, 2)} > {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
-            # BTC trend filter for LONG — redundant safety check after score zeroing
-            if btc_trend in ("bearish", "neutral"):
-                set_scan_result(symbol, {"status": f"BTC {btc_trend.title()}", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, f"BTC {btc_trend} - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            # FIX (Structural Flaw fix): removed the old "btc_trend in (bearish, neutral) → block LONG"
+            # hard gate. Direction is now decided by the coin's own VWAP position, not BTC's mood.
+            # Only requirement left: price must actually be above its own VWAP.
+            if not is_above_vwap:
+                set_scan_result(symbol, {"status": "Below VWAP - LONG blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "Below VWAP - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
             # Anti-Peak Filter — don't buy a candle that's already stretched too far above EMA7
@@ -1732,18 +1743,17 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 google_sheet.log_debug(symbol, f"Anti-Peak filter - LONG blocked (EMA7 dist {round(ema7_dist_pct, 3)}%)", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
-            # FIX (Aug 20): BTC Micro Trigger — switched from macro_tf (1h) to base_tf (15m)
-            # so BTC's momentum check reacts on the same timeframe as the actual entry signal,
-            # instead of lagging up to an hour behind. Applied symmetrically on both LONG and SHORT.
-            # Require BTC's own last closed base-TF candle to be green AND above its EMA7
-            # (i.e. not actively pulling back).
+            # BTC 15m Dump Guard — LONG still requires BTC's own last closed 15m (base_tf)
+            # candle not to be a red dive-bomb. This is not the old hard trend block: it only
+            # rejects LONG when BTC is actively falling hard on the base TF, not merely "not bullish".
             btc_df_base = get_dataframe('BTC/USDT:USDT', base_tf)
             btc_base = btc_df_base.iloc[-2]
-            btc_base_green = btc_base['close'] > btc_base['open']
-            btc_base_above_ema7 = btc_base['close'] > btc_base['ema7']
-            if not (btc_base_green and btc_base_above_ema7):
-                set_scan_result(symbol, {"status": f"BTC {base_tf} Pulling Back", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, f"BTC {base_tf} Micro Trigger failed - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+            btc_base_red = btc_base['close'] < btc_base['open']
+            btc_base_dive_pct = (btc_base['open'] - btc_base['close']) / btc_base['open'] * 100 if btc_base_red else 0
+            btc_base_dumping = btc_base_red and btc_base_dive_pct > 0.15  # >0.15% red 15m candle = dive-bombing
+            if btc_base_dumping:
+                set_scan_result(symbol, {"status": f"BTC {base_tf} Dumping", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"BTC {base_tf} dive-bomb ({round(btc_base_dive_pct, 3)}%) - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
             side  = "LONG"
@@ -1753,10 +1763,13 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 set_scan_result(symbol, {"status": "RSI Too Low", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, f"RSI Too Low SCALPING ({round(rsi_val, 2)} < {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
-            # BTC trend filter for SHORT — redundant safety check after score zeroing
-            if btc_trend in ("bullish", "neutral"):
-                set_scan_result(symbol, {"status": f"BTC {btc_trend.title()}", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, f"BTC {btc_trend} - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            # FIX (Structural Flaw fix): removed the old "btc_trend in (bullish, neutral) → block SHORT"
+            # hard gate (this was the exact rule that stopped the bot from shorting breaking-down
+            # coins whenever BTC happened to be green). Direction now comes from the coin's own
+            # VWAP position. Only requirement left: price must actually be below its own VWAP.
+            if is_above_vwap:
+                set_scan_result(symbol, {"status": "Above VWAP - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "Above VWAP - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
             # Anti-Bottom Filter — don't short a candle that's already stretched too far below EMA7
@@ -1765,17 +1778,21 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 google_sheet.log_debug(symbol, f"Anti-Bottom filter - SHORT blocked (EMA7 dist {round(ema7_dist_pct, 3)}%)", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
-            # FIX (Aug 20): BTC Micro Trigger — switched from macro_tf (1h) to base_tf (15m),
-            # symmetric with the LONG side above. Require BTC's own last closed base-TF
-            # candle to be red AND below its EMA7, i.e. BTC must not be actively bouncing.
-            btc_df_base = get_dataframe('BTC/USDT:USDT', base_tf)
-            btc_base = btc_df_base.iloc[-2]
-            btc_base_red = btc_base['close'] < btc_base['open']
-            btc_base_below_ema7 = btc_base['close'] < btc_base['ema7']
-            if not (btc_base_red and btc_base_below_ema7):
-                set_scan_result(symbol, {"status": f"BTC {base_tf} Bouncing", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-                google_sheet.log_debug(symbol, f"BTC {base_tf} Micro Trigger failed - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
-                return {"symbol": symbol, "result": "skipped"}
+            # Short Squeeze Guard — only kicks in when btc_trend == "bullish". If BTC is bullish,
+            # SHORT is still allowed (coin is under its own VWAP and can diverge from BTC), but not
+            # if BTC's current 15m (base_tf) candle is actively squeezing green above its own EMA7 —
+            # that's the exact moment a BTC-driven short squeeze would blow out a SHORT stop.
+            # If btc_trend is bearish/neutral this guard doesn't apply at all.
+            if btc_trend == "bullish":
+                btc_df_base = get_dataframe('BTC/USDT:USDT', base_tf)
+                btc_base = btc_df_base.iloc[-2]
+                btc_base_green = btc_base['close'] > btc_base['open']
+                btc_base_above_ema7 = btc_base['close'] > btc_base['ema7']
+                btc_squeezing = btc_base_green and btc_base_above_ema7
+                if btc_squeezing:
+                    set_scan_result(symbol, {"status": f"BTC {base_tf} Squeeze Risk", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                    google_sheet.log_debug(symbol, f"BTC {base_tf} squeezing green above EMA7 - SHORT blocked (short squeeze protection)", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                    return {"symbol": symbol, "result": "skipped"}
 
             side  = "SHORT"
             entry = round(m3['close'], 4)  # Market order on base_tf close
