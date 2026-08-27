@@ -222,7 +222,9 @@ STRATEGY_CONFIG = {
         "INACTIVITY_TIMEOUT_MIN": 360,   # after 6h, if PnL is stuck within +-0.3%, force-close to free margin
         "INACTIVITY_PNL_BAND_PCT": 0.3,  # PnL%% band considered "stuck" for the inactivity exit
         "FILTERS": {
-            "MIN_ADX": 20,
+            # FIX (Aug 28): MIN_ADX 20 → 25 — cut low-momentum chop entries (e.g. AAVE ADX 23.06
+            # was scoring as tradeable under the old floor)
+            "MIN_ADX": 25,
             # FIX (Aug 27): MAX_ADX widened 50 → 55 — allow strong-trend coins like SOL/SUI through
             "MAX_ADX": 55,
             # --- ATR Volatility Guard Settings, recalibrated for 15m candles ---

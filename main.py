@@ -1508,14 +1508,20 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         base_tf = STRATEGY_CONFIG['SCALPING'].get('BASE_TF', '5m')
         macro_tf = STRATEGY_CONFIG['SCALPING'].get('MACRO_TF', '15m')
 
-        df_3m = get_dataframe(symbol, base_tf)   # NOTE: variable name is legacy — base_tf = "5m" per config, so this is actually 5m data
+        df_3m = get_dataframe(symbol, base_tf)   # NOTE: variable name is legacy — base_tf = "15m" per config, so this is actually 15m data
         if df_15m is None:
             df_15m = get_dataframe(symbol, macro_tf)
         if df_1h is None:
             df_1h = get_dataframe(symbol, '1h')
 
-        m3  = df_3m.iloc[-2]   # last closed base candle (5m, despite variable name)
-        m15 = df_15m.iloc[-2]  # last closed macro candle
+        # 5m fetch (Aug 28): dedicated micro-trend confirmation candle, one step below
+        # base_tf (15m). Used only for the Micro-Trend Alignment guard below — does not
+        # replace df_3m/m3 as the entry-price candle.
+        df_5m = get_dataframe(symbol, '5m')
+        m5 = df_5m.iloc[-2]
+
+        m3  = df_3m.iloc[-2]   # last closed base candle (15m, despite variable name)
+        m15 = df_15m.iloc[-2]  # last closed macro candle (1h)
 
         now_ts = time.time()
         signal_id = str(uuid.uuid4())[:8]
@@ -1744,6 +1750,47 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 return {"symbol": symbol, "result": "skipped"}
 
             # =========================
+            # 5M MICRO-TREND ALIGNMENT GUARD (LONG) — Aug 28
+            # =========================
+            # Blocks dead-cat-bounce entries where the 15m candle closes green but the
+            # finer 5m structure is still rolling over. Requires EMA7 >= EMA25 and
+            # close >= EMA7 on the 5m timeframe.
+            m5_aligned = (m5['ema7'] >= m5['ema25']) and (m5['close'] >= m5['ema7'])
+            if not m5_aligned:
+                set_scan_result(symbol, {"status": "5m Micro-Trend Bearish - LONG blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "5m Micro-Trend Bearish (EMA7<EMA25 or Close<EMA7) - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # =========================
+            # REJECTION WICK GUARD (LONG) — Aug 28
+            # =========================
+            # Blocks buying under active sell pressure: if the current or prior 15m
+            # candle has a long upper wick, that's rejection at resistance.
+            body_m3 = abs(m3['close'] - m3['open'])
+            upper_wick_m3 = m3['high'] - max(m3['close'], m3['open'])
+            _wick_prev1 = df_3m.iloc[-3]
+            body_prev1 = abs(_wick_prev1['close'] - _wick_prev1['open'])
+            upper_wick_prev1 = _wick_prev1['high'] - max(_wick_prev1['close'], _wick_prev1['open'])
+
+            if (upper_wick_m3 > body_m3 * 1.2 and upper_wick_m3 > (m3['high'] - m3['low']) * 0.35) or \
+               (upper_wick_prev1 > body_prev1 * 1.5 and upper_wick_prev1 > (_wick_prev1['high'] - _wick_prev1['low']) * 0.40):
+                set_scan_result(symbol, {"status": "Upper Wick Rejection - LONG blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "Upper Wick Rejection detected - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # =========================
+            # CLEAR PATH TO BREAKEVEN GUARD (LONG) — Aug 28
+            # =========================
+            # Requires at least 1.0x ATR of clearance to the nearest 12-candle swing high
+            # before entering, so price isn't likely to stall at resistance before
+            # reaching the +1.2x ATR auto-breakeven trigger.
+            swing_high_12 = df_3m.iloc[-14:-2]['high'].max()
+            if m3['close'] < swing_high_12 and (swing_high_12 - m3['close']) < (m3['atr'] * 1.0):
+                set_scan_result(symbol, {"status": "Near Swing High Resistance - LONG blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"Clearance to Swing High {round(swing_high_12, 4)} is < 1.0x ATR - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # =========================
             # PULLBACK CONFIRMATION TRIGGER (LONG) — Aug 27
             # =========================
             # Require that 1-2 candles ago actually pulled back with a real red-bodied
@@ -1818,6 +1865,47 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             if not is_red:
                 set_scan_result(symbol, {"status": "Candle Not Red - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, "Candle Not Red - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # =========================
+            # 5M MICRO-TREND ALIGNMENT GUARD (SHORT) — Aug 28
+            # =========================
+            # Blocks dead-cat-bounce entries where the 15m candle closes red but the
+            # finer 5m structure is still rebounding. Requires EMA7 <= EMA25 and
+            # close <= EMA7 on the 5m timeframe.
+            m5_aligned = (m5['ema7'] <= m5['ema25']) and (m5['close'] <= m5['ema7'])
+            if not m5_aligned:
+                set_scan_result(symbol, {"status": "5m Micro-Trend Bullish - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "5m Micro-Trend Bullish (EMA7>EMA25 or Close>EMA7) - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # =========================
+            # REJECTION WICK GUARD (SHORT) — Aug 28
+            # =========================
+            # Blocks selling into active buy pressure: if the current or prior 15m
+            # candle has a long lower wick, that's rejection at support.
+            body_m3 = abs(m3['close'] - m3['open'])
+            lower_wick_m3 = min(m3['close'], m3['open']) - m3['low']
+            _wick_prev1 = df_3m.iloc[-3]
+            body_prev1 = abs(_wick_prev1['close'] - _wick_prev1['open'])
+            lower_wick_prev1 = min(_wick_prev1['close'], _wick_prev1['open']) - _wick_prev1['low']
+
+            if (lower_wick_m3 > body_m3 * 1.2 and lower_wick_m3 > (m3['high'] - m3['low']) * 0.35) or \
+               (lower_wick_prev1 > body_prev1 * 1.5 and lower_wick_prev1 > (_wick_prev1['high'] - _wick_prev1['low']) * 0.40):
+                set_scan_result(symbol, {"status": "Lower Wick Rejection - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "Lower Wick Rejection detected - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # =========================
+            # CLEAR PATH TO BREAKEVEN GUARD (SHORT) — Aug 28
+            # =========================
+            # Requires at least 1.0x ATR of clearance to the nearest 12-candle swing low
+            # before entering, so price isn't likely to stall at support before
+            # reaching the +1.2x ATR auto-breakeven trigger.
+            _clear_swing_low_12 = df_3m.iloc[-14:-2]['low'].min()
+            if m3['close'] > _clear_swing_low_12 and (m3['close'] - _clear_swing_low_12) < (m3['atr'] * 1.0):
+                set_scan_result(symbol, {"status": "Near Swing Low Support - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"Clearance to Swing Low {round(_clear_swing_low_12, 4)} is < 1.0x ATR - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
             # =========================
