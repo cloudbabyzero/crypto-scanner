@@ -1511,6 +1511,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         df_3m = get_dataframe(symbol, base_tf)   # NOTE: variable name is legacy — base_tf = "5m" per config, so this is actually 5m data
         if df_15m is None:
             df_15m = get_dataframe(symbol, macro_tf)
+        if df_1h is None:
+            df_1h = get_dataframe(symbol, '1h')
 
         m3  = df_3m.iloc[-2]   # last closed base candle (5m, despite variable name)
         m15 = df_15m.iloc[-2]  # last closed macro candle
@@ -1744,19 +1746,31 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # =========================
             # PULLBACK CONFIRMATION TRIGGER (LONG) — Aug 27
             # =========================
-            # Require that 1-2 candles ago actually pulled back down to test EMA7
-            # (red candle, or low touching/piercing EMA7), and that the pullback
-            # is now over — confirmed by the latest candle closing green. This
+            # Require that 1-2 candles ago actually pulled back with a real red-bodied
+            # candle (close < open — wick touches on EMA7 no longer count), and that the
+            # pullback is now over — confirmed by the latest candle closing green. This
             # avoids buying a random green candle mid-trend with no real pullback
             # entry, and the ema7_dist_pct check below keeps us from chasing the
             # tail end of a long green candle that's already run too far from EMA7.
             prev1 = df_3m.iloc[-3]
             prev2 = df_3m.iloc[-4]
-            prev1_pulled_back = (prev1['close'] < prev1['open']) or (prev1['low'] <= prev1['ema7'])
-            prev2_pulled_back = (prev2['close'] < prev2['open']) or (prev2['low'] <= prev2['ema7'])
+            prev1_pulled_back = prev1['close'] < prev1['open']
+            prev2_pulled_back = prev2['close'] < prev2['open']
             if not (prev1_pulled_back or prev2_pulled_back):
                 set_scan_result(symbol, {"status": "No EMA7 Pullback - LONG blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, "No EMA7 pullback in prior 1-2 candles - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # =========================
+            # 1H EMA99 MACRO GUARD (LONG) — Aug 27
+            # =========================
+            # Don't market-buy straight into a major 1h resistance level. If price is
+            # still below the 1h EMA99 (falls back to EMA25 if EMA99 isn't computed),
+            # a scalp LONG here is fighting the higher-timeframe structure.
+            ema99_1h = df_1h.iloc[-2].get('ema99', df_1h.iloc[-2]['ema25'])
+            if m3['close'] < ema99_1h:
+                set_scan_result(symbol, {"status": "Below 1h EMA99 - LONG blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"LONG blocked: Below 1h EMA99 ({round(m3['close'], 4)} < {round(ema99_1h, 4)})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
             if ema7_dist_pct >= 0.30:
@@ -1809,19 +1823,31 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # =========================
             # PULLBACK CONFIRMATION TRIGGER (SHORT) — Aug 27
             # =========================
-            # Require that 1-2 candles ago actually rebounded up to test EMA7
-            # (green candle, or high touching/piercing EMA7), and that the bounce
-            # is now over — confirmed by the latest candle closing red. This avoids
+            # Require that 1-2 candles ago actually rebounded with a real green-bodied
+            # candle (close > open — wick touches on EMA7 no longer count), and that the
+            # bounce is now over — confirmed by the latest candle closing red. This avoids
             # market-selling into a random red candle mid-dump with no real rebound
             # test, and the ema7_dist_pct check below keeps us from chasing the tail
             # end of a long red candle that's already run too far from EMA7.
             prev1 = df_3m.iloc[-3]
             prev2 = df_3m.iloc[-4]
-            prev1_rebounded = (prev1['close'] > prev1['open']) or (prev1['high'] >= prev1['ema7'])
-            prev2_rebounded = (prev2['close'] > prev2['open']) or (prev2['high'] >= prev2['ema7'])
+            prev1_rebounded = prev1['close'] > prev1['open']
+            prev2_rebounded = prev2['close'] > prev2['open']
             if not (prev1_rebounded or prev2_rebounded):
                 set_scan_result(symbol, {"status": "No EMA7 Rebound Test - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, "No EMA7 rebound test in prior 1-2 candles - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # =========================
+            # 1H EMA99 MACRO GUARD (SHORT) — Aug 27
+            # =========================
+            # Don't market-sell straight into a major 1h support level. If price is
+            # still above the 1h EMA99 (falls back to EMA25 if EMA99 isn't computed),
+            # a scalp SHORT here is fighting the higher-timeframe structure.
+            ema99_1h = df_1h.iloc[-2].get('ema99', df_1h.iloc[-2]['ema25'])
+            if m3['close'] > ema99_1h:
+                set_scan_result(symbol, {"status": "Above 1h EMA99 - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"SHORT blocked: Above 1h EMA99 ({round(m3['close'], 4)} > {round(ema99_1h, 4)})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
             if ema7_dist_pct <= -0.30:
