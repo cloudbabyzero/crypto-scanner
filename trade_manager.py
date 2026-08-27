@@ -1059,10 +1059,37 @@ def check_trades():
 
                         side_icon = "🟩" if trade.get('side', 'LONG') == 'LONG' else "🟥"
                         msg_title = "🏆 SCALP TRADE CLOSED — WIN 🚀" if result == "WIN" else "🛡️ SCALP TRADE CLOSED — TRAILED (PROFIT)"
+
+                        # ============================================================
+                        # Compute exit price / PnL up front so it can be shown in the
+                        # Telegram alert as well as logged to Google Sheets
+                        # ============================================================
+                        entry_price = trade.get('entry', 0)
+                        actual_exit = None
+                        try:
+                            recent_trades = main_mod.exchange.fetch_my_trades(trade['symbol'], limit=5)
+                            if recent_trades:
+                                actual_exit = float(recent_trades[-1].get('price', 0))
+                        except Exception:
+                            pass
+                        if actual_exit and actual_exit > 0:
+                            exit_price = actual_exit
+                        else:
+                            exit_price = trade.get('tp2', entry_price) if result == "WIN" else trade.get('sl', entry_price)
+
+                        amount = trade.get('amount', 0)
+                        if trade['side'] == 'LONG':
+                            pnl_usdt = round((exit_price - entry_price) * amount, 4)
+                        else:
+                            pnl_usdt = round((entry_price - exit_price) * amount, 4)
+                        pnl_pct = round((pnl_usdt / trade.get('margin_used', 1)) * 100, 1) if trade.get('margin_used', 0) else 0.0
+
                         main_mod.send_telegram(
                             f"{msg_title}\n\n"
                             f"Symbol: {trade['symbol']} ({side_icon} {trade.get('side', 'LONG')})\n"
                             f"Entry Price: {trade.get('entry', 'N/A')}\n"
+                            f"Exit Price: {exit_price}\n"
+                            f"PnL: {pnl_usdt:+.4f} USDT ({pnl_pct:+.1f}%)\n"
                             f"Status: Closed with Profit 🟢"
                         )
 
@@ -1082,25 +1109,6 @@ def check_trades():
 
                         # Google Sheets logging for WIN/TRAILED
                         try:
-                            entry_price = trade.get('entry', 0)
-                            # Try to get actual exit price from exchange
-                            actual_exit = None
-                            try:
-                                recent_trades = main_mod.exchange.fetch_my_trades(trade['symbol'], limit=5)
-                                if recent_trades:
-                                    actual_exit = float(recent_trades[-1].get('price', 0))
-                            except Exception:
-                                pass
-                            if actual_exit and actual_exit > 0:
-                                exit_price = actual_exit
-                            else:
-                                exit_price = trade.get('tp2', entry_price) if result == "WIN" else trade.get('sl', entry_price)
-                            amount = trade.get('amount', 0)
-                            if trade['side'] == 'LONG':
-                                pnl = round((exit_price - entry_price) * amount, 4)
-                            else:
-                                pnl = round((entry_price - exit_price) * amount, 4)
-                            
                             tp2 = trade.get('tp2', entry_price)
                             sl = trade.get('sl', entry_price)
                             risk_val = abs(entry_price - sl)
@@ -1115,7 +1123,7 @@ def check_trades():
                                 side=trade['side'],
                                 entry=entry_price,
                                 exit_price=exit_price,
-                                pnl=pnl,
+                                pnl=pnl_usdt,
                                 result="WIN" if result == "WIN" else "TRAILED",
                                 grade=grade,
                                 score=score,
@@ -1142,10 +1150,36 @@ def check_trades():
                             pass
                         close_status = "Status: Stop Loss Hit 🔴" if sl_hit else "Status: Closed Manually ✋"
 
+                        # ============================================================
+                        # Compute exit price / PnL up front so it can be shown in the
+                        # Telegram alert as well as logged to Google Sheets
+                        # ============================================================
+                        entry_price = trade.get('entry', 0)
+                        actual_exit = None
+                        try:
+                            recent_trades = main_mod.exchange.fetch_my_trades(trade['symbol'], limit=5)
+                            if recent_trades:
+                                actual_exit = float(recent_trades[-1].get('price', 0))
+                        except Exception:
+                            pass
+                        if actual_exit and actual_exit > 0:
+                            exit_price = actual_exit
+                        else:
+                            exit_price = trade.get('sl', entry_price)
+
+                        amount = trade.get('amount', 0)
+                        if trade['side'] == 'LONG':
+                            pnl_usdt = round((exit_price - entry_price) * amount, 4)
+                        else:
+                            pnl_usdt = round((entry_price - exit_price) * amount, 4)
+                        pnl_pct = round((pnl_usdt / trade.get('margin_used', 1)) * 100, 1) if trade.get('margin_used', 0) else 0.0
+
                         main_mod.send_telegram(
                             f"❌ SCALP TRADE CLOSED — LOSS\n\n"
                             f"Symbol: {trade['symbol']} ({side_icon} {trade.get('side', 'LONG')})\n"
                             f"Entry Price: {trade.get('entry', 'N/A')}\n"
+                            f"Exit Price: {exit_price}\n"
+                            f"PnL: {pnl_usdt:+.4f} USDT ({pnl_pct:+.1f}%)\n"
                             f"{close_status}"
                         )
 
@@ -1166,25 +1200,6 @@ def check_trades():
                         
                         # Google Sheets logging for LOSS
                         try:
-                            entry_price = trade.get('entry', 0)
-                            # Try to get actual exit price from exchange
-                            actual_exit = None
-                            try:
-                                recent_trades = main_mod.exchange.fetch_my_trades(trade['symbol'], limit=5)
-                                if recent_trades:
-                                    actual_exit = float(recent_trades[-1].get('price', 0))
-                            except Exception:
-                                pass
-                            if actual_exit and actual_exit > 0:
-                                exit_price = actual_exit
-                            else:
-                                exit_price = trade.get('sl', entry_price)
-                            amount = trade.get('amount', 0)
-                            if trade['side'] == 'LONG':
-                                pnl = round((exit_price - entry_price) * amount, 4)
-                            else:
-                                pnl = round((entry_price - exit_price) * amount, 4)
-                            
                             tp2 = trade.get('tp2', entry_price)
                             sl = trade.get('sl', entry_price)
                             risk_val = abs(entry_price - sl)
@@ -1199,7 +1214,7 @@ def check_trades():
                                 side=trade['side'],
                                 entry=entry_price,
                                 exit_price=exit_price,
-                                pnl=pnl,
+                                pnl=pnl_usdt,
                                 result="LOSS",
                                 grade=grade,
                                 score=score,

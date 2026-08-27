@@ -975,12 +975,20 @@ def update_signal_result(
     else:
         pause_trading = False
 
+    # Fetch current balance for debug visibility
+    try:
+        debug_balance = exchange.fetch_balance()
+        current_balance = float(debug_balance['total'].get('USDT', 0.0))
+    except Exception:
+        current_balance = 0.0
+
     # Send debug message with loss streak status
     send_telegram(
         f"📊 LOSS STREAK DEBUG\n\n"
         f"Current Wins: {current_wins}\n"
         f"Current Losses: {current_losses}\n"
-        f"Current Loss Streak: {current_loss_streak}"
+        f"Current Loss Streak: {current_loss_streak}\n"
+        f"💰 Balance: {current_balance:.2f} USDT"
     )
 # =========================
 # TELEGRAM COMMANDS HANDLERS
@@ -1685,7 +1693,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # (scored above) decides direction, BTC trend is confluence, not a veto.
         if btc_trend == "bullish":
             long_score  += 10
-            short_score -= 15
+            short_score -= 10  # FIX (Aug 27): -15 → -10, less punitive on SHORT confluence when BTC is bullish
         elif btc_trend == "bearish":
             short_score += 10
             long_score  -= 15
@@ -1733,6 +1741,29 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 google_sheet.log_debug(symbol, "Candle Not Green - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
+            # =========================
+            # PULLBACK CONFIRMATION TRIGGER (LONG) — Aug 27
+            # =========================
+            # Require that 1-2 candles ago actually pulled back down to test EMA7
+            # (red candle, or low touching/piercing EMA7), and that the pullback
+            # is now over — confirmed by the latest candle closing green. This
+            # avoids buying a random green candle mid-trend with no real pullback
+            # entry, and the ema7_dist_pct check below keeps us from chasing the
+            # tail end of a long green candle that's already run too far from EMA7.
+            prev1 = df_3m.iloc[-3]
+            prev2 = df_3m.iloc[-4]
+            prev1_pulled_back = (prev1['close'] < prev1['open']) or (prev1['low'] <= prev1['ema7'])
+            prev2_pulled_back = (prev2['close'] < prev2['open']) or (prev2['low'] <= prev2['ema7'])
+            if not (prev1_pulled_back or prev2_pulled_back):
+                set_scan_result(symbol, {"status": "No EMA7 Pullback - LONG blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "No EMA7 pullback in prior 1-2 candles - LONG blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            if ema7_dist_pct >= 0.30:
+                set_scan_result(symbol, {"status": "Too Far Above EMA7 - LONG blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"EMA7 dist {round(ema7_dist_pct, 3)}% >= 0.30% - LONG blocked (chasing long green candle)", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
             if rsi_val > STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']:
                 set_scan_result(symbol, {"status": "RSI Too High", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, f"RSI Too High SCALPING ({round(rsi_val, 2)} > {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']})", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
@@ -1773,6 +1804,29 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             if not is_red:
                 set_scan_result(symbol, {"status": "Candle Not Red - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
                 google_sheet.log_debug(symbol, "Candle Not Red - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            # =========================
+            # PULLBACK CONFIRMATION TRIGGER (SHORT) — Aug 27
+            # =========================
+            # Require that 1-2 candles ago actually rebounded up to test EMA7
+            # (green candle, or high touching/piercing EMA7), and that the bounce
+            # is now over — confirmed by the latest candle closing red. This avoids
+            # market-selling into a random red candle mid-dump with no real rebound
+            # test, and the ema7_dist_pct check below keeps us from chasing the tail
+            # end of a long red candle that's already run too far from EMA7.
+            prev1 = df_3m.iloc[-3]
+            prev2 = df_3m.iloc[-4]
+            prev1_rebounded = (prev1['close'] > prev1['open']) or (prev1['high'] >= prev1['ema7'])
+            prev2_rebounded = (prev2['close'] > prev2['open']) or (prev2['high'] >= prev2['ema7'])
+            if not (prev1_rebounded or prev2_rebounded):
+                set_scan_result(symbol, {"status": "No EMA7 Rebound Test - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, "No EMA7 rebound test in prior 1-2 candles - SHORT blocked", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
+                return {"symbol": symbol, "result": "skipped"}
+
+            if ema7_dist_pct <= -0.30:
+                set_scan_result(symbol, {"status": "Too Far Below EMA7 - SHORT blocked", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"EMA7 dist {round(ema7_dist_pct, 3)}% <= -0.30% - SHORT blocked (chasing long red candle)", strategy="SCALPING", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if is_above_vwap else "BELOW", stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2), candle_color="GREEN" if is_green else "RED")
                 return {"symbol": symbol, "result": "skipped"}
 
             # Swing Low Distance Check — don't SHORT right on top of a recent swing low.
@@ -4217,6 +4271,19 @@ def heartbeat_thread():
             except Exception:
                 current_usdt = 0.0
 
+            # BTC Trend for heartbeat MARKET section
+            try:
+                btc_trend_hb = get_btc_trend()
+            except Exception:
+                btc_trend_hb = "neutral"
+
+            if btc_trend_hb == "bullish":
+                btc_trend_line = "📈 ขาขึ้น (BULLISH)"
+            elif btc_trend_hb == "bearish":
+                btc_trend_line = "📉 ขาลง (BEARISH)"
+            else:
+                btc_trend_line = "⚖️ ไซด์เวย์ (NEUTRAL)"
+
             # =========================
             # COMPILE VOLATILITY STATUS
             # =========================
@@ -4268,6 +4335,7 @@ Loss Streak: {current_loss_streak}
 Market Mode: {market_mode_text}
 Market Regime: {current_regime_text}
 Control Mode: {control_mode_text}
+BTC Trend: {btc_trend_line}
 {vol_report}
 📋 SCAN STATS
 

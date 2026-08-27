@@ -223,14 +223,16 @@ STRATEGY_CONFIG = {
         "INACTIVITY_PNL_BAND_PCT": 0.3,  # PnL%% band considered "stuck" for the inactivity exit
         "FILTERS": {
             "MIN_ADX": 20,
-            # FIX: MAX_ADX widened 35 → 45 — allow stronger momentum moves through
-            "MAX_ADX": 50,
+            # FIX (Aug 27): MAX_ADX widened 50 → 55 — allow strong-trend coins like SOL/SUI through
+            "MAX_ADX": 55,
             # --- ATR Volatility Guard Settings, recalibrated for 15m candles ---
             "MIN_ATR_PCT": 0.20,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม (ผ่อนจาก 0.35 — BTC/AAVE ~0.25-0.30% เดิมโดนบล็อกเป็น Chop ทั้งที่วิ่งปกติ)
             "MAX_ATR_PCT": 1.50,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
             "MIN_CEILING_ATR_PCT": 0.45,  # [Minimum Ceiling เพดานขั้นต่ำ] ยกเพดานให้เหรียญใหญ่ (BTC/ETH) เพื่อให้มีช่วงว่างวิ่งเทรดได้
-            "RSI_SAFE_LONG_MAX": 68,
-            "RSI_SAFE_SHORT_MIN": 32
+            # FIX (Aug 27): tightened 68/32 → 60/38 — block LONG entries near overbought peak
+            # and SHORT entries near oversold bottom (RSI_SAFE_LONG_MAX / RSI_SAFE_SHORT_MIN)
+            "RSI_SAFE_LONG_MAX": 60,
+            "RSI_SAFE_SHORT_MIN": 38
         }
     },
     "SIDEWAYS": {
