@@ -410,7 +410,7 @@ AUTO_TRADE:
 {main_mod.config.AUTO_TRADE}
 
 MIN_GRADES:
-SCALPING: {STRATEGY_CONFIG['SCALPING']['MIN_GRADE']}
+SCALPING: Gatekeeper (100% Pass required, no grade)
 MOMENTUM: {STRATEGY_CONFIG['MOMENTUM']['MIN_GRADE']}
 TRENDING: {STRATEGY_CONFIG['TRENDING']['MIN_GRADE']}
 SIDEWAYS: {STRATEGY_CONFIG['SIDEWAYS']['MIN_GRADE']}
@@ -458,11 +458,8 @@ x{STRATEGY_CONFIG['SCALPING']['LEVERAGE']}
 SCALPING_MARGIN:
 {STRATEGY_CONFIG['SCALPING']['MARGIN_PER_TRADE']} USDT
 
-SCALPING_MIN_GRADE:
-{STRATEGY_CONFIG['SCALPING']['MIN_GRADE']}
-
-SCALPING_MIN_SCORE:
-{STRATEGY_CONFIG['SCALPING']['MIN_SCORE']}
+SCALPING_GATEKEEPER:
+100% Pass required (3-stage boolean pipeline, no grade/score)
 
 SCALPING_MAX_TRADES:
 {STRATEGY_CONFIG['SCALPING']['MAX_TRADES']}
@@ -1225,8 +1222,7 @@ MIN ADX: {STRATEGY_CONFIG['SCALPING']['FILTERS']['MIN_ADX']}
 MAX ADX: {STRATEGY_CONFIG['SCALPING']['FILTERS']['MAX_ADX']}
 SL ATR Mult: {STRATEGY_CONFIG['SCALPING']['SL_ATR_MULT']}
 TP RR: {STRATEGY_CONFIG['SCALPING']['TP_RR']}
-Min Grade: {STRATEGY_CONFIG['SCALPING']['MIN_GRADE']}
-Min Score: {STRATEGY_CONFIG['SCALPING']['MIN_SCORE']}
+Gatekeeper: 100% Pass required (no grade/score)
 Max Trades: {STRATEGY_CONFIG['SCALPING']['MAX_TRADES']}
 Auto Trade: {"ON" if main_mod.config.AUTO_TRADE else "OFF"}
 """
@@ -1582,7 +1578,15 @@ def set_grade(message):
         if strategy not in main_mod.config.STRATEGY_CONFIG:
             bot.reply_to(message, f"❌ Invalid strategy: {strategy}")
             return
-            
+
+        if strategy == "SCALPING":
+            bot.reply_to(
+                message,
+                "❌ SCALPING uses a 100% Pass/Fail Gatekeeper pipeline — there is no "
+                "partial grade to filter on, so MIN_GRADE has no effect for this strategy."
+            )
+            return
+
         if grade not in main_mod.GRADE_PRIORITY:
             bot.reply_to(
                 message,

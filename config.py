@@ -211,12 +211,10 @@ STRATEGY_CONFIG = {
         "TP_RR": 2.0,
         # FIX: MAX_TRADES 3→2 — 3 concurrent = 3 simultaneous losses on reversal
         "MAX_TRADES": 2,  # FIX: 3→2, limit concurrent losses on reversal
-        # Grade is relative to MIN_SCORE:
-        #   A+ = score >= MIN_SCORE+10  (90+)
-        #   A  = score >= MIN_SCORE     (80+)  ← target
-        #   B  = score >= MIN_SCORE-10  (70+)
-        "MIN_SCORE": 80,
-        "MIN_GRADE": "A",
+        # NOTE: no MIN_SCORE / MIN_GRADE here — SCALPING uses a deterministic
+        # 3-stage Boolean Gatekeeper pipeline (see analyze_scalping in main.py).
+        # A signal only exists after passing every gate at 100%, so there is no
+        # partial score/grade left to threshold on.
         # --- Max holding time & inactivity exit (new: Aug 20) ---
         "MAX_HOLDING_HOURS": 8,          # hard cap — force-close any position held longer than this
         "INACTIVITY_TIMEOUT_MIN": 360,   # after 6h, if PnL is stuck within +-0.3%, force-close to free margin
