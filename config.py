@@ -224,7 +224,7 @@ STRATEGY_CONFIG = {
             # was scoring as tradeable under the old floor)
             "MIN_ADX": 20,
             # FIX (Aug 27): MAX_ADX widened 50 → 55 — allow strong-trend coins like SOL/SUI through
-            "MAX_ADX": 55,
+            "MAX_ADX": 40,
             # --- ATR Volatility Guard Settings, recalibrated for 15m candles ---
             "MIN_ATR_PCT": 0.20,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม (ผ่อนจาก 0.35 — BTC/AAVE ~0.25-0.30% เดิมโดนบล็อกเป็น Chop ทั้งที่วิ่งปกติ)
             "MAX_ATR_PCT": 1.50,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
