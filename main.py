@@ -1523,6 +1523,28 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         m3  = df_3m.iloc[-2]   # last closed base candle (15m, despite variable name)
         m15 = df_15m.iloc[-2]  # last closed macro candle (1h)
 
+        # Re-entry Guard: even after LOSS_COOLDOWN has fully elapsed, block
+        # re-entry if price is still loitering within ±0.3x ATR of the entry
+        # that just lost — same chop, no new structure, don't re-fight it.
+        # Scoped to 2 hours post-loss (RE_ENTRY_GUARD_WINDOW) so a stale entry
+        # from days ago can't permanently block a symbol if price happens to
+        # revisit that level later. Reuses m3 instead of a fresh API call.
+        RE_ENTRY_GUARD_WINDOW = 7200  # 2 hours
+        if not bypass_cooldown and not ignore_cooldown_once:
+            with state_lock:
+                last_closed_reentry = trade_manager.last_closed_trade.get((symbol, "SCALPING"))
+            if last_closed_reentry and last_closed_reentry.get("result") == "LOSS":
+                loss_elapsed = time.time() - last_closed_reentry.get("time", 0)
+                if loss_elapsed < RE_ENTRY_GUARD_WINDOW:
+                    last_loss_entry = last_closed_reentry.get("entry")
+                    if last_loss_entry:
+                        price_band = m3['atr'] * 0.3
+                        if abs(m3['close'] - last_loss_entry) < price_band:
+                            status_msg = "Re-entry Guard (near prior loss entry)"
+                            set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+                            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=0, atr=0, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
+                            return {"symbol": symbol, "result": "skipped"}
+
         now_ts = time.time()
         signal_id = str(uuid.uuid4())[:8]
 
@@ -1615,6 +1637,13 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         vwap_val = m3['vwap']
         is_above_vwap = m3['close'] > vwap_val
 
+        # VWAP 2-Candle Rule: current AND prior 15m closed candle must both sit
+        # on the same side of VWAP, to filter out single-candle wick fakeouts.
+        prev1_vwap = df_3m.iloc[-3]
+        prev1_above_vwap = prev1_vwap['close'] > prev1_vwap['vwap']
+        vwap_confirmed_below = (not is_above_vwap) and (not prev1_above_vwap)
+        vwap_confirmed_above = is_above_vwap and prev1_above_vwap
+
         is_green = m3['close'] > m3['open']
         is_red = m3['close'] < m3['open']
 
@@ -1655,15 +1684,23 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # 1.2 ATR Volatility Range Guard — already enforced above (Floor/Ceiling
             # + ADX bounds) before this pipeline runs, since it's side-independent.
 
+            # 1.3 StochRSI Hard Gatekeeper — blocks before any Gate Pass / Market
+            # Order is issued. SHORT into an already-oversold floor or LONG into
+            # an already-overbought ceiling gets rejected outright, no compensation.
+            if side == "SHORT" and stoch_rsi < 20:
+                return "Blocked: StochRSI Oversold Floor"
+            if side == "LONG" and stoch_rsi > 80:
+                return "Blocked: StochRSI Overbought Ceiling"
+
             # ---------------------------------------------------------
             # STAGE 2: 15m & 1H STRUCTURAL SETUP GUARD
             # ---------------------------------------------------------
 
-            # 2.1 VWAP Absolute Gatekeeper
-            if side == "LONG" and not is_above_vwap:
-                return "Blocked: Below VWAP (LONG forbidden)"
-            if side == "SHORT" and is_above_vwap:
-                return "Blocked: Above VWAP (SHORT forbidden)"
+            # 2.1 VWAP Absolute Gatekeeper (2-Candle Confirmation)
+            if side == "LONG" and not vwap_confirmed_above:
+                return "Blocked: Below VWAP or Not Confirmed 2 Candles (LONG forbidden)"
+            if side == "SHORT" and not vwap_confirmed_below:
+                return "Blocked: Above VWAP or Not Confirmed 2 Candles (SHORT forbidden)"
 
             # 2.2 15m EMA Structural Alignment
             if side == "LONG" and not (m3['ema7'] > m3['ema25']):
@@ -1678,23 +1715,52 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             if side == "SHORT" and not (m3['close'] <= ema99_1h):
                 return f"Blocked: 1H EMA99 Support (Close > EMA99, {round(m3['close'], 4)} > {round(ema99_1h, 4)})"
 
-            # 2.4 Anti-Chase Guard (EMA Stretch Limit) — same cap both sides
-            if abs(ema7_dist_pct) > 0.25:
-                return f"Blocked: Anti-Chase (Stretched {round(abs(ema7_dist_pct), 3)}% > 0.25% from EMA7)"
+            # 2.4 Anti-Chase Guard (EMA Stretch Limit) — direction-aware: only
+            # blocks chasing away from EMA7 in the trade's own direction (LONG
+            # chasing price too far above EMA7, SHORT chasing too far below).
+            # A pullback toward a better entry (LONG dipping below EMA7, SHORT
+            # bouncing above EMA7) is not chasing and must not be blocked here.
+            if side == "LONG" and ema7_dist_pct > 0.25:
+                return f"Blocked: Anti-Chase LONG (Price {round(ema7_dist_pct, 3)}% > 0.25% above EMA7)"
+            if side == "SHORT" and ema7_dist_pct < -0.25:
+                return f"Blocked: Anti-Chase SHORT (Price {round(ema7_dist_pct, 3)}% < -0.25% below EMA7)"
 
             # 2.5 Clearance to Breakeven Guard — needs >= 1.3x ATR of room to the
             # nearest 12-candle swing high/low so price can reach +1.2x ATR
             # auto-breakeven without stalling into old resistance/support.
             if side == "LONG":
                 swing_high_12 = df_3m.iloc[-14:-2]['high'].max()
-                clearance = swing_high_12 - m3['close']
-                if m3['close'] < swing_high_12 and clearance < (m3['atr'] * 1.3):
-                    return f"Blocked: Clearance to Swing High < 1.3x ATR ({round(clearance / m3['atr'], 2)}x)"
+                if m3['close'] < swing_high_12:
+                    clearance = swing_high_12 - m3['close']
+                    if clearance < (m3['atr'] * 1.3):
+                        return f"Blocked: Clearance to Swing High < 1.3x ATR ({round(clearance / m3['atr'], 2)}x)"
+                else:
+                    # Price already broke above the 15m swing high — that level no
+                    # longer bounds the runway, so check the next 1H resistance
+                    # (1H swing high, falling back to 1H EMA99) instead.
+                    h1_swing_high = df_1h.iloc[-14:-2]['high'].max()
+                    h1_ema99 = df_1h.iloc[-2].get('ema99', df_1h.iloc[-2]['ema25'])
+                    next_resistance = max(h1_swing_high, h1_ema99) if h1_swing_high > m3['close'] else h1_ema99
+                    clearance = next_resistance - m3['close']
+                    if m3['close'] < next_resistance and clearance < (m3['atr'] * 1.3):
+                        return f"Blocked: Clearance to 1H Resistance < 1.3x ATR ({round(clearance / m3['atr'], 2)}x)"
             else:
                 swing_low_12 = df_3m.iloc[-14:-2]['low'].min()
-                clearance = m3['close'] - swing_low_12
-                if m3['close'] > swing_low_12 and clearance < (m3['atr'] * 1.3):
-                    return f"Blocked: Clearance to Swing Low < 1.3x ATR ({round(clearance / m3['atr'], 2)}x)"
+                if m3['close'] > swing_low_12:
+                    clearance = m3['close'] - swing_low_12
+                    if clearance < (m3['atr'] * 1.3):
+                        return f"Blocked: Clearance to Swing Low < 1.3x ATR ({round(clearance / m3['atr'], 2)}x)"
+                else:
+                    # Price already made a new low, breaking below the 15m swing
+                    # low — pull the next 1H support (1H swing low, falling back to
+                    # 1H EMA99) so a runway check still applies instead of being
+                    # silently skipped.
+                    h1_swing_low = df_1h.iloc[-14:-2]['low'].min()
+                    h1_ema99 = df_1h.iloc[-2].get('ema99', df_1h.iloc[-2]['ema25'])
+                    next_support = min(h1_swing_low, h1_ema99) if h1_swing_low < m3['close'] else h1_ema99
+                    clearance = m3['close'] - next_support
+                    if m3['close'] > next_support and clearance < (m3['atr'] * 1.3):
+                        return f"Blocked: Clearance to 1H Support < 1.3x ATR ({round(clearance / m3['atr'], 2)}x)"
 
             # ---------------------------------------------------------
             # STAGE 3: MICRO TRIGGER & WICK FILTER (5m & 15m)

@@ -1103,7 +1103,8 @@ def check_trades():
                         with main_mod.state_lock:
                             last_closed_trade[(trade['symbol'], strategy_key)] = {
                                 "time": time.time(),
-                                "result": "WIN" if result == "WIN" else "TRAILED"
+                                "result": "WIN" if result == "WIN" else "TRAILED",
+                                "entry": entry_price
                             }
                         print(f"[WIN COOLDOWN] {trade['symbol']} win cooldown started ({result})", flush=True)
 
@@ -1194,7 +1195,8 @@ def check_trades():
                             main_mod.last_loss[(trade['symbol'], "SCALPING")] = time.time()
                             last_closed_trade[(trade['symbol'], strategy_key)] = {
                                 "time": time.time(),
-                                "result": "LOSS"
+                                "result": "LOSS",
+                                "entry": entry_price
                             }
                         print(f"[LOSS COOLDOWN] {trade['symbol']} loss cooldown started", flush=True)
                         
