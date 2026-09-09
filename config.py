@@ -28,6 +28,13 @@ symbols = [
     'AAVE/USDT:USDT',
     'AVAX/USDT:USDT',
     'XRP/USDT:USDT',
+    'APT/USDT:USDT',
+    'ARB/USDT:USDT',
+    'OP/USDT:USDT',
+    'NEAR/USDT:USDT',
+    'DOGE/USDT:USDT',
+    'LINK/USDT:USDT',
+
 ]
 
 SCALPING_SYMBOLS = [
@@ -38,6 +45,13 @@ SCALPING_SYMBOLS = [
     'AAVE/USDT:USDT',
     'AVAX/USDT:USDT',
     'XRP/USDT:USDT',
+    'APT/USDT:USDT',
+    'ARB/USDT:USDT',
+    'OP/USDT:USDT',
+    'NEAR/USDT:USDT',
+    'DOGE/USDT:USDT',
+    'LINK/USDT:USDT',
+
 ]
 
 # =========================
