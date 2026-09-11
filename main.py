@@ -1914,21 +1914,6 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             rr   = round((entry - tp2) / (sl - entry), 2)
 
         # =========================
-        # SL HARD CAP GUARD (safety) — reject outright if computed SL distance
-        # exceeds MAX_SL_DISTANCE_PCT. At x25 leverage a wide ATR-based SL on a
-        # volatile coin can mean a ~25%+ margin loss per stop-out. This is a
-        # pre-fill check; execute_scalp_trade() in bingx_client.py re-checks
-        # against the actual fill price post-market-order, since slippage can
-        # widen the distance further.
-        # =========================
-        max_sl_distance_pct = STRATEGY_CONFIG['SCALPING'].get('MAX_SL_DISTANCE_PCT', 0.60)
-        sl_distance_pct = round(risk / entry * 100, 3)
-        if sl_distance_pct > max_sl_distance_pct:
-            reason = f"Blocked: SL Distance Too Wide ({sl_distance_pct}% > {max_sl_distance_pct}% cap, {sl_atr_mult}x ATR)"
-            _reject(reason)
-            return {"symbol": symbol, "result": "skipped"}
-
-        # =========================
         # BUILD MESSAGE
         # =========================
 

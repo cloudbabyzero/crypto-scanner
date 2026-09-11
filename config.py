@@ -221,15 +221,6 @@ STRATEGY_CONFIG = {
         "DYNAMIC_SL_ATR_THRESHOLD": 1.00,   # ATR% breakpoint, recalibrated for 15m candles
         "DYNAMIC_SL_MULT_NORMAL": 1.5,      # used when ATR% < threshold
         "DYNAMIC_SL_MULT_HIGH_NOISE": 1.8,  # used when ATR% >= threshold
-        # --- SL Hard Cap (safety) ---
-        # At x25 leverage, a wide SL_ATR_MULT on a high-ATR% coin (e.g. OP) can
-        # push sl_distance_pct past 1.0%, which is a ~25% margin loss on stop-out.
-        # Reject any signal whose computed SL distance exceeds this cap outright —
-        # no compensation, no override. Enforced both pre-fill (main.py signal
-        # gen) and post-fill (bingx_client.py execute_scalp_trade, using the
-        # actual fill price) since slippage can widen distance after the market
-        # order is already in flight.
-        "MAX_SL_DISTANCE_PCT": 0.60,
         # TP_RR kept at 2.0 — net WIN should stay meaningfully larger than net LOSS after fees
         "TP_RR": 2.0,
         # FIX: MAX_TRADES 3→2 — 3 concurrent = 3 simultaneous losses on reversal
