@@ -41,6 +41,14 @@ FLUSH_INTERVAL = 30  # seconds - buffer flush interval
 CONFIG_RELOAD_INTERVAL = 300  # seconds - config auto-reload interval
 HEALTH_CHECK_INTERVAL = 1800  # seconds - 30 minutes
 
+# --- Debug Sheet Rolling Buffer ---
+# Debug sheet is the ONLY sheet this trims. All other sheets (Trades,
+# FillAnalysis, Signals, Events Log, Stats, Config, BacktestResults) are
+# strictly protected archival records and must never be auto-cleared.
+CLEANUP_INTERVAL = 21600       # seconds - 6 hours, how often the trim loop runs
+DEBUG_TRIM_THRESHOLD = 1500    # trim triggers once row count (excl. header) exceeds this
+DEBUG_TRIM_KEEP_ROWS = 1000    # rows kept after trim (most recent)
+
 # Sheet names
 SHEET_SIGNALS = "Signals"
 SHEET_TRADES = "Trades"
@@ -63,9 +71,11 @@ _buffer_lock = threading.Lock()
 _flush_thread = None
 _config_thread = None
 _health_thread = None
+_cleanup_thread = None
 _stop_flush = threading.Event()
 _stop_config = threading.Event()
 _stop_health = threading.Event()
+_stop_cleanup = threading.Event()
 
 # Config caching
 _config_cache = {}
@@ -431,6 +441,7 @@ def shutdown_all(flush_timeout=10, other_timeout=5):
     stop_buffer_flush(timeout=flush_timeout)
     stop_health_check(timeout=other_timeout)
     stop_config_reload(timeout=other_timeout)
+    stop_cleanup_loop(timeout=other_timeout)
     print("[GOOGLE_SHEETS] All threads stopped", flush=True)
 
 
@@ -681,6 +692,111 @@ def clear_debug_sheet():
         return False, str(e)
 
 
+def trim_debug_sheet():
+    """Rolling Buffer trim for the Debug sheet ONLY.
+
+    Strict policy: this function must never touch Trades, FillAnalysis,
+    Signals, Events Log, Stats, Config, or BacktestResults — those are
+    permanent archival records. Only Debug is a high-volume scratch log
+    that needs bounding.
+
+    If the sheet has more than DEBUG_TRIM_THRESHOLD data rows, keep only
+    the most recent DEBUG_TRIM_KEEP_ROWS rows (plus the header). Rate-limit
+    aware: uses a single batch read + single clear + single batch write
+    instead of per-row calls, to stay well under Google Sheets API quota.
+    """
+    try:
+        spreadsheet = get_sheet()
+        if not spreadsheet:
+            return False, "Google Sheets connection failed"
+
+        # 1. Flush any buffered Debug rows first, so the row count and the
+        #    trimmed content both reflect everything that's been logged so
+        #    far — trimming before flushing could drop rows that were never
+        #    written yet.
+        _flush_buffer()
+
+        worksheet = spreadsheet.worksheet(SHEET_DEBUG)
+
+        # 2. Single batch read of all values (1 API call)
+        all_values = worksheet.get_all_values()
+        if not all_values:
+            return True, "Debug sheet empty, nothing to trim"
+
+        header = all_values[0]
+        data_rows = all_values[1:]
+        row_count = len(data_rows)
+
+        if row_count <= DEBUG_TRIM_THRESHOLD:
+            print(f"[GOOGLE_SHEETS] Debug trim skipped ({row_count} <= {DEBUG_TRIM_THRESHOLD} rows)", flush=True)
+            return True, f"Skipped — {row_count} rows within threshold"
+
+        # 3. Keep only the most recent DEBUG_TRIM_KEEP_ROWS rows
+        trimmed_rows = data_rows[-DEBUG_TRIM_KEEP_ROWS:]
+
+        # 4. Single clear + single batch write-back (2 API calls total)
+        worksheet.clear()
+        worksheet.append_row(header)
+        if trimmed_rows:
+            worksheet.append_rows(trimmed_rows, table_range="A1")
+
+        msg = f"Trimmed Debug sheet: {row_count} -> {len(trimmed_rows)} rows"
+        print(f"[GOOGLE_SHEETS] {msg}", flush=True)
+        return True, msg
+
+    except gspread.exceptions.APIError as e:
+        # Surface rate-limit (429) distinctly so the caller/loop can back off
+        # rather than retrying immediately on the next tick.
+        print(f"[GOOGLE_SHEETS] trim_debug_sheet API error (possible rate limit): {e}", flush=True)
+        return False, f"API error: {e}"
+    except Exception as e:
+        print(f"[GOOGLE_SHEETS] trim_debug_sheet error: {e}", flush=True)
+        traceback.print_exc()
+        return False, str(e)
+
+
+def _cleanup_loop():
+    """Background thread: runs trim_debug_sheet() immediately on startup
+    (so accumulated rows from before a restart don't sit untrimmed for up
+    to a full CLEANUP_INTERVAL), then every CLEANUP_INTERVAL after that.
+    """
+    try:
+        trim_debug_sheet()
+    except Exception as e:
+        print(f"[GOOGLE_SHEETS] Startup trim error: {e}", flush=True)
+
+    while not _stop_cleanup.is_set():
+        _stop_cleanup.wait(CLEANUP_INTERVAL)
+        if not _stop_cleanup.is_set():
+            try:
+                trim_debug_sheet()
+            except Exception as e:
+                print(f"[GOOGLE_SHEETS] Cleanup loop error: {e}", flush=True)
+
+
+def start_cleanup_loop():
+    """Start the background Debug-sheet rolling-buffer cleanup thread."""
+    global _cleanup_thread
+    if _cleanup_thread is None:
+        _stop_cleanup.clear()
+        _cleanup_thread = threading.Thread(target=_cleanup_loop, daemon=True)
+        _cleanup_thread.start()
+        print(f"[GOOGLE_SHEETS] Cleanup loop started (every {CLEANUP_INTERVAL}s)", flush=True)
+
+
+def stop_cleanup_loop(timeout=5):
+    """Stop the background cleanup thread."""
+    global _cleanup_thread
+    if _cleanup_thread is not None:
+        _stop_cleanup.set()
+        try:
+            _cleanup_thread.join(timeout=timeout)
+        except Exception as e:
+            print(f"[GOOGLE_SHEETS] Error joining cleanup thread: {e}", flush=True)
+        _cleanup_thread = None
+        print("[GOOGLE_SHEETS] Cleanup loop stopped", flush=True)
+
+
 def update_stats(balance, open_positions, wins, losses, win_rate, profit_usdt, current_loss_streak):
     """
     Update stats to the Stats sheet.
@@ -806,6 +922,7 @@ except Exception as e:
 start_buffer_flush()
 start_config_reload()
 start_health_check()
+start_cleanup_loop()
 
 # Load initial config
 load_config()

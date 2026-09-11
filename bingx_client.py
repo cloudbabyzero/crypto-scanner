@@ -948,6 +948,37 @@ def execute_scalp_trade(symbol, side):
             tp2        = round(filled_entry - risk * (tp_rr * 2.5) - spread_buffer, 4) # Exchange Safety Ceiling (3.0 RR)
 
         # =========================
+        # SL HARD CAP GUARD (safety, post-fill) — the pre-fill check in
+        # analyze_scalping() can still be exceeded here if slippage widened
+        # the actual fill vs the signal's entry price. The position already
+        # exists at this point (market order filled), so on breach we close
+        # it immediately at market instead of leaving it open with an
+        # oversized SL or, worse, unprotected.
+        # =========================
+        max_sl_distance_pct = cfg.get('MAX_SL_DISTANCE_PCT', 0.60)
+        sl_distance_pct = round(risk / filled_entry * 100, 3)
+        if sl_distance_pct > max_sl_distance_pct:
+            logger.error(
+                "Scalp SL hard cap breached post-fill %s side=%s dist=%.3f%% cap=%.2f%% "
+                "fill=%.4f atr=%.4f sl_mult=%.2f — closing position",
+                symbol, side, sl_distance_pct, max_sl_distance_pct, filled_entry, atr, sl_atr_mult
+            )
+            try:
+                close_position_market(symbol, side, amount)
+            except Exception as close_error:
+                logger.error(f"Failed to close over-cap scalp position for {symbol}: {close_error}")
+            main_mod.send_telegram(
+                f"🚨 SCALP SL HARD CAP BREACHED — POSITION CLOSED\n\n"
+                f"{symbol}\n"
+                f"Side: {side.upper()}\n"
+                f"Fill: {filled_entry}\n"
+                f"SL Distance: {sl_distance_pct}% (cap: {max_sl_distance_pct}%)\n"
+                f"ATR: {atr:.4f} | SL Mult: {sl_atr_mult}x\n"
+                f"Reason: post-fill slippage widened SL distance beyond safety cap."
+            )
+            return
+
+        # =========================
         # PLACE PROTECTION ORDERS IMMEDIATELY
         # (market order = position already exists)
         # =========================

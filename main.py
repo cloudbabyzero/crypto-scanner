@@ -1521,7 +1521,10 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         m5 = df_5m.iloc[-2]
 
         m3  = df_3m.iloc[-2]   # last closed base candle (15m, despite variable name)
-        m15 = df_15m.iloc[-2]  # last closed macro candle (1h)
+        m15 = df_15m.iloc[-2]  # last closed macro candle — NOTE: despite the name/comment,
+                                # analyze() passes df_15m=get_dataframe(symbol, '15m'), so this
+                                # is a genuine 15m candle, not 1H. Use h1 below for real 1H data.
+        h1  = df_1h.iloc[-2]   # last closed 1H candle — the real hourly data
 
         # Re-entry Guard: even after LOSS_COOLDOWN has fully elapsed, block
         # re-entry if price is still loitering within ±0.3x ATR of the entry
@@ -1691,6 +1694,43 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 return "Blocked: StochRSI Oversold Floor"
             if side == "LONG" and stoch_rsi > 80:
                 return "Blocked: StochRSI Overbought Ceiling"
+
+            # 1.4 1H Macro Momentum Guard — blocks entries fighting a strong 1H
+            # rebound/breakdown. Fixes the OP incident: 15m/BTC read bearish but
+            # 1H StochRSI was already at 91+ (V-shape rebound in progress).
+            # Uses h1 (df_1h), the real 1H candle — NOT m15, which despite its
+            # name is actually 15m data (see comment at m15 assignment above).
+            stoch_rsi_1h = h1.get('stoch_rsi', 50)
+            if side == "SHORT" and stoch_rsi_1h > 70:
+                return f"Blocked: 1H StochRSI Overbought Rebound ({round(stoch_rsi_1h, 2)} > 70, SHORT forbidden)"
+            if side == "LONG" and stoch_rsi_1h < 30:
+                return f"Blocked: 1H StochRSI Oversold Breakdown ({round(stoch_rsi_1h, 2)} < 30, LONG forbidden)"
+
+            # 1.5 1H Rejection Wick Guard — a long lower/upper wick on the last
+            # closed 1H candle signals a liquidity sweep / hammer rejection
+            # against the trade direction (e.g. long lower wick = buyers
+            # defended that level hard — don't SHORT into it). Uses h1, real 1H.
+            body_h1 = abs(h1['close'] - h1['open'])
+            range_h1 = h1['high'] - h1['low']
+            if range_h1 > 0:
+                if side == "SHORT":
+                    lower_wick_h1 = min(h1['close'], h1['open']) - h1['low']
+                    if lower_wick_h1 > body_h1 * 1.0 and lower_wick_h1 > range_h1 * 0.35:
+                        return f"Blocked: 1H Lower Wick Rejection ({round(lower_wick_h1 / range_h1 * 100, 1)}% of range, SHORT forbidden)"
+                else:
+                    upper_wick_h1 = h1['high'] - max(h1['close'], h1['open'])
+                    if upper_wick_h1 > body_h1 * 1.0 and upper_wick_h1 > range_h1 * 0.35:
+                        return f"Blocked: 1H Upper Wick Rejection ({round(upper_wick_h1 / range_h1 * 100, 1)}% of range, LONG forbidden)"
+
+            # 1.6 15m Structure Alignment (Higher Lows / Lower Highs) — blocks
+            # trading against a forming 3-candle structural shift on the 15m
+            # trigger timeframe (e.g. don't SHORT into consecutive higher lows).
+            low_2, low_3, low_4 = df_3m.iloc[-2]['low'], df_3m.iloc[-3]['low'], df_3m.iloc[-4]['low']
+            high_2, high_3, high_4 = df_3m.iloc[-2]['high'], df_3m.iloc[-3]['high'], df_3m.iloc[-4]['high']
+            if side == "SHORT" and (low_2 > low_3 > low_4):
+                return "Blocked: 15m Higher Lows Forming (SHORT forbidden)"
+            if side == "LONG" and (high_2 < high_3 < high_4):
+                return "Blocked: 15m Lower Highs Forming (LONG forbidden)"
 
             # ---------------------------------------------------------
             # STAGE 2: 15m & 1H STRUCTURAL SETUP GUARD
@@ -1872,6 +1912,21 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             tp2  = round(entry - risk * STRATEGY_CONFIG['SCALPING']['TP_RR'], 4)
             tp1  = round(entry - risk, 4)
             rr   = round((entry - tp2) / (sl - entry), 2)
+
+        # =========================
+        # SL HARD CAP GUARD (safety) — reject outright if computed SL distance
+        # exceeds MAX_SL_DISTANCE_PCT. At x25 leverage a wide ATR-based SL on a
+        # volatile coin can mean a ~25%+ margin loss per stop-out. This is a
+        # pre-fill check; execute_scalp_trade() in bingx_client.py re-checks
+        # against the actual fill price post-market-order, since slippage can
+        # widen the distance further.
+        # =========================
+        max_sl_distance_pct = STRATEGY_CONFIG['SCALPING'].get('MAX_SL_DISTANCE_PCT', 0.60)
+        sl_distance_pct = round(risk / entry * 100, 3)
+        if sl_distance_pct > max_sl_distance_pct:
+            reason = f"Blocked: SL Distance Too Wide ({sl_distance_pct}% > {max_sl_distance_pct}% cap, {sl_atr_mult}x ATR)"
+            _reject(reason)
+            return {"symbol": symbol, "result": "skipped"}
 
         # =========================
         # BUILD MESSAGE
