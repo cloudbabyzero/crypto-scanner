@@ -1559,21 +1559,36 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         rsi_val     = round(m3['rsi'], 2)
 
         # =========================================================
-        # 5-CANDLE ROLLING & 20-CANDLE AUTO-DYNAMIC VOLATILITY FILTER (Floor + Ceiling Guard)
-        # target_min_atr / target_max_atr derive from the 20-candle rolling median of the
+        # 5-CANDLE ROLLING & 40-CANDLE AUTO-DYNAMIC VOLATILITY FILTER (Floor + Ceiling Guard)
+        # target_min_atr / target_max_atr derive from the 40-candle rolling median of the
         # symbol's own recent ATR%, adapting automatically to each symbol's
         # current volatility regime instead of a static per-symbol value.
+        #
+        # FIX (Sep 16): widened baseline window 20 -> 40 candles (100min -> 200min) to
+        # reduce self-referencing lag. The old 20-candle median tracked the *same*
+        # directional ATR move it was gating against, so during a sustained trend
+        # (ATR steadily rising or falling) the floor/ceiling chased the price and
+        # real signals got rejected at the door before ever reaching the gatekeeper
+        # pipeline. A longer window still adapts per-symbol but reacts far slower
+        # than the 5-candle recent-momentum check it's being compared against.
+        #
+        # FIX (Sep 16): added a strong-trend ADX bypass below — when ADX is high
+        # enough to indicate a clean, real trend is already underway, the ATR
+        # floor/ceiling guard (designed to catch dead/chaotic markets) is not
+        # needed and is skipped, so a clear signal isn't rejected by a volatility
+        # filter chasing its own tail.
         # =========================================================
-        # 1. Market baseline for this symbol: median ATR% over last 20 closed candles (100 min)
-        window_20_candles = df_3m.iloc[-21:-1]
-        rolling_20_atr_series = (window_20_candles['atr'] / window_20_candles['close']) * 100
-        market_baseline_atr = rolling_20_atr_series.median()
+        # 1. Market baseline for this symbol: median ATR% over last 40 closed candles (200 min)
+        window_40_candles = df_3m.iloc[-41:-1]
+        rolling_40_atr_series = (window_40_candles['atr'] / window_40_candles['close']) * 100
+        market_baseline_atr = rolling_40_atr_series.median()
 
         # 2. Pull floor/ceiling settings from config
         scalp_filters = STRATEGY_CONFIG['SCALPING']['FILTERS']
         fee_safety_floor = scalp_filters.get('MIN_ATR_PCT', 0.15)     # Floor พื้นล่างสุด
         hard_max_cap = scalp_filters.get('MAX_ATR_PCT', 0.45)         # Hard Ceiling เพดานสูงสุด
         min_ceiling = scalp_filters.get('MIN_CEILING_ATR_PCT', 0.30)  # Minimum Ceiling เพดานขั้นต่ำ
+        strong_trend_adx = scalp_filters.get('STRONG_TREND_ADX_BYPASS', 35)  # ADX >= this skips ATR guard entirely
 
         # 3. Dynamic Floor = 85% of baseline, floored at fee_safety_floor
         target_min_atr = round(max(fee_safety_floor, market_baseline_atr * 0.85), 2)
@@ -1586,19 +1601,40 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         rolling_atr_series = (recent_5_candles['atr'] / recent_5_candles['close']) * 100
         avg_atr_5c = round(rolling_atr_series.mean(), 2)
 
+        # --- Strong-Trend Bypass: ADX already confirms a clean, real trend, so the
+        # dead-market/chaos guard below (meant for choppy/no-momentum conditions)
+        # would only reject a good signal for volatility that's a symptom of the
+        # trend itself, not noise. The absolute fee_safety_floor / hard_max_cap
+        # bounds still apply — this only skips the *dynamic* (self-referencing) part.
+        strong_trend = adx_val >= strong_trend_adx
+
         # --- Check Floor: ป้องกันตลาดนิ่ง (Dead Market) ---
-        if avg_atr_5c < target_min_atr or atr_val < fee_safety_floor:
+        if not strong_trend and (avg_atr_5c < target_min_atr or atr_val < fee_safety_floor):
             cur_low_val = min(avg_atr_5c, atr_val)
             status_msg = f"Avg ATR Too Low ({cur_low_val}% < Auto-Target {target_min_atr}%)"
             set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
+        elif strong_trend and atr_val < fee_safety_floor:
+            # Even in a strong trend, never allow ATR below the hard fee-safety floor —
+            # this catches genuinely illiquid/degenerate cases, not chop.
+            status_msg = f"ATR Below Fee-Safety Floor ({atr_val}% < {fee_safety_floor}%)"
+            set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
+            return {"symbol": symbol, "result": "skipped"}
 
         # --- Check Ceiling: ป้องกันตลาดคลั่ง / ไส้เทียนลาก SL (Spike / Extreme Volatility) ---
-        if avg_atr_5c > target_max_atr or atr_val > target_max_atr:
+        if not strong_trend and (avg_atr_5c > target_max_atr or atr_val > target_max_atr):
             status_msg = f"Avg ATR Too Wild ({max(avg_atr_5c, atr_val)}% > Auto-Max {target_max_atr}%)"
             set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            return {"symbol": symbol, "result": "skipped"}
+        elif strong_trend and atr_val > hard_max_cap:
+            # Strong trend still can't override the absolute hard cap — this is the
+            # line between "trending hard" and "spiking/wicking" (SL-hunt territory).
+            status_msg = f"ATR Above Hard Cap Even In Strong Trend ({atr_val}% > {hard_max_cap}%)"
+            set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
             return {"symbol": symbol, "result": "skipped"}
 
         # FIX: Added ADX filter — was missing from SCALPING entirely

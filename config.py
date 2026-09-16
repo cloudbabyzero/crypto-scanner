@@ -237,8 +237,19 @@ STRATEGY_CONFIG = {
             # FIX (Aug 28): MIN_ADX 20 → 25 — cut low-momentum chop entries (e.g. AAVE ADX 23.06
             # was scoring as tradeable under the old floor)
             "MIN_ADX": 20,
-            # FIX (Aug 27): MAX_ADX widened 50 → 55 — allow strong-trend coins like SOL/SUI through
-            "MAX_ADX": 40,
+            # FIX (Sep 16): MAX_ADX 40 → 50 — the old 40 cap was the single biggest
+            # rejection reason in the log (795 hits, all in the 40-49 ADX range),
+            # rejecting exactly the strong, clean trends the user was watching form
+            # on the chart (e.g. XRP cutting a clear 15m cross at ADX 42-43). ADX
+            # 40-49 is still a healthy trend, not blow-off/exhaustion territory
+            # (that's closer to 55+) — and StochRSI-extreme / wick-rejection gates
+            # in the pipeline already catch genuine exhaustion tops/bottoms, so this
+            # was double-gating the same risk.
+            "MAX_ADX": 50,
+            # FIX (Sep 16): ADX at/above this skips the dynamic (self-referencing)
+            # ATR floor/ceiling guard in analyze_scalping — see comment there. The
+            # absolute MIN_ATR_PCT / MAX_ATR_PCT bounds still always apply.
+            "STRONG_TREND_ADX_BYPASS": 35,
             # --- ATR Volatility Guard Settings, recalibrated for 15m candles ---
             "MIN_ATR_PCT": 0.20,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม (ผ่อนจาก 0.35 — BTC/AAVE ~0.25-0.30% เดิมโดนบล็อกเป็น Chop ทั้งที่วิ่งปกติ)
             "MAX_ATR_PCT": 1.50,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
