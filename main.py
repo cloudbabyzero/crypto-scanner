@@ -1726,9 +1726,23 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # 1.3 StochRSI Hard Gatekeeper — blocks before any Gate Pass / Market
             # Order is issued. SHORT into an already-oversold floor or LONG into
             # an already-overbought ceiling gets rejected outright, no compensation.
-            if side == "SHORT" and stoch_rsi < 20:
+            #
+            # FIX (Sep 17): added a strong-trend ADX bypass, mirroring the one on
+            # the ATR floor/ceiling guard. Root cause (confirmed against the NEAR
+            # 15m chart, Sep 16 15:30 breakout): StochRSI(15m) started the move at
+            # ~20 and rode straight up to >80 as the trend kept extending — normal
+            # behavior for a strong, healthy trend, not a reversal warning. Without
+            # a bypass this gate stayed permanently shut for the rest of that whole
+            # +13.5% move, matching the user's exact complaint ("bot never enters
+            # even on a clean signal"). ADX confirms trend strength independently
+            # of StochRSI, so a high-ADX side is allowed through even while
+            # StochRSI sits pinned at an extreme — the absolute floor/ceiling logic
+            # itself is untouched, this only adds an escape hatch for confirmed
+            # strong trends.
+            strong_trend_side = adx_val >= scalp_filters.get('STRONG_TREND_ADX_BYPASS', 35)
+            if not strong_trend_side and side == "SHORT" and stoch_rsi < 20:
                 return "Blocked: StochRSI Oversold Floor"
-            if side == "LONG" and stoch_rsi > 80:
+            if not strong_trend_side and side == "LONG" and stoch_rsi > 80:
                 return "Blocked: StochRSI Overbought Ceiling"
 
             # 1.4 1H Macro Momentum Guard — blocks entries fighting a strong 1H

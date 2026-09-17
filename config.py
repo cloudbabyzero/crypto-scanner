@@ -249,7 +249,17 @@ STRATEGY_CONFIG = {
             # FIX (Sep 16): ADX at/above this skips the dynamic (self-referencing)
             # ATR floor/ceiling guard in analyze_scalping — see comment there. The
             # absolute MIN_ATR_PCT / MAX_ATR_PCT bounds still always apply.
-            "STRONG_TREND_ADX_BYPASS": 35,
+            # FIX (Sep 17): 35 → 28 — 35 confirmed too high to be usable in
+            # practice (ADX is a lagging indicator, so by the time it reaches 35
+            # the trend has already run for a while). Checked against the Debug
+            # log: DOGE (ADX 27.8-28.7) and most of NEAR's move (ADX 26-32) never
+            # got the bypass at 35, so the StochRSI ceiling gate still blocked
+            # them mid-trend. 28 is set to catch these confirmed-real trends
+            # while still filtering out the ADX~20 cases (ETH, OP, APT) seen in
+            # the same log, which is closer to the sideways/no-trend floor (ADX
+            # 20) than a real breakout — lowering further would start letting
+            # those weaker-trend cases through too.
+            "STRONG_TREND_ADX_BYPASS": 28,
             # --- ATR Volatility Guard Settings, recalibrated for 15m candles ---
             "MIN_ATR_PCT": 0.20,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม (ผ่อนจาก 0.35 — BTC/AAVE ~0.25-0.30% เดิมโดนบล็อกเป็น Chop ทั้งที่วิ่งปกติ)
             "MAX_ATR_PCT": 1.50,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
