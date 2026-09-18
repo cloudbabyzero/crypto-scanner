@@ -1588,7 +1588,14 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         fee_safety_floor = scalp_filters.get('MIN_ATR_PCT', 0.15)     # Floor พื้นล่างสุด
         hard_max_cap = scalp_filters.get('MAX_ATR_PCT', 0.45)         # Hard Ceiling เพดานสูงสุด
         min_ceiling = scalp_filters.get('MIN_CEILING_ATR_PCT', 0.30)  # Minimum Ceiling เพดานขั้นต่ำ
-        strong_trend_adx = scalp_filters.get('STRONG_TREND_ADX_BYPASS', 35)  # ADX >= this skips ATR guard entirely
+        strong_trend_adx = scalp_filters.get('STRONG_TREND_ADX_BYPASS', 28)  # ADX >= this skips ATR guard entirely
+        # FIX (Sep 18): true absolute ceiling a strong trend can never cross (was a
+        # flat 1.5% wall with zero exceptions — see comment at the check below).
+        extreme_hard_cap = scalp_filters.get('EXTREME_ATR_HARD_CAP_PCT', 2.0)
+        # This particular bypass uses a stricter ADX bar than the general
+        # STRONG_TREND_ADX_BYPASS (28) — it's the last line of defense before the
+        # true extreme cap, so it deliberately asks for stronger trend confirmation.
+        extreme_bypass_adx = scalp_filters.get('EXTREME_CAP_BYPASS_ADX', 35)
 
         # 3. Dynamic Floor = 85% of baseline, floored at fee_safety_floor
         target_min_atr = round(max(fee_safety_floor, market_baseline_atr * 0.85), 2)
@@ -1629,10 +1636,27 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
-        elif strong_trend and atr_val > hard_max_cap:
-            # Strong trend still can't override the absolute hard cap — this is the
-            # line between "trending hard" and "spiking/wicking" (SL-hunt territory).
+        elif strong_trend and adx_val < extreme_bypass_adx and atr_val > hard_max_cap:
+            # Strong-trend bypass is active (ADX >= 28) but not yet strong enough
+            # (ADX < 35) to earn the extreme-cap bypass below — still enforce the
+            # normal hard_max_cap (1.5%) in this middle zone, same as before.
             status_msg = f"ATR Above Hard Cap Even In Strong Trend ({atr_val}% > {hard_max_cap}%)"
+            set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
+            return {"symbol": symbol, "result": "skipped"}
+        elif adx_val >= extreme_bypass_adx and atr_val > extreme_hard_cap:
+            # FIX (Sep 18): the hard cap is now two-tiered instead of one absolute
+            # wall. Root cause (ARB, Sep 18 00:46-06:44): ADX and ATR rose and fell
+            # together in a smooth 6-hour arc (ADX 32->39.8->23, ATR 1.57->1.90->1.47)
+            # — the signature of a genuinely strong trend, not a spike/SL-hunt (which
+            # is a sharp V-shape over a few candles, not a 6-hour arc). The old flat
+            # 1.5% cap blocked this entire move even at ADX 38-39. Below
+            # extreme_hard_cap (2.0%), a confirmed strong trend (ADX >= bypass
+            # threshold, checked above via `strong_trend`) is now allowed through
+            # despite ATR exceeding hard_max_cap (1.5%) — extreme_hard_cap is the
+            # true, non-negotiable ceiling that even a strong trend cannot cross,
+            # reserved for genuine extreme/spike conditions.
+            status_msg = f"ATR Above Absolute Extreme Cap ({atr_val}% > {extreme_hard_cap}%)"
             set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
             return {"symbol": symbol, "result": "skipped"}
@@ -1810,10 +1834,26 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # chasing price too far above EMA7, SHORT chasing too far below).
             # A pullback toward a better entry (LONG dipping below EMA7, SHORT
             # bouncing above EMA7) is not chasing and must not be blocked here.
-            if side == "LONG" and ema7_dist_pct > 0.25:
-                return f"Blocked: Anti-Chase LONG (Price {round(ema7_dist_pct, 3)}% > 0.25% above EMA7)"
-            if side == "SHORT" and ema7_dist_pct < -0.25:
-                return f"Blocked: Anti-Chase SHORT (Price {round(ema7_dist_pct, 3)}% < -0.25% below EMA7)"
+            #
+            # FIX (Sep 18): threshold changed from a flat 0.25% to
+            # ANTI_CHASE_ATR_MULT x ATR%. Root cause (checked against log across
+            # NEAR/AAVE/APT during their Sep 18 trending windows): a flat 0.25%
+            # has no relationship to how far price naturally travels per candle for
+            # a given symbol/volatility regime. NEAR (ATR 1.25%) got blocked at
+            # 1.82% stretch — 1.46x its own ATR, a perfectly normal distance in an
+            # active trend — while the same flat rule would treat a low-volatility
+            # coin's tiny 0.25% stretch as equally extreme. Scaling by ATR makes
+            # the guard mean the same thing (a genuine chase vs. a normal pullback
+            # distance) across every symbol and volatility regime, instead of
+            # punishing high-ATR trending coins specifically. A percentage floor
+            # is kept so very low-ATR symbols don't get an unreasonably tight gate.
+            anti_chase_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT', 0.6)
+            anti_chase_floor_pct = scalp_filters.get('ANTI_CHASE_MIN_PCT', 0.15)
+            anti_chase_threshold = max(anti_chase_floor_pct, atr_val * anti_chase_mult)
+            if side == "LONG" and ema7_dist_pct > anti_chase_threshold:
+                return f"Blocked: Anti-Chase LONG (Price {round(ema7_dist_pct, 3)}% > {round(anti_chase_threshold, 3)}% above EMA7)"
+            if side == "SHORT" and ema7_dist_pct < -anti_chase_threshold:
+                return f"Blocked: Anti-Chase SHORT (Price {round(ema7_dist_pct, 3)}% < -{round(anti_chase_threshold, 3)}% below EMA7)"
 
             # 2.5 Clearance to Breakeven Guard — needs >= 1.3x ATR of room to the
             # nearest 12-candle swing high/low so price can reach +1.2x ATR

@@ -263,11 +263,35 @@ STRATEGY_CONFIG = {
             # --- ATR Volatility Guard Settings, recalibrated for 15m candles ---
             "MIN_ATR_PCT": 0.20,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม (ผ่อนจาก 0.35 — BTC/AAVE ~0.25-0.30% เดิมโดนบล็อกเป็น Chop ทั้งที่วิ่งปกติ)
             "MAX_ATR_PCT": 1.50,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
+            # FIX (Sep 18): new two-tier ceiling — added after ARB got blocked for
+            # 6 straight hours (00:46-06:44) by the flat MAX_ATR_PCT wall above,
+            # even while ADX rose smoothly to 38-39.8 confirming a genuine strong
+            # trend (not a spike — a real spike/SL-hunt is a sharp V-shape over a
+            # few candles, not a 6-hour arc). Below EXTREME_ATR_HARD_CAP_PCT, a
+            # confirmed strong trend (ADX >= EXTREME_CAP_BYPASS_ADX) is now allowed
+            # through even when ATR exceeds MAX_ATR_PCT. EXTREME_ATR_HARD_CAP_PCT
+            # itself is the true, non-negotiable ceiling — nothing bypasses it.
+            # EXTREME_CAP_BYPASS_ADX (35) is intentionally stricter than
+            # STRONG_TREND_ADX_BYPASS (28) since this is the last safety line
+            # before the absolute cap, not the general dynamic-guard bypass.
+            "EXTREME_ATR_HARD_CAP_PCT": 2.0,
+            "EXTREME_CAP_BYPASS_ADX": 35,
             "MIN_CEILING_ATR_PCT": 0.65,  # [Minimum Ceiling เพดานขั้นต่ำ] ยกเพดานให้เหรียญใหญ่ (BTC/ETH) เพื่อให้มีช่วงว่างวิ่งเทรดได้
             # FIX (Aug 27): tightened 68/32 → 60/38 — block LONG entries near overbought peak
             # and SHORT entries near oversold bottom (RSI_SAFE_LONG_MAX / RSI_SAFE_SHORT_MIN)
             "RSI_SAFE_LONG_MAX": 60,
-            "RSI_SAFE_SHORT_MIN": 38
+            "RSI_SAFE_SHORT_MIN": 38,
+            # FIX (Sep 18): Anti-Chase Guard changed from a flat 0.25% EMA7-stretch
+            # limit to ANTI_CHASE_ATR_MULT x ATR%, with ANTI_CHASE_MIN_PCT as a floor
+            # for low-ATR symbols. Root cause (Debug log, Sep 18 trending windows):
+            # a flat 0.25% blocked NEAR/AAVE/APT/ARB entries whose actual stretch was
+            # 0.35x-0.58x their own ATR — a normal distance in an active trend, not
+            # chasing. Checked against every historical Anti-Chase block: 0.6x keeps
+            # blocking every case that stretched further than that (0.7x-1.98x, the
+            # genuine over-extended entries) while letting the merely-normal ones
+            # (0.35x-0.58x) through.
+            "ANTI_CHASE_ATR_MULT": 0.6,
+            "ANTI_CHASE_MIN_PCT": 0.15
         }
     },
     "SIDEWAYS": {
