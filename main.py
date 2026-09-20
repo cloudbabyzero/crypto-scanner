@@ -1774,10 +1774,21 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # 1H StochRSI was already at 91+ (V-shape rebound in progress).
             # Uses h1 (df_1h), the real 1H candle — NOT m15, which despite its
             # name is actually 15m data (see comment at m15 assignment above).
+            #
+            # FIX (Sep 20): added the same strong-trend ADX bypass as the 15m
+            # StochRSI gate above. Root cause (Debug log, Sep 20): this 1H version
+            # was the single biggest blocker in the whole pipeline (534 hits on
+            # the LONG side, 36% already at ADX>=28) and blocked 100% of SHORT
+            # attempts with ADX>=28 (120/120 cases, up to ADX 48.6) — a 1H
+            # timeframe naturally sits at a StochRSI extreme even longer than 15m
+            # during a real sustained trend, so this gate was effectively vetoing
+            # every strong trend on the SHORT side entirely. Same reasoning as the
+            # 15m fix: a high, sustained ADX already confirms real trend strength
+            # independently of where StochRSI sits.
             stoch_rsi_1h = h1.get('stoch_rsi', 50)
-            if side == "SHORT" and stoch_rsi_1h > 70:
+            if not strong_trend_side and side == "SHORT" and stoch_rsi_1h > 70:
                 return f"Blocked: 1H StochRSI Overbought Rebound ({round(stoch_rsi_1h, 2)} > 70, SHORT forbidden)"
-            if side == "LONG" and stoch_rsi_1h < 30:
+            if not strong_trend_side and side == "LONG" and stoch_rsi_1h < 30:
                 return f"Blocked: 1H StochRSI Oversold Breakdown ({round(stoch_rsi_1h, 2)} < 30, LONG forbidden)"
 
             # 1.5 1H Rejection Wick Guard — a long lower/upper wick on the last
