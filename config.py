@@ -262,7 +262,20 @@ STRATEGY_CONFIG = {
             "STRONG_TREND_ADX_BYPASS": 28,
             # --- ATR Volatility Guard Settings, recalibrated for 15m candles ---
             "MIN_ATR_PCT": 0.20,          # [Floor พื้นล่างสุด] ห้ามต่ำกว่านี้เด็ดขาด ป้องกันตลาดนิ่งจนไม่คุ้มค่าธรรมเนียม (ผ่อนจาก 0.35 — BTC/AAVE ~0.25-0.30% เดิมโดนบล็อกเป็น Chop ทั้งที่วิ่งปกติ)
-            "MAX_ATR_PCT": 1.50,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
+            # FIX (Sep 22): 1.50 → 1.85. Root cause (Debug log, Sep 22): NEAR ran
+            # +200% over the prior month (1.536 -> 4.632, confirmed on the daily
+            # chart, RSI 85 with no reversal signal) and sat blocked here for 6+
+            # straight hours at ADX 28-33, ATR 1.66-1.84% — a real, sustained
+            # trend, just one whose ADX kept oscillating in the high-20s/low-30s
+            # rather than clearing EXTREME_CAP_BYPASS_ADX (35). Checked every
+            # historical hit of this gate (213 cases, all coins): every single one
+            # fell within ATR 1.55-1.84%, ADX 28-33 — a narrow, consistent band,
+            # not scattered outliers. 1.85 covers that whole observed band with a
+            # small margin, so the 28-35 ADX zone (confirmed trend, not yet
+            # "extreme") now clears on its own without needing the stricter
+            # extreme-cap bypass. EXTREME_ATR_HARD_CAP_PCT (2.0) is unchanged and
+            # still the true ceiling nothing crosses.
+            "MAX_ATR_PCT": 1.85,          # [Hard Ceiling เพดานสูงสุด] ห้ามเกินนี้เด็ดขาด ป้องกันตลาดคลั่ง/แทงไส้ลากกิน SL
             # FIX (Sep 18): new two-tier ceiling — added after ARB got blocked for
             # 6 straight hours (00:46-06:44) by the flat MAX_ATR_PCT wall above,
             # even while ADX rose smoothly to 38-39.8 confirming a genuine strong
