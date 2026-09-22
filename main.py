@@ -1810,11 +1810,24 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # 1.6 15m Structure Alignment (Higher Lows / Lower Highs) — blocks
             # trading against a forming 3-candle structural shift on the 15m
             # trigger timeframe (e.g. don't SHORT into consecutive higher lows).
+            #
+            # FIX (Sep 23): added the same strong-trend ADX bypass used on
+            # StochRSI/VWAP above. Root cause (Debug log, Sep 23): a real,
+            # sustained uptrend naturally has short pullbacks where the last 3
+            # candles' highs step down for a bar or two even while the larger
+            # trend is climbing — that's normal price action, not a reversal.
+            # This 3-candle-only check has no way to tell that apart from an
+            # actual top forming, so it was blocking BTC/ETH/AVAX 100% of the
+            # time this fired during their trending windows (ADX>=28, up to
+            # 36.5) — the exact "trend looks great but the bot won't enter"
+            # pattern the user flagged. A high, sustained ADX already confirms
+            # the larger trend is intact independently of this short 3-candle
+            # read.
             low_2, low_3, low_4 = df_3m.iloc[-2]['low'], df_3m.iloc[-3]['low'], df_3m.iloc[-4]['low']
             high_2, high_3, high_4 = df_3m.iloc[-2]['high'], df_3m.iloc[-3]['high'], df_3m.iloc[-4]['high']
-            if side == "SHORT" and (low_2 > low_3 > low_4):
+            if not strong_trend_side and side == "SHORT" and (low_2 > low_3 > low_4):
                 return "Blocked: 15m Higher Lows Forming (SHORT forbidden)"
-            if side == "LONG" and (high_2 < high_3 < high_4):
+            if not strong_trend_side and side == "LONG" and (high_2 < high_3 < high_4):
                 return "Blocked: 15m Lower Highs Forming (LONG forbidden)"
 
             # ---------------------------------------------------------
