@@ -1822,9 +1822,25 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # ---------------------------------------------------------
 
             # 2.1 VWAP Absolute Gatekeeper (2-Candle Confirmation)
-            if side == "LONG" and not vwap_confirmed_above:
+            #
+            # FIX (Sep 22): added the same strong-trend ADX bypass used on the
+            # StochRSI gates above. Root cause (Debug log, Sep 22 — BTC 7-hour
+            # trending window, ADX 40-56 the entire time): this gate was the
+            # single largest active blocker in the pipeline (419 hits, 81% of
+            # them at ADX>=28, up to ADX 47.9) and was one of several gates that
+            # took turns blocking BTC's LONG entry for the full 7 hours with no
+            # window where all gates cleared simultaneously. The 2-candle
+            # same-side rule is a real, structurally-motivated check (it filters
+            # single-candle wick fakeouts) but during a genuinely strong,
+            # sustained trend price legitimately whipsaws across VWAP on the 15m
+            # chart even while the larger trend is intact and healthy — the same
+            # class of problem as StochRSI pinning at an extreme, just expressed
+            # as flip-flopping instead of staying pinned. A high, sustained ADX
+            # already confirms real trend strength independently of this
+            # 2-candle VWAP confirmation.
+            if not strong_trend_side and side == "LONG" and not vwap_confirmed_above:
                 return "Blocked: Below VWAP or Not Confirmed 2 Candles (LONG forbidden)"
-            if side == "SHORT" and not vwap_confirmed_below:
+            if not strong_trend_side and side == "SHORT" and not vwap_confirmed_below:
                 return "Blocked: Above VWAP or Not Confirmed 2 Candles (SHORT forbidden)"
 
             # 2.2 15m EMA Structural Alignment
