@@ -304,6 +304,16 @@ STRATEGY_CONFIG = {
             # genuine over-extended entries) while letting the merely-normal ones
             # (0.35x-0.58x) through.
             "ANTI_CHASE_ATR_MULT": 0.6,
+            # FIX (Sep 23): widened multiplier for confirmed strong trends (ADX >=
+            # STRONG_TREND_ADX_BYPASS). Root cause (Debug log, Sep 23 — OP/ARB):
+            # even with ATR-scaling, 74% of Anti-Chase blocks still hit at
+            # ADX>=28, because an accelerating trend legitimately stretches
+            # further per candle than the 0.6x baseline. 1.1x still blocks
+            # genuine overextension (checked against every historical case: ARB's
+            # 2.07x and APT's 1.41x/1.33x cases still exceed it) while no longer
+            # flagging the merely-normal stretch (0.70x-0.96x) that a real trend
+            # produces. See the gate comment in main.py for the full reasoning.
+            "ANTI_CHASE_ATR_MULT_STRONG_TREND": 1.1,
             "ANTI_CHASE_MIN_PCT": 0.15
         }
     },

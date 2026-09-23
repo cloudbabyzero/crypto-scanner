@@ -1888,6 +1888,23 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # punishing high-ATR trending coins specifically. A percentage floor
             # is kept so very low-ATR symbols don't get an unreasonably tight gate.
             anti_chase_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT', 0.6)
+            # FIX (Sep 23): strong-trend multiplier added. Root cause (Debug log,
+            # Sep 23 — OP/ARB trending windows, ADX 28-39): even after the Sep 18
+            # ATR-scaling fix, 74% of Anti-Chase blocks still occurred at ADX>=28
+            # (stretch/ATR ratio 0.7x-2.07x) — a stronger, accelerating trend
+            # naturally stretches further from its own EMA7 per candle than the
+            # 0.6x baseline assumes. Unlike VWAP/StochRSI (which read short-term
+            # noise that a confirmed trend makes irrelevant), Anti-Chase protects
+            # against a real risk — buying a price that's overextended and due for
+            # a pullback — so a full ADX bypass isn't right here. Instead the
+            # multiplier itself widens with confirmed trend strength: normal
+            # (0.6x) below STRONG_TREND_ADX_BYPASS, wider (1.1x) once ADX confirms
+            # a real sustained trend. This still blocks genuine overextension
+            # (the ARB case at 2.07x ATR still exceeds even the widened limit)
+            # while no longer flagging normal stretch inside a strong trend as
+            # chasing.
+            if strong_trend_side:
+                anti_chase_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT_STRONG_TREND', 1.1)
             anti_chase_floor_pct = scalp_filters.get('ANTI_CHASE_MIN_PCT', 0.15)
             anti_chase_threshold = max(anti_chase_floor_pct, atr_val * anti_chase_mult)
             if side == "LONG" and ema7_dist_pct > anti_chase_threshold:
