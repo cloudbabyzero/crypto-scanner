@@ -2033,11 +2033,25 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         atr = m3['atr']
 
+        # --- ADX Momentum Direction Check ---
+        # FIX (Sep 24): added after comparing a loss (DOGE) against a win (APT).
+        # DOGE entered SHORT with ADX 37-42 (higher than APT's 28.91) but still
+        # lost — its ADX had been declining for hours before entry (53->50->48->
+        # 46->42->40->37), so despite the still-high reading, momentum was
+        # fading, not building. APT's lower-but-stable/rising ADX went on to a
+        # +17.9% trailing win. The raw ADX level at entry doesn't tell the two
+        # cases apart; its recent trajectory does. This doesn't block entries
+        # (the user wants the same entry frequency) — it only widens the SL
+        # buffer when momentum is fading, since a weakening trend is more likely
+        # to whipsaw before reaching the +1.2x ATR breakeven distance.
+        adx_3_ago = df_3m.iloc[-5]['adx'] if len(df_3m) >= 5 else adx_val
+        adx_fading = adx_val < adx_3_ago
+
         # --- Dynamic / Adaptive Stop Loss (per-asset ATR% profile) ---
         _dyn_sl_cfg = STRATEGY_CONFIG['SCALPING']
         _dyn_threshold = _dyn_sl_cfg.get('DYNAMIC_SL_ATR_THRESHOLD', 1.00)
         if _dyn_sl_cfg.get('DYNAMIC_SL_ENABLED', False):
-            if atr_val >= _dyn_threshold:
+            if atr_val >= _dyn_threshold or adx_fading:
                 sl_atr_mult = _dyn_sl_cfg.get('DYNAMIC_SL_MULT_HIGH_NOISE', 1.8)
                 dynamic_sl_mode = "HIGH_NOISE"
             else:
