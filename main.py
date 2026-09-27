@@ -1578,6 +1578,32 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # needed and is skipped, so a clear signal isn't rejected by a volatility
         # filter chasing its own tail.
         # =========================================================
+        # --- Fresh Golden/Death Cross Bypass ---
+        # FIX (Sep 26): added after the user flagged NEAR — EMA7 crossed above
+        # EMA25 (a genuine golden cross, confirmed on the 15m chart) right as the
+        # price started a sharp move, but the bot never got a chance to even look
+        # at the EMA relationship: the ATR Hard Cap guard above (gate 1.2, runs
+        # before EMA check at 2.2) blocked it first, every scan, because NEAR's
+        # ADX sat in the 28-34.9 "middle zone" the whole time — high enough to
+        # trigger the strong-trend ATR bypass but not high enough to clear
+        # EXTREME_CAP_BYPASS_ADX (35) for the 1.85-2.0% ATR band it was in. The
+        # EMA cross itself was never the problem; it simply never got evaluated.
+        # A cross this fresh (within FRESH_CROSS_LOOKBACK candles) is a strong,
+        # independent trend-start signal in its own right, so it's allowed to
+        # bypass the ATR ceiling checks specifically — the true extreme cap
+        # (EXTREME_ATR_HARD_CAP_PCT) still always applies, and every other gate
+        # in the pipeline (EMA structure, VWAP, Wick Rejection, Anti-Chase,
+        # Clearance to Breakeven, etc.) still runs normally afterward.
+        _cross_lookback = scalp_filters.get('FRESH_CROSS_LOOKBACK', 3) if 'scalp_filters' in dir() else 3
+        try:
+            _ema7_now, _ema25_now = df_3m.iloc[-2]['ema7'], df_3m.iloc[-2]['ema25']
+            _ema7_prev, _ema25_prev = df_3m.iloc[-2 - _cross_lookback]['ema7'], df_3m.iloc[-2 - _cross_lookback]['ema25']
+            fresh_golden_cross = (_ema7_now > _ema25_now) and (_ema7_prev <= _ema25_prev)
+            fresh_death_cross = (_ema7_now < _ema25_now) and (_ema7_prev >= _ema25_prev)
+        except (IndexError, KeyError):
+            fresh_golden_cross = False
+            fresh_death_cross = False
+
         # 1. Market baseline for this symbol: median ATR% over last 40 closed candles (200 min)
         window_40_candles = df_3m.iloc[-41:-1]
         rolling_40_atr_series = (window_40_candles['atr'] / window_40_candles['close']) * 100
@@ -1862,12 +1888,51 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             if side == "SHORT" and not (m3['ema7'] < m3['ema25']):
                 return "Blocked: 15m EMA7 not below EMA25 (SHORT forbidden)"
 
+            # 2.2b EMA25 Slope Guard (Fake/Shallow Cross Filter)
+            # FIX (Sep 27): added after a LINK LONG loss (-32.1%) where EMA7 had
+            # just barely crossed above EMA25 — passing 2.2 above — but the
+            # larger trend (EMA25's own direction) was still pointing down from
+            # a prior sharp drop. The bounce reversed within a few candles and
+            # price kept falling. Checking only EMA7-vs-EMA25's current position
+            # (2.2) can't tell a genuine trend-start crossover apart from a
+            # shallow bounce inside a larger opposing move — this checks that
+            # EMA25 itself has turned in the trade's direction over the last few
+            # candles, not just that price/EMA7 poked across it.
+            ema25_now = m3['ema25']
+            ema25_prior = df_3m.iloc[-2 - scalp_filters.get('EMA25_SLOPE_LOOKBACK', 3)]['ema25']
+            if side == "LONG" and not (ema25_now > ema25_prior):
+                return "Blocked: 15m EMA25 Not Rising (LONG forbidden, shallow/fake cross)"
+            if side == "SHORT" and not (ema25_now < ema25_prior):
+                return "Blocked: 15m EMA25 Not Falling (SHORT forbidden, shallow/fake cross)"
+
             # 2.3 1H EMA99 Macro Support/Resistance Guard
             ema99_1h = df_1h.iloc[-2].get('ema99', df_1h.iloc[-2]['ema25'])
             if side == "LONG" and not (m3['close'] >= ema99_1h):
                 return f"Blocked: 1H EMA99 Resistance (Close < EMA99, {round(m3['close'], 4)} < {round(ema99_1h, 4)})"
             if side == "SHORT" and not (m3['close'] <= ema99_1h):
                 return f"Blocked: 1H EMA99 Support (Close > EMA99, {round(m3['close'], 4)} > {round(ema99_1h, 4)})"
+
+            # 2.3b Momentum Exhaustion Guard (Recent-Move-Size Filter)
+            # FIX (Sep 27): added after an ARB LONG loss (-35.7%) where price had
+            # just risen roughly 4x its own ATR over the last few candles before
+            # entry — the chart shows a sharp green run straight into the entry
+            # point, followed immediately by a reversal. Anti-Chase (2.4 below)
+            # only measures distance from EMA7 at the moment of entry; it doesn't
+            # look at how far price already traveled in the last few candles to
+            # get there. A move this large, this fast, relative to the symbol's
+            # own normal candle size, is more likely to be the tail end of a
+            # short-term spike than the start of a sustained trend — this blocks
+            # entries chasing directly into that kind of move, independent of
+            # where price currently sits relative to EMA7.
+            _exhaust_lookback = scalp_filters.get('EXHAUSTION_LOOKBACK', 4)
+            _exhaust_mult = scalp_filters.get('EXHAUSTION_ATR_MULT', 3.0)
+            _recent_start_price = df_3m.iloc[-2 - _exhaust_lookback]['close']
+            _recent_move_pct = (m3['close'] - _recent_start_price) / _recent_start_price * 100
+            _exhaustion_threshold = atr_val * _exhaust_mult
+            if side == "LONG" and _recent_move_pct > _exhaustion_threshold:
+                return f"Blocked: Momentum Exhaustion LONG (recent {_exhaust_lookback}-candle move {round(_recent_move_pct,2)}% > {round(_exhaustion_threshold,2)}%)"
+            if side == "SHORT" and _recent_move_pct < -_exhaustion_threshold:
+                return f"Blocked: Momentum Exhaustion SHORT (recent {_exhaust_lookback}-candle move {round(_recent_move_pct,2)}% < -{round(_exhaustion_threshold,2)}%)"
 
             # 2.4 Anti-Chase Guard (EMA Stretch Limit) — direction-aware: only
             # blocks chasing away from EMA7 in the trade's own direction (LONG
