@@ -314,24 +314,7 @@ STRATEGY_CONFIG = {
             # flagging the merely-normal stretch (0.70x-0.96x) that a real trend
             # produces. See the gate comment in main.py for the full reasoning.
             "ANTI_CHASE_ATR_MULT_STRONG_TREND": 1.1,
-            "ANTI_CHASE_MIN_PCT": 0.15,
-            # FIX (Sep 27): two new filters added after an ARB LONG loss
-            # (-35.7%, entered right after a sharp 4-candle spike) and a LINK
-            # LONG loss (-32.1%, entered on a shallow EMA7/25 cross while the
-            # larger trend was still pointing down). See the gate comments in
-            # main.py (2.2b and 2.3b) for full reasoning.
-            #
-            # EMA25_SLOPE_LOOKBACK: candles back to compare EMA25 against, to
-            # confirm the larger 15m trend (not just EMA7's position) has
-            # actually turned in the trade's direction.
-            "EMA25_SLOPE_LOOKBACK": 3,
-            # EXHAUSTION_LOOKBACK / EXHAUSTION_ATR_MULT: blocks entries chasing
-            # directly into a move that already covered more than
-            # EXHAUSTION_ATR_MULT x ATR% over the last EXHAUSTION_LOOKBACK
-            # candles — checked against the ARB case (3.6% over 4 candles vs
-            # 0.9% ATR = 4x) and set below that so cases like it are caught.
-            "EXHAUSTION_LOOKBACK": 4,
-            "EXHAUSTION_ATR_MULT": 3.0
+            "ANTI_CHASE_MIN_PCT": 0.15
         }
     },
     "SIDEWAYS": {
