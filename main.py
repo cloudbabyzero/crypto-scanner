@@ -1432,27 +1432,17 @@ def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False)
 # =========================
 
 def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, df_1h=None, local_regime="", btc_regime=""):
-    """Scalping regime analysis — fast entry via market order on 15m timeframe.
-
-    Key differences from other strategies (updated Aug 20):
-    - Uses 15m as primary TF (1h for macro confirmation) — moved up from 5m/15m
-      to avoid 5m candle wick noise stopping out otherwise-correct trades
-    - Market order entry (no pullback wait)
-    - SL: ATR(15m) * 1.5 (dynamic 1.5/1.8 depending on noise regime)
-    - TP: risk * 2.0 RR
-    - 2-phase profit management: auto-breakeven at +1.2x ATR, trailing at +2.0x ATR
-    - Cooldown: 900s, plus separate WIN/LOSS post-exit cooldowns
-    - Max holding time / inactivity time-stop to free up margin on stale trades
-    - Max 2 concurrent positions
+    """Scalping regime analysis — 15m primary timeframe with rule-based optimizations:
+    1. 1H BB Width (vs 40-bar median) for Dead/Hyper Volatility gating.
+    2. ADX-scaled Dynamic 1H StochRSI & 15m Structure.
+    3. EMA25 Slope-adjusted Anti-Chase threshold.
     """
-
     global pause_trading
 
     if pause_trading:
         set_scan_result(symbol, {"status": "Market Paused", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
         return {"symbol": symbol, "result": "paused"}
 
-    # Only scalp symbols from the dedicated list
     if symbol not in SCALPING_SYMBOLS:
         set_scan_result(symbol, {"status": "Not in SCALPING_SYMBOLS", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
         return {"symbol": symbol, "result": "skipped"}
@@ -1460,29 +1450,20 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
     try:
         now = time.time()
 
-        # =========================
-        # STRATEGY_CONFIG.get(local_regime, STRATEGY_CONFIG['TRENDING'])['COOLDOWN']
-        # =========================
-
+        # Cooldown check
         if not bypass_cooldown and not ignore_cooldown_once:
             with state_lock:
                 last_time = last_alert.get((symbol, "SCALPING"))
             if last_time and now - last_time < STRATEGY_CONFIG['SCALPING']['COOLDOWN']:
                 set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
-                google_sheet.log_debug(symbol, "Cooldown (SCALPING)", strategy="SCALPING", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
                 return {"symbol": symbol, "result": "skipped"}
 
-        # FIX: per-symbol POST-EXIT cooldown — block re-entry based on how the previous trade
-        # actually closed (trade_manager.last_closed_trade), not just when a signal last fired.
-        # WIN/TRAILED -> shorter cooldown (avoid immediately re-chasing after a good exit).
-        # LOSS -> longer cooldown (avoid revenge-trading / re-entering into the same chop).
-        # NEAR had 3 LOSS trades accounting for 78% of total losses (avg -0.184 USDT each)
-        WIN_COOLDOWN = STRATEGY_CONFIG['SCALPING'].get('WIN_COOLDOWN', 600)     # default 10 min
-        LOSS_COOLDOWN = STRATEGY_CONFIG['SCALPING'].get('LOSS_COOLDOWN', 1800)  # default 30 min
+        # Post-Exit cooldown
+        WIN_COOLDOWN = STRATEGY_CONFIG['SCALPING'].get('WIN_COOLDOWN', 600)
+        LOSS_COOLDOWN = STRATEGY_CONFIG['SCALPING'].get('LOSS_COOLDOWN', 1800)
         if not bypass_cooldown and not ignore_cooldown_once:
             with state_lock:
                 last_closed = trade_manager.last_closed_trade.get((symbol, "SCALPING"))
-
             if last_closed:
                 closed_time = last_closed.get("time", 0)
                 closed_result = last_closed.get("result")
@@ -1492,231 +1473,119 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                     remaining = int((WIN_COOLDOWN - elapsed) / 60) + 1
                     status_msg = f"Win Cooldown ({remaining}m left)"
                     set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
-                    google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=0, atr=0, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
                     return {"symbol": symbol, "result": "skipped"}
 
                 if closed_result == "LOSS" and elapsed < LOSS_COOLDOWN:
                     remaining = int((LOSS_COOLDOWN - elapsed) / 60) + 1
                     status_msg = f"Loss Cooldown ({remaining}m left)"
                     set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
-                    google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=0, atr=0, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
                     return {"symbol": symbol, "result": "skipped"}
 
-        # =========================
-        # GET DATA (base_tf primary, 15m confirmation)
-        # =========================
-        base_tf = STRATEGY_CONFIG['SCALPING'].get('BASE_TF', '5m')
-        macro_tf = STRATEGY_CONFIG['SCALPING'].get('MACRO_TF', '15m')
-
-        df_3m = get_dataframe(symbol, base_tf)   # NOTE: variable name is legacy — base_tf = "15m" per config, so this is actually 15m data
-        if df_15m is None:
-            df_15m = get_dataframe(symbol, macro_tf)
+        # Data Fetching
+        base_tf = STRATEGY_CONFIG['SCALPING'].get('BASE_TF', '15m')
+        df_3m = get_dataframe(symbol, base_tf)  # 15m trigger timeframe
         if df_1h is None:
             df_1h = get_dataframe(symbol, '1h')
-
-        # 5m fetch (Aug 28): dedicated micro-trend confirmation candle, one step below
-        # base_tf (15m). Used only for the Micro-Trend Alignment guard below — does not
-        # replace df_3m/m3 as the entry-price candle.
         df_5m = get_dataframe(symbol, '5m')
-        m5 = df_5m.iloc[-2]
 
-        m3  = df_3m.iloc[-2]   # last closed base candle (15m, despite variable name)
-        m15 = df_15m.iloc[-2]  # last closed macro candle — NOTE: despite the name/comment,
-                                # analyze() passes df_15m=get_dataframe(symbol, '15m'), so this
-                                # is a genuine 15m candle, not 1H. Use h1 below for real 1H data.
-        h1  = df_1h.iloc[-2]   # last closed 1H candle — the real hourly data
+        if len(df_3m) < 45 or len(df_1h) < 45:
+            set_scan_result(symbol, {"status": "Insufficient Data", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+            return {"symbol": symbol, "result": "skipped"}
 
-        # Re-entry Guard: even after LOSS_COOLDOWN has fully elapsed, block
-        # re-entry if price is still loitering within ±0.3x ATR of the entry
-        # that just lost — same chop, no new structure, don't re-fight it.
-        # Scoped to 2 hours post-loss (RE_ENTRY_GUARD_WINDOW) so a stale entry
-        # from days ago can't permanently block a symbol if price happens to
-        # revisit that level later. Reuses m3 instead of a fresh API call.
-        RE_ENTRY_GUARD_WINDOW = 7200  # 2 hours
+        m3  = df_3m.iloc[-2]  # Trigger candle (15m)
+        h1  = df_1h.iloc[-2]  # Macro candle (1H)
+        m5  = df_5m.iloc[-2]  # Micro candle (5m)
+
+        # Re-entry near loss entry guard
+        RE_ENTRY_GUARD_WINDOW = 7200
         if not bypass_cooldown and not ignore_cooldown_once:
             with state_lock:
                 last_closed_reentry = trade_manager.last_closed_trade.get((symbol, "SCALPING"))
             if last_closed_reentry and last_closed_reentry.get("result") == "LOSS":
-                loss_elapsed = time.time() - last_closed_reentry.get("time", 0)
+                loss_elapsed = now - last_closed_reentry.get("time", 0)
                 if loss_elapsed < RE_ENTRY_GUARD_WINDOW:
                     last_loss_entry = last_closed_reentry.get("entry")
-                    if last_loss_entry:
-                        price_band = m3['atr'] * 0.3
-                        if abs(m3['close'] - last_loss_entry) < price_band:
-                            status_msg = "Re-entry Guard (near prior loss entry)"
-                            set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
-                            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=0, atr=0, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
-                            return {"symbol": symbol, "result": "skipped"}
+                    if last_loss_entry and abs(m3['close'] - last_loss_entry) < (m3['atr'] * 0.3):
+                        status_msg = "Re-entry Guard (near prior loss entry)"
+                        set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                        return {"symbol": symbol, "result": "skipped"}
 
-        now_ts = time.time()
+        now_ts = now
         signal_id = str(uuid.uuid4())[:8]
 
         atr_percent = (m3['atr'] / m3['close']) * 100
-        volume_high = m3['volume'] > m3['vol_avg'] * 1.5  # stricter volume filter for scalping
-        vol_status  = "HIGH" if volume_high else "NORMAL"
         adx_val     = round(m3['adx'], 2)
         atr_val     = round(atr_percent, 2)
         rsi_val     = round(m3['rsi'], 2)
-
-        # =========================================================
-        # 5-CANDLE ROLLING & 40-CANDLE AUTO-DYNAMIC VOLATILITY FILTER (Floor + Ceiling Guard)
-        # target_min_atr / target_max_atr derive from the 40-candle rolling median of the
-        # symbol's own recent ATR%, adapting automatically to each symbol's
-        # current volatility regime instead of a static per-symbol value.
-        #
-        # FIX (Sep 16): widened baseline window 20 -> 40 candles (100min -> 200min) to
-        # reduce self-referencing lag. The old 20-candle median tracked the *same*
-        # directional ATR move it was gating against, so during a sustained trend
-        # (ATR steadily rising or falling) the floor/ceiling chased the price and
-        # real signals got rejected at the door before ever reaching the gatekeeper
-        # pipeline. A longer window still adapts per-symbol but reacts far slower
-        # than the 5-candle recent-momentum check it's being compared against.
-        #
-        # FIX (Sep 16): added a strong-trend ADX bypass below — when ADX is high
-        # enough to indicate a clean, real trend is already underway, the ATR
-        # floor/ceiling guard (designed to catch dead/chaotic markets) is not
-        # needed and is skipped, so a clear signal isn't rejected by a volatility
-        # filter chasing its own tail.
-        # =========================================================
-        # 1. Market baseline for this symbol: median ATR% over last 40 closed candles (200 min)
-        window_40_candles = df_3m.iloc[-41:-1]
-        rolling_40_atr_series = (window_40_candles['atr'] / window_40_candles['close']) * 100
-        market_baseline_atr = rolling_40_atr_series.median()
-
-        # 2. Pull floor/ceiling settings from config
+        volume_high = m3['volume'] > (m3['vol_avg'] * 1.5)
+        vol_status  = "HIGH" if volume_high else "NORMAL"
         scalp_filters = STRATEGY_CONFIG['SCALPING']['FILTERS']
-        fee_safety_floor = scalp_filters.get('MIN_ATR_PCT', 0.15)     # Floor พื้นล่างสุด
-        hard_max_cap = scalp_filters.get('MAX_ATR_PCT', 0.45)         # Hard Ceiling เพดานสูงสุด
-        min_ceiling = scalp_filters.get('MIN_CEILING_ATR_PCT', 0.30)  # Minimum Ceiling เพดานขั้นต่ำ
-        strong_trend_adx = scalp_filters.get('STRONG_TREND_ADX_BYPASS', 28)  # ADX >= this skips ATR guard entirely
-        # FIX (Sep 18): true absolute ceiling a strong trend can never cross (was a
-        # flat 1.5% wall with zero exceptions — see comment at the check below).
-        extreme_hard_cap = scalp_filters.get('EXTREME_ATR_HARD_CAP_PCT', 2.0)
-        # This particular bypass uses a stricter ADX bar than the general
-        # STRONG_TREND_ADX_BYPASS (28) — it's the last line of defense before the
-        # true extreme cap, so it deliberately asks for stronger trend confirmation.
-        extreme_bypass_adx = scalp_filters.get('EXTREME_CAP_BYPASS_ADX', 35)
 
-        # 3. Dynamic Floor = 85% of baseline, floored at fee_safety_floor
-        target_min_atr = round(max(fee_safety_floor, market_baseline_atr * 0.85), 2)
+        # =====================================================================
+        # จุดที่ 3: 1H BOLLINGER BANDS WIDTH (BBW) VS 40-CANDLE MEDIAN GATING
+        # =====================================================================
+        # คำนวณ BB Width = (BB_Upper - BB_Lower) / BB_Mid * 100
+        h1_bbw = ((h1['bb_upper'] - h1['bb_lower']) / h1['bb_mid']) * 100 if h1['bb_mid'] > 0 else 0
+        h1_window_40 = df_1h.iloc[-42:-2]
+        h1_bbw_series = ((h1_window_40['bb_upper'] - h1_window_40['bb_lower']) / h1_window_40['bb_mid']) * 100
+        median_bbw_40 = float(h1_bbw_series.median()) if len(h1_bbw_series) > 0 else 1.0
 
-        # 4. Dynamic Ceiling = 180% of baseline, floored at min_ceiling, capped at hard_max_cap
-        target_max_atr = round(min(hard_max_cap, max(min_ceiling, market_baseline_atr * 1.80)), 2)
+        # ตรวจสอบ Dead Market (BB บีบแคบผิดปกติ < 60% ของค่ากลาง)
+        dead_market_ratio = 0.60
+        hyper_vol_ratio = 2.50
 
-        # 5. Recent momentum check: 5-candle rolling average ATR% (25 min)
-        recent_5_candles = df_3m.iloc[-6:-1]
-        rolling_atr_series = (recent_5_candles['atr'] / recent_5_candles['close']) * 100
-        avg_atr_5c = round(rolling_atr_series.mean(), 2)
+        # ถ้า ADX ยืนยัน Trend แรง (ADX >= 28) จะอนุญาตให้เทรดช่วงผันผวนสูงได้
+        strong_trend = adx_val >= scalp_filters.get('STRONG_TREND_ADX_BYPASS', 28)
 
-        # --- Strong-Trend Bypass: ADX already confirms a clean, real trend, so the
-        # dead-market/chaos guard below (meant for choppy/no-momentum conditions)
-        # would only reject a good signal for volatility that's a symptom of the
-        # trend itself, not noise. The absolute fee_safety_floor / hard_max_cap
-        # bounds still apply — this only skips the *dynamic* (self-referencing) part.
-        strong_trend = adx_val >= strong_trend_adx
-
-        # --- Check Floor: ป้องกันตลาดนิ่ง (Dead Market) ---
-        if not strong_trend and (avg_atr_5c < target_min_atr or atr_val < fee_safety_floor):
-            cur_low_val = min(avg_atr_5c, atr_val)
-            status_msg = f"Avg ATR Too Low ({cur_low_val}% < Auto-Target {target_min_atr}%)"
+        if not strong_trend and h1_bbw < (median_bbw_40 * dead_market_ratio):
+            status_msg = f"Blocked: 1H BBW Squeeze / Dead Market ({round(h1_bbw, 2)}% < {round(median_bbw_40 * dead_market_ratio, 2)}%)"
             set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
-            return {"symbol": symbol, "result": "skipped"}
-        elif strong_trend and atr_val < fee_safety_floor:
-            # Even in a strong trend, never allow ATR below the hard fee-safety floor —
-            # this catches genuinely illiquid/degenerate cases, not chop.
-            status_msg = f"ATR Below Fee-Safety Floor ({atr_val}% < {fee_safety_floor}%)"
-            set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
             return {"symbol": symbol, "result": "skipped"}
 
-        # --- Check Ceiling: ป้องกันตลาดคลั่ง / ไส้เทียนลาก SL (Spike / Extreme Volatility) ---
-        if not strong_trend and (avg_atr_5c > target_max_atr or atr_val > target_max_atr):
-            status_msg = f"Avg ATR Too Wild ({max(avg_atr_5c, atr_val)}% > Auto-Max {target_max_atr}%)"
+        if not strong_trend and h1_bbw > (median_bbw_40 * hyper_vol_ratio):
+            status_msg = f"Blocked: 1H BBW Hyper Volatility ({round(h1_bbw, 2)}% > {round(median_bbw_40 * hyper_vol_ratio, 2)}%)"
             set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
-            return {"symbol": symbol, "result": "skipped"}
-        elif strong_trend and adx_val < extreme_bypass_adx and atr_val > hard_max_cap:
-            # Strong-trend bypass is active (ADX >= 28) but not yet strong enough
-            # (ADX < 35) to earn the extreme-cap bypass below — still enforce the
-            # normal hard_max_cap (1.5%) in this middle zone, same as before.
-            status_msg = f"ATR Above Hard Cap Even In Strong Trend ({atr_val}% > {hard_max_cap}%)"
-            set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
-            return {"symbol": symbol, "result": "skipped"}
-        elif adx_val >= extreme_bypass_adx and atr_val > extreme_hard_cap:
-            # FIX (Sep 18): the hard cap is now two-tiered instead of one absolute
-            # wall. Root cause (ARB, Sep 18 00:46-06:44): ADX and ATR rose and fell
-            # together in a smooth 6-hour arc (ADX 32->39.8->23, ATR 1.57->1.90->1.47)
-            # — the signature of a genuinely strong trend, not a spike/SL-hunt (which
-            # is a sharp V-shape over a few candles, not a 6-hour arc). The old flat
-            # 1.5% cap blocked this entire move even at ADX 38-39. Below
-            # extreme_hard_cap (2.0%), a confirmed strong trend (ADX >= bypass
-            # threshold, checked above via `strong_trend`) is now allowed through
-            # despite ATR exceeding hard_max_cap (1.5%) — extreme_hard_cap is the
-            # true, non-negotiable ceiling that even a strong trend cannot cross,
-            # reserved for genuine extreme/spike conditions.
-            status_msg = f"ATR Above Absolute Extreme Cap ({atr_val}% > {extreme_hard_cap}%)"
-            set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, status_msg, strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
             return {"symbol": symbol, "result": "skipped"}
 
-        # FIX: Added ADX filter — was missing from SCALPING entirely
-        # NEAR had ADX 11-14 (sideways/no momentum) but still entered → noise trades
-        scalp_min_adx = STRATEGY_CONFIG['SCALPING']['FILTERS'].get('MIN_ADX', 15)
-        scalp_max_adx = STRATEGY_CONFIG['SCALPING']['FILTERS'].get('MAX_ADX', 45)
+        # ADX Limits
+        scalp_min_adx = scalp_filters.get('MIN_ADX', 20)
+        scalp_max_adx = scalp_filters.get('MAX_ADX', 50)
         if adx_val < scalp_min_adx:
-            set_scan_result(symbol, {"status": "ADX Too Low", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, f"ADX Too Low ({adx_val} < {scalp_min_adx})", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
+            set_scan_result(symbol, {"status": f"ADX Too Low ({adx_val} < {scalp_min_adx})", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             return {"symbol": symbol, "result": "skipped"}
         if adx_val > scalp_max_adx:
-            set_scan_result(symbol, {"status": "ADX Too High", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, f"ADX Too High ({adx_val} > {scalp_max_adx})", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi="", stretch_pct="", candle_color="")
+            set_scan_result(symbol, {"status": f"ADX Too High ({adx_val} > {scalp_max_adx})", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             return {"symbol": symbol, "result": "skipped"}
 
-        # =========================
-        # FOMO FILTER
-        # =========================
-
+        # FOMO Filter
         candle_size = abs(m3['close'] - m3['open'])
-        # FIX (Aug 20): 1.4x → 1.5x ATR — recalibrated FOMO ceiling for 15m candles
-        # (previously tuned for 5m candle size, which run smaller in ATR-relative terms)
         if candle_size > m3['atr'] * 1.5:
             set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
-            google_sheet.log_debug(symbol, "Candle Too Big (SCALPING)", strategy="SCALPING", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
             return {"symbol": symbol, "result": "skipped"}
 
-        # =========================
-        # 3-STAGE BOOLEAN GATEKEEPER PIPELINE
-        # =========================
-        # Replaces the old additive scoring system. Every check below is a hard
-        # Pass/Fail gate — there is no point total and no compensation between
-        # checks. A side is only tradeable if it clears every gate in Stage 1,
-        # Stage 2, and Stage 3 in order. The first failed gate aborts analysis
-        # for that side immediately with a precise rejection reason.
-
+        # Context Data
         btc_trend = get_btc_trend()
-
         vwap_val = m3['vwap']
         is_above_vwap = m3['close'] > vwap_val
-
-        # VWAP 2-Candle Rule: current AND prior 15m closed candle must both sit
-        # on the same side of VWAP, to filter out single-candle wick fakeouts.
         prev1_vwap = df_3m.iloc[-3]
-        prev1_above_vwap = prev1_vwap['close'] > prev1_vwap['vwap']
-        vwap_confirmed_below = (not is_above_vwap) and (not prev1_above_vwap)
-        vwap_confirmed_above = is_above_vwap and prev1_above_vwap
+        vwap_confirmed_above = is_above_vwap and (prev1_vwap['close'] > prev1_vwap['vwap'])
+        vwap_confirmed_below = (not is_above_vwap) and (prev1_vwap['close'] < prev1_vwap['vwap'])
 
         is_green = m3['close'] > m3['open']
-        is_red = m3['close'] < m3['open']
-
+        is_red   = m3['close'] < m3['open']
         stoch_rsi = m3.get('stoch_rsi', 50)
         stretch_pct = abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100
         ema7_dist_pct = (m3['close'] - m3['ema7']) / m3['ema7'] * 100
 
+        # =====================================================================
+        # จุดที่ 1: EMA25 SLOPE CALCULATION (15m)
+        # =====================================================================
+        # วัดความชันย้อนหลัง 2 แท่งบนแท่งปิด: (EMA25[-2] - EMA25[-4]) / EMA25[-4] * 100
+        ema25_cur = df_3m.iloc[-2]['ema25']
+        ema25_prev2 = df_3m.iloc[-4]['ema25']
+        ema25_slope = ((ema25_cur - ema25_prev2) / ema25_prev2) * 100 if ema25_prev2 > 0 else 0.0
+
         def _reject(reason):
-            """Log + report a gate failure for the given side. Returns the reason
-            so callers can `if (r := _reject(...)): continue/return` in one line."""
             set_scan_result(symbol, {"status": reason, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
             google_sheet.log_debug(
                 symbol, reason, strategy="SCALPING", score=100, adx=adx_val, atr=atr_val,
@@ -1727,280 +1596,167 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             return reason
 
         def check_side(side):
-            """Run the full 3-stage gatekeeper pipeline for one side.
-            Returns None if the side clears every gate (i.e. it is tradeable),
-            or a rejection reason string on the first gate it fails.
-            """
-
-            # ---------------------------------------------------------
-            # STAGE 1: MACRO & VOLATILITY GUARD
-            # ---------------------------------------------------------
-
-            # 1.1 BTC Directional Alignment — BTC/USDT only, altcoins trade on
-            # their own structure without being tied to BTC's direction.
+            # 1.1 BTC Macro Alignment (สำหรับ BTC เท่านั้น)
             if symbol == "BTC/USDT:USDT":
                 if side == "LONG" and btc_trend == "bearish":
-                    return "Blocked: BTC Macro Trend Bearish (LONG forbidden)"
+                    return "Blocked: BTC Macro Trend Bearish"
                 if side == "SHORT" and btc_trend == "bullish":
-                    return "Blocked: BTC Macro Trend Bullish (SHORT forbidden)"
+                    return "Blocked: BTC Macro Trend Bullish"
 
-            # 1.2 ATR Volatility Range Guard — already enforced above (Floor/Ceiling
-            # + ADX bounds) before this pipeline runs, since it's side-independent.
-
-            # 1.3 StochRSI Hard Gatekeeper — blocks before any Gate Pass / Market
-            # Order is issued. SHORT into an already-oversold floor or LONG into
-            # an already-overbought ceiling gets rejected outright, no compensation.
-            #
-            # FIX (Sep 17): added a strong-trend ADX bypass, mirroring the one on
-            # the ATR floor/ceiling guard. Root cause (confirmed against the NEAR
-            # 15m chart, Sep 16 15:30 breakout): StochRSI(15m) started the move at
-            # ~20 and rode straight up to >80 as the trend kept extending — normal
-            # behavior for a strong, healthy trend, not a reversal warning. Without
-            # a bypass this gate stayed permanently shut for the rest of that whole
-            # +13.5% move, matching the user's exact complaint ("bot never enters
-            # even on a clean signal"). ADX confirms trend strength independently
-            # of StochRSI, so a high-ADX side is allowed through even while
-            # StochRSI sits pinned at an extreme — the absolute floor/ceiling logic
-            # itself is untouched, this only adds an escape hatch for confirmed
-            # strong trends.
-            strong_trend_side = adx_val >= scalp_filters.get('STRONG_TREND_ADX_BYPASS', 35)
-            if not strong_trend_side and side == "SHORT" and stoch_rsi < 20:
+            # 1.2 15m StochRSI Floor/Ceiling
+            if not strong_trend and side == "SHORT" and stoch_rsi < 20:
                 return "Blocked: StochRSI Oversold Floor"
-            if not strong_trend_side and side == "LONG" and stoch_rsi > 80:
+            if not strong_trend and side == "LONG" and stoch_rsi > 80:
                 return "Blocked: StochRSI Overbought Ceiling"
 
-            # 1.4 1H Macro Momentum Guard — blocks entries fighting a strong 1H
-            # rebound/breakdown. Fixes the OP incident: 15m/BTC read bearish but
-            # 1H StochRSI was already at 91+ (V-shape rebound in progress).
-            # Uses h1 (df_1h), the real 1H candle — NOT m15, which despite its
-            # name is actually 15m data (see comment at m15 assignment above).
-            #
-            # FIX (Sep 20): added the same strong-trend ADX bypass as the 15m
-            # StochRSI gate above. Root cause (Debug log, Sep 20): this 1H version
-            # was the single biggest blocker in the whole pipeline (534 hits on
-            # the LONG side, 36% already at ADX>=28) and blocked 100% of SHORT
-            # attempts with ADX>=28 (120/120 cases, up to ADX 48.6) — a 1H
-            # timeframe naturally sits at a StochRSI extreme even longer than 15m
-            # during a real sustained trend, so this gate was effectively vetoing
-            # every strong trend on the SHORT side entirely. Same reasoning as the
-            # 15m fix: a high, sustained ADX already confirms real trend strength
-            # independently of where StochRSI sits.
+            # =================================================================
+            # จุดที่ 2: DYNAMIC 1H STOCHRSI & 15m STRUCTURE ตามความแรงของ ADX
+            # =================================================================
+            # ถ้า ADX สูงขึ้น ให้ปรับขยายกรอบ StochRSI 1H ให้ยืดหยุ่นขึ้นทันที
+            # Base: SHORT ห้ามเกิน 70, LONG ห้ามต่ำกว่า 30
+            # Scaling: ทุกๆ 1 จุดของ ADX ที่เกิน 25 จะขยายเพดานออก 0.8%
             stoch_rsi_1h = h1.get('stoch_rsi', 50)
-            if not strong_trend_side and side == "SHORT" and stoch_rsi_1h > 70:
-                return f"Blocked: 1H StochRSI Overbought Rebound ({round(stoch_rsi_1h, 2)} > 70, SHORT forbidden)"
-            if not strong_trend_side and side == "LONG" and stoch_rsi_1h < 30:
-                return f"Blocked: 1H StochRSI Oversold Breakdown ({round(stoch_rsi_1h, 2)} < 30, LONG forbidden)"
+            adx_factor = max(0.0, (adx_val - 25.0) * 0.8)
 
-            # 1.5 1H Rejection Wick Guard — a long lower/upper wick on the last
-            # closed 1H candle signals a liquidity sweep / hammer rejection
-            # against the trade direction (e.g. long lower wick = buyers
-            # defended that level hard — don't SHORT into it). Uses h1, real 1H.
+            dynamic_short_stoch_max = min(85.0, 70.0 + adx_factor)  # ขยายเพดาน SHORT สูงสุดไม่เกิน 85
+            dynamic_long_stoch_min  = max(15.0, 30.0 - adx_factor)  # ลดพื้น LONG ต่ำสุดไม่เกิน 15
+
+            if not strong_trend:
+                if side == "SHORT" and stoch_rsi_1h > dynamic_short_stoch_max:
+                    return f"Blocked: 1H StochRSI Overbought ({round(stoch_rsi_1h, 1)} > Dynamic {round(dynamic_short_stoch_max, 1)})"
+                if side == "LONG" and stoch_rsi_1h < dynamic_long_stoch_min:
+                    return f"Blocked: 1H StochRSI Oversold ({round(stoch_rsi_1h, 1)} < Dynamic {round(dynamic_long_stoch_min, 1)})"
+
+            # 1H Rejection Wick Guard
             body_h1 = abs(h1['close'] - h1['open'])
             range_h1 = h1['high'] - h1['low']
             if range_h1 > 0:
                 if side == "SHORT":
                     lower_wick_h1 = min(h1['close'], h1['open']) - h1['low']
                     if lower_wick_h1 > body_h1 * 1.0 and lower_wick_h1 > range_h1 * 0.35:
-                        return f"Blocked: 1H Lower Wick Rejection ({round(lower_wick_h1 / range_h1 * 100, 1)}% of range, SHORT forbidden)"
+                        return "Blocked: 1H Lower Wick Rejection"
                 else:
                     upper_wick_h1 = h1['high'] - max(h1['close'], h1['open'])
                     if upper_wick_h1 > body_h1 * 1.0 and upper_wick_h1 > range_h1 * 0.35:
-                        return f"Blocked: 1H Upper Wick Rejection ({round(upper_wick_h1 / range_h1 * 100, 1)}% of range, LONG forbidden)"
+                        return "Blocked: 1H Upper Wick Rejection"
 
-            # 1.6 15m Structure Alignment (Higher Lows / Lower Highs) — blocks
-            # trading against a forming 3-candle structural shift on the 15m
-            # trigger timeframe (e.g. don't SHORT into consecutive higher lows).
-            #
-            # FIX (Sep 23): added the same strong-trend ADX bypass used on
-            # StochRSI/VWAP above. Root cause (Debug log, Sep 23): a real,
-            # sustained uptrend naturally has short pullbacks where the last 3
-            # candles' highs step down for a bar or two even while the larger
-            # trend is climbing — that's normal price action, not a reversal.
-            # This 3-candle-only check has no way to tell that apart from an
-            # actual top forming, so it was blocking BTC/ETH/AVAX 100% of the
-            # time this fired during their trending windows (ADX>=28, up to
-            # 36.5) — the exact "trend looks great but the bot won't enter"
-            # pattern the user flagged. A high, sustained ADX already confirms
-            # the larger trend is intact independently of this short 3-candle
-            # read.
-            low_2, low_3, low_4 = df_3m.iloc[-2]['low'], df_3m.iloc[-3]['low'], df_3m.iloc[-4]['low']
-            high_2, high_3, high_4 = df_3m.iloc[-2]['high'], df_3m.iloc[-3]['high'], df_3m.iloc[-4]['high']
-            if not strong_trend_side and side == "SHORT" and (low_2 > low_3 > low_4):
-                return "Blocked: 15m Higher Lows Forming (SHORT forbidden)"
-            if not strong_trend_side and side == "LONG" and (high_2 < high_3 < high_4):
-                return "Blocked: 15m Lower Highs Forming (LONG forbidden)"
+            # 15m Structure Alignment
+            # ถ้าเป็น strong_trend หรือค่าความชัน EMA25 ชันหนุนชัดเจน จะข้ามการบล็อก HL/LH สั้นๆ 3 แท่งนี้
+            structure_bypass = strong_trend or (side == "LONG" and ema25_slope > 0.08) or (side == "SHORT" and ema25_slope < -0.08)
+            if not structure_bypass:
+                low_2, low_3, low_4 = df_3m.iloc[-2]['low'], df_3m.iloc[-3]['low'], df_3m.iloc[-4]['low']
+                high_2, high_3, high_4 = df_3m.iloc[-2]['high'], df_3m.iloc[-3]['high'], df_3m.iloc[-4]['high']
+                if side == "SHORT" and (low_2 > low_3 > low_4):
+                    return "Blocked: 15m Higher Lows Forming"
+                if side == "LONG" and (high_2 < high_3 < high_4):
+                    return "Blocked: 15m Lower Highs Forming"
 
-            # ---------------------------------------------------------
-            # STAGE 2: 15m & 1H STRUCTURAL SETUP GUARD
-            # ---------------------------------------------------------
+            # 2.1 VWAP Confirmation
+            if not strong_trend and side == "LONG" and not vwap_confirmed_above:
+                return "Blocked: Below VWAP (LONG forbidden)"
+            if not strong_trend and side == "SHORT" and not vwap_confirmed_below:
+                return "Blocked: Above VWAP (SHORT forbidden)"
 
-            # 2.1 VWAP Absolute Gatekeeper (2-Candle Confirmation)
-            #
-            # FIX (Sep 22): added the same strong-trend ADX bypass used on the
-            # StochRSI gates above. Root cause (Debug log, Sep 22 — BTC 7-hour
-            # trending window, ADX 40-56 the entire time): this gate was the
-            # single largest active blocker in the pipeline (419 hits, 81% of
-            # them at ADX>=28, up to ADX 47.9) and was one of several gates that
-            # took turns blocking BTC's LONG entry for the full 7 hours with no
-            # window where all gates cleared simultaneously. The 2-candle
-            # same-side rule is a real, structurally-motivated check (it filters
-            # single-candle wick fakeouts) but during a genuinely strong,
-            # sustained trend price legitimately whipsaws across VWAP on the 15m
-            # chart even while the larger trend is intact and healthy — the same
-            # class of problem as StochRSI pinning at an extreme, just expressed
-            # as flip-flopping instead of staying pinned. A high, sustained ADX
-            # already confirms real trend strength independently of this
-            # 2-candle VWAP confirmation.
-            if not strong_trend_side and side == "LONG" and not vwap_confirmed_above:
-                return "Blocked: Below VWAP or Not Confirmed 2 Candles (LONG forbidden)"
-            if not strong_trend_side and side == "SHORT" and not vwap_confirmed_below:
-                return "Blocked: Above VWAP or Not Confirmed 2 Candles (SHORT forbidden)"
-
-            # 2.2 15m EMA Structural Alignment
+            # 2.2 EMA Alignment
             if side == "LONG" and not (m3['ema7'] > m3['ema25']):
-                return "Blocked: 15m EMA7 not above EMA25 (LONG forbidden)"
+                return "Blocked: 15m EMA7 not above EMA25"
             if side == "SHORT" and not (m3['ema7'] < m3['ema25']):
-                return "Blocked: 15m EMA7 not below EMA25 (SHORT forbidden)"
+                return "Blocked: 15m EMA7 not below EMA25"
 
-            # 2.3 1H EMA99 Macro Support/Resistance Guard
-            ema99_1h = df_1h.iloc[-2].get('ema99', df_1h.iloc[-2]['ema25'])
-            if side == "LONG" and not (m3['close'] >= ema99_1h):
-                return f"Blocked: 1H EMA99 Resistance (Close < EMA99, {round(m3['close'], 4)} < {round(ema99_1h, 4)})"
-            if side == "SHORT" and not (m3['close'] <= ema99_1h):
-                return f"Blocked: 1H EMA99 Support (Close > EMA99, {round(m3['close'], 4)} > {round(ema99_1h, 4)})"
+            # 2.3 1H EMA99 Macro Support/Resistance
+            ema99_1h = h1.get('ema99', h1['ema25'])
+            if side == "LONG" and m3['close'] < ema99_1h:
+                return "Blocked: Below 1H EMA99 Resistance"
+            if side == "SHORT" and m3['close'] > ema99_1h:
+                return "Blocked: Above 1H EMA99 Support"
 
-            # 2.4 Anti-Chase Guard (EMA Stretch Limit) — direction-aware: only
-            # blocks chasing away from EMA7 in the trade's own direction (LONG
-            # chasing price too far above EMA7, SHORT chasing too far below).
-            # A pullback toward a better entry (LONG dipping below EMA7, SHORT
-            # bouncing above EMA7) is not chasing and must not be blocked here.
-            #
-            # FIX (Sep 18): threshold changed from a flat 0.25% to
-            # ANTI_CHASE_ATR_MULT x ATR%. Root cause (checked against log across
-            # NEAR/AAVE/APT during their Sep 18 trending windows): a flat 0.25%
-            # has no relationship to how far price naturally travels per candle for
-            # a given symbol/volatility regime. NEAR (ATR 1.25%) got blocked at
-            # 1.82% stretch — 1.46x its own ATR, a perfectly normal distance in an
-            # active trend — while the same flat rule would treat a low-volatility
-            # coin's tiny 0.25% stretch as equally extreme. Scaling by ATR makes
-            # the guard mean the same thing (a genuine chase vs. a normal pullback
-            # distance) across every symbol and volatility regime, instead of
-            # punishing high-ATR trending coins specifically. A percentage floor
-            # is kept so very low-ATR symbols don't get an unreasonably tight gate.
-            anti_chase_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT', 0.6)
-            # FIX (Sep 23): strong-trend multiplier added. Root cause (Debug log,
-            # Sep 23 — OP/ARB trending windows, ADX 28-39): even after the Sep 18
-            # ATR-scaling fix, 74% of Anti-Chase blocks still occurred at ADX>=28
-            # (stretch/ATR ratio 0.7x-2.07x) — a stronger, accelerating trend
-            # naturally stretches further from its own EMA7 per candle than the
-            # 0.6x baseline assumes. Unlike VWAP/StochRSI (which read short-term
-            # noise that a confirmed trend makes irrelevant), Anti-Chase protects
-            # against a real risk — buying a price that's overextended and due for
-            # a pullback — so a full ADX bypass isn't right here. Instead the
-            # multiplier itself widens with confirmed trend strength: normal
-            # (0.6x) below STRONG_TREND_ADX_BYPASS, wider (1.1x) once ADX confirms
-            # a real sustained trend. This still blocks genuine overextension
-            # (the ARB case at 2.07x ATR still exceeds even the widened limit)
-            # while no longer flagging normal stretch inside a strong trend as
-            # chasing.
-            if strong_trend_side:
-                anti_chase_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT_STRONG_TREND', 1.1)
+            # =================================================================
+            # จุดที่ 1: ANTI-CHASE GUARD คำนวณร่วมกับ EMA25 SLOPE
+            # =================================================================
+            # Base Multiplier = 0.6x ATR
+            base_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT', 0.6)
+
+            # ตรวจสอบความชันต่อทิศทาง:
+            # LONG ต้องการ slope เป็นบวก, SHORT ต้องการ slope เป็นลบ
+            if side == "LONG":
+                # ถ้า slope > 0.05% ต่อ 2 แท่ง ขยายขอบเขตไล่ราคาได้สูงสุดถึง 1.2x ATR
+                # ถ้า slope <= 0.02% (เริ่มแบน/ราบ) บีบลงเหลือ 0.35x ATR บังคับรอรับใกล้ EMA7
+                if ema25_slope >= 0.08:
+                    slope_scale = min(1.2, base_mult + (ema25_slope * 4.0))
+                elif ema25_slope <= 0.02:
+                    slope_scale = max(0.35, base_mult * 0.6)
+                else:
+                    slope_scale = base_mult
+            else:
+                # SHORT (slope ติดลบคือเทรนด์ลงแรง)
+                if ema25_slope <= -0.08:
+                    slope_scale = min(1.2, base_mult + (abs(ema25_slope) * 4.0))
+                elif ema25_slope >= -0.02:
+                    slope_scale = max(0.35, base_mult * 0.6)
+                else:
+                    slope_scale = base_mult
+
             anti_chase_floor_pct = scalp_filters.get('ANTI_CHASE_MIN_PCT', 0.15)
-            anti_chase_threshold = max(anti_chase_floor_pct, atr_val * anti_chase_mult)
-            if side == "LONG" and ema7_dist_pct > anti_chase_threshold:
-                return f"Blocked: Anti-Chase LONG (Price {round(ema7_dist_pct, 3)}% > {round(anti_chase_threshold, 3)}% above EMA7)"
-            if side == "SHORT" and ema7_dist_pct < -anti_chase_threshold:
-                return f"Blocked: Anti-Chase SHORT (Price {round(ema7_dist_pct, 3)}% < -{round(anti_chase_threshold, 3)}% below EMA7)"
+            anti_chase_threshold = max(anti_chase_floor_pct, atr_val * slope_scale)
 
-            # 2.5 Clearance to Breakeven Guard — needs >= 1.3x ATR of room to the
-            # nearest 12-candle swing high/low so price can reach +1.2x ATR
-            # auto-breakeven without stalling into old resistance/support.
+            if side == "LONG" and ema7_dist_pct > anti_chase_threshold:
+                return f"Blocked: Anti-Chase LONG (Stretch {round(ema7_dist_pct, 2)}% > Limit {round(anti_chase_threshold, 2)}% | Slope {round(ema25_slope, 3)}%)"
+            if side == "SHORT" and ema7_dist_pct < -anti_chase_threshold:
+                return f"Blocked: Anti-Chase SHORT (Stretch {round(ema7_dist_pct, 2)}% < Limit -{round(anti_chase_threshold, 2)}% | Slope {round(ema25_slope, 3)}%)"
+
+            # 2.5 Clearance to Breakeven
             if side == "LONG":
                 swing_high_12 = df_3m.iloc[-14:-2]['high'].max()
-                if m3['close'] < swing_high_12:
-                    clearance = swing_high_12 - m3['close']
-                    if clearance < (m3['atr'] * 1.3):
-                        return f"Blocked: Clearance to Swing High < 1.3x ATR ({round(clearance / m3['atr'], 2)}x)"
-                else:
-                    # Price already broke above the 15m swing high — that level no
-                    # longer bounds the runway, so check the next 1H resistance
-                    # (1H swing high, falling back to 1H EMA99) instead.
-                    h1_swing_high = df_1h.iloc[-14:-2]['high'].max()
-                    h1_ema99 = df_1h.iloc[-2].get('ema99', df_1h.iloc[-2]['ema25'])
-                    next_resistance = max(h1_swing_high, h1_ema99) if h1_swing_high > m3['close'] else h1_ema99
-                    clearance = next_resistance - m3['close']
-                    if m3['close'] < next_resistance and clearance < (m3['atr'] * 1.3):
-                        return f"Blocked: Clearance to 1H Resistance < 1.3x ATR ({round(clearance / m3['atr'], 2)}x)"
+                if m3['close'] < swing_high_12 and (swing_high_12 - m3['close']) < (m3['atr'] * 1.3):
+                    return "Blocked: Clearance to Swing High < 1.3x ATR"
             else:
                 swing_low_12 = df_3m.iloc[-14:-2]['low'].min()
-                if m3['close'] > swing_low_12:
-                    clearance = m3['close'] - swing_low_12
-                    if clearance < (m3['atr'] * 1.3):
-                        return f"Blocked: Clearance to Swing Low < 1.3x ATR ({round(clearance / m3['atr'], 2)}x)"
-                else:
-                    # Price already made a new low, breaking below the 15m swing
-                    # low — pull the next 1H support (1H swing low, falling back to
-                    # 1H EMA99) so a runway check still applies instead of being
-                    # silently skipped.
-                    h1_swing_low = df_1h.iloc[-14:-2]['low'].min()
-                    h1_ema99 = df_1h.iloc[-2].get('ema99', df_1h.iloc[-2]['ema25'])
-                    next_support = min(h1_swing_low, h1_ema99) if h1_swing_low < m3['close'] else h1_ema99
-                    clearance = m3['close'] - next_support
-                    if m3['close'] > next_support and clearance < (m3['atr'] * 1.3):
-                        return f"Blocked: Clearance to 1H Support < 1.3x ATR ({round(clearance / m3['atr'], 2)}x)"
+                if m3['close'] > swing_low_12 and (m3['close'] - swing_low_12) < (m3['atr'] * 1.3):
+                    return "Blocked: Clearance to Swing Low < 1.3x ATR"
 
-            # ---------------------------------------------------------
-            # STAGE 3: MICRO TRIGGER & WICK FILTER (5m & 15m)
-            # ---------------------------------------------------------
-
-            # 3.1 Confirmed Trigger Candle Color
+            # 3.1 Trigger Candle Color
             if side == "LONG" and not is_green:
-                return "Blocked: Candle Not Green (LONG forbidden)"
+                return "Blocked: Candle Not Green"
             if side == "SHORT" and not is_red:
-                return "Blocked: Candle Not Red (SHORT forbidden)"
+                return "Blocked: Candle Not Red"
 
-            # 3.2 5m Micro-Trend Alignment Guard
+            # 3.2 5m Micro-Trend Alignment
             if side == "LONG":
-                m5_aligned = (m5['ema7'] >= m5['ema25']) and (m5['close'] >= m5['ema7'])
-                if not m5_aligned:
-                    return "Blocked: 5m Micro-Trend Bearish (LONG forbidden)"
+                if not ((m5['ema7'] >= m5['ema25']) and (m5['close'] >= m5['ema7'])):
+                    return "Blocked: 5m Micro-Trend Bearish"
             else:
-                m5_aligned = (m5['ema7'] <= m5['ema25']) and (m5['close'] <= m5['ema7'])
-                if not m5_aligned:
-                    return "Blocked: 5m Micro-Trend Bullish (SHORT forbidden)"
+                if not ((m5['ema7'] <= m5['ema25']) and (m5['close'] <= m5['ema7'])):
+                    return "Blocked: 5m Micro-Trend Bullish"
 
-            # 3.3 Rejection Wick Guard — current AND prior 15m candle
+            # 3.3 Rejection Wick Filter (15m)
             body_m3 = abs(m3['close'] - m3['open'])
-            wick_range_m3 = m3['high'] - m3['low']
+            range_m3 = m3['high'] - m3['low']
             prev1 = df_3m.iloc[-3]
             body_prev1 = abs(prev1['close'] - prev1['open'])
-            wick_range_prev1 = prev1['high'] - prev1['low']
+            range_prev1 = prev1['high'] - prev1['low']
 
             if side == "LONG":
                 upper_wick_m3 = m3['high'] - max(m3['close'], m3['open'])
                 upper_wick_prev1 = prev1['high'] - max(prev1['close'], prev1['open'])
-                if (upper_wick_m3 > body_m3 * 1.2 and upper_wick_m3 > wick_range_m3 * 0.35) or \
-                   (upper_wick_prev1 > body_prev1 * 1.2 and upper_wick_prev1 > wick_range_prev1 * 0.35):
-                    return "Blocked: Upper Wick Rejection (LONG forbidden)"
+                if (upper_wick_m3 > body_m3 * 1.2 and upper_wick_m3 > range_m3 * 0.35) or \
+                   (upper_wick_prev1 > body_prev1 * 1.2 and upper_wick_prev1 > range_prev1 * 0.35):
+                    return "Blocked: Upper Wick Rejection"
             else:
                 lower_wick_m3 = min(m3['close'], m3['open']) - m3['low']
                 lower_wick_prev1 = min(prev1['close'], prev1['open']) - prev1['low']
-                if (lower_wick_m3 > body_m3 * 1.2 and lower_wick_m3 > wick_range_m3 * 0.35) or \
-                   (lower_wick_prev1 > body_prev1 * 1.2 and lower_wick_prev1 > wick_range_prev1 * 0.35):
-                    return "Blocked: Lower Wick Rejection (SHORT forbidden)"
+                if (lower_wick_m3 > body_m3 * 1.2 and lower_wick_m3 > range_m3 * 0.35) or \
+                   (lower_wick_prev1 > body_prev1 * 1.2 and lower_wick_prev1 > range_prev1 * 0.35):
+                    return "Blocked: Lower Wick Rejection"
 
             # 3.4 RSI Momentum Bound
-            if side == "LONG" and not (m3['rsi'] <= STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']):
-                return f"Blocked: RSI Overbought ({rsi_val} > {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_LONG_MAX']})"
-            if side == "SHORT" and not (m3['rsi'] >= STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']):
-                return f"Blocked: RSI Oversold ({rsi_val} < {STRATEGY_CONFIG['SCALPING']['FILTERS']['RSI_SAFE_SHORT_MIN']})"
+            if side == "LONG" and m3['rsi'] > scalp_filters.get('RSI_SAFE_LONG_MAX', 60):
+                return f"Blocked: RSI Overbought ({rsi_val} > {scalp_filters.get('RSI_SAFE_LONG_MAX', 60)})"
+            if side == "SHORT" and m3['rsi'] < scalp_filters.get('RSI_SAFE_SHORT_MIN', 38):
+                return f"Blocked: RSI Oversold ({rsi_val} < {scalp_filters.get('RSI_SAFE_SHORT_MIN', 38)})"
 
-            return None  # cleared all 3 stages — side is tradeable
+            return None
 
-        # =========================
-        # RUN PIPELINE — LONG checked first, then SHORT
-        # =========================
-
+        # Execute Pipeline
         side = None
         entry = None
         long_reject_reason = check_side("LONG")
@@ -2014,78 +1770,43 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 entry = round(m3['close'], 4)
 
         if side is None:
-            # Neither side cleared the gatekeeper — report whichever side the
-            # 15m trigger candle actually pointed toward, since that's the
-            # more informative rejection to log.
             reason = long_reject_reason if is_green else short_reject_reason
             _reject(reason)
             return {"symbol": symbol, "result": "skipped"}
 
-        # Both sides pass gate scoring as fully qualified — no partial credit
-        # exists in this pipeline, so grade/score are fixed constants.
         grade = "PASS"
         score = 100
 
-
-        # =========================
-        # SL / TP (tight for scalping)
-        # =========================
-
+        # SL / TP Dynamic Calculations
         atr = m3['atr']
-
-        # --- ADX Momentum Direction Check ---
-        # FIX (Sep 24): added after comparing a loss (DOGE) against a win (APT).
-        # DOGE entered SHORT with ADX 37-42 (higher than APT's 28.91) but still
-        # lost — its ADX had been declining for hours before entry (53->50->48->
-        # 46->42->40->37), so despite the still-high reading, momentum was
-        # fading, not building. APT's lower-but-stable/rising ADX went on to a
-        # +17.9% trailing win. The raw ADX level at entry doesn't tell the two
-        # cases apart; its recent trajectory does. This doesn't block entries
-        # (the user wants the same entry frequency) — it only widens the SL
-        # buffer when momentum is fading, since a weakening trend is more likely
-        # to whipsaw before reaching the +1.2x ATR breakeven distance.
         adx_3_ago = df_3m.iloc[-5]['adx'] if len(df_3m) >= 5 else adx_val
         adx_fading = adx_val < adx_3_ago
 
-        # --- Dynamic / Adaptive Stop Loss (per-asset ATR% profile) ---
         _dyn_sl_cfg = STRATEGY_CONFIG['SCALPING']
         _dyn_threshold = _dyn_sl_cfg.get('DYNAMIC_SL_ATR_THRESHOLD', 1.00)
-        if _dyn_sl_cfg.get('DYNAMIC_SL_ENABLED', False):
-            if atr_val >= _dyn_threshold or adx_fading:
-                sl_atr_mult = _dyn_sl_cfg.get('DYNAMIC_SL_MULT_HIGH_NOISE', 1.8)
-                dynamic_sl_mode = "HIGH_NOISE"
-            else:
-                sl_atr_mult = _dyn_sl_cfg.get('DYNAMIC_SL_MULT_NORMAL', 1.5)
-                dynamic_sl_mode = "NORMAL"
+        if _dyn_sl_cfg.get('DYNAMIC_SL_ENABLED', False) and (atr_val >= _dyn_threshold or adx_fading):
+            sl_atr_mult = _dyn_sl_cfg.get('DYNAMIC_SL_MULT_HIGH_NOISE', 1.8)
+            dynamic_sl_mode = "HIGH_NOISE"
         else:
-            sl_atr_mult = _dyn_sl_cfg['SL_ATR_MULT']
+            sl_atr_mult = _dyn_sl_cfg.get('DYNAMIC_SL_MULT_NORMAL', 1.5)
             dynamic_sl_mode = "NORMAL"
 
         if side == "LONG":
-            sl   = round(entry - atr * sl_atr_mult, 4)
+            sl   = round(entry - (atr * sl_atr_mult), 4)
             risk = entry - sl
-            tp2  = round(entry + risk * STRATEGY_CONFIG['SCALPING']['TP_RR'], 4)
+            tp2  = round(entry + (risk * STRATEGY_CONFIG['SCALPING']['TP_RR']), 4)
             tp1  = round(entry + risk, 4)
             rr   = round((tp2 - entry) / (entry - sl), 2)
         else:
-            sl   = round(entry + atr * sl_atr_mult, 4)
+            sl   = round(entry + (atr * sl_atr_mult), 4)
             risk = sl - entry
-            tp2  = round(entry - risk * STRATEGY_CONFIG['SCALPING']['TP_RR'], 4)
+            tp2  = round(entry - (risk * STRATEGY_CONFIG['SCALPING']['TP_RR']), 4)
             tp1  = round(entry - risk, 4)
             rr   = round((entry - tp2) / (sl - entry), 2)
 
-        # =========================
-        # BUILD MESSAGE
-        # =========================
-
-        icon = "\U0001f680" if side == "LONG" else "\U0001f53b"
-
+        # Message & Dispatch
         side_icon = "🟩" if side == "LONG" else "🟥"
-
-        if dynamic_sl_mode == "HIGH_NOISE":
-            dynamic_sl_line = f"🛡️ Dynamic SL: 🔥 HIGH NOISE ({sl_atr_mult}x ATR)"
-        else:
-            dynamic_sl_line = f"🛡️ Dynamic SL: 🟢 NORMAL ({sl_atr_mult}x ATR)"
+        dynamic_sl_line = f"🛡️ Dynamic SL: {'🔥 HIGH NOISE' if dynamic_sl_mode == 'HIGH_NOISE' else '🟢 NORMAL'} ({sl_atr_mult}x ATR)"
 
         message = f"""⚡ SCALPING SIGNAL [GATE PASS]
 
@@ -2098,19 +1819,13 @@ Target (2.0 RR): {tp2}
 Auto-BE Trigger: +1.2x ATR
 
 {dynamic_sl_line}
-   ATR%: {atr_val}% (Threshold: {_dyn_threshold}%)
+   ATR%: {atr_val}% | 1H BBW: {round(h1_bbw, 2)}% (Median: {round(median_bbw_40, 2)}%)
+   EMA25 Slope: {round(ema25_slope, 4)}%
 
 📊 Market Context:
-• 15m ATR%: {atr_val}%
-• 15m ADX: {adx_val}
-• 15m RSI: {round(rsi_val, 2)}
+• 15m ADX: {adx_val} | RSI: {round(rsi_val, 2)}
 • BTC Macro Trend: {btc_trend}
-
-🛡️ Risk & Protection:
-• Margin: {STRATEGY_CONFIG['SCALPING']['MARGIN_PER_TRADE']} USDT (x{STRATEGY_CONFIG['SCALPING']['LEVERAGE']})
-• Auto-Breakeven: Active @ +1.2x ATR (+0.15% Fee Buffer)
 """
-
         print(message, flush=True)
 
         if not silent_mode:
@@ -2118,9 +1833,7 @@ Auto-BE Trigger: +1.2x ATR
 
         if not signal_only:
             save_signal(signal_id, symbol, side, grade, score, entry, sl, tp1, tp2)
-
             signal_regime = CURRENT_REGIME
-
             with state_lock:
                 active_trades[signal_id] = {
                     "symbol": symbol,
@@ -2151,7 +1864,6 @@ Auto-BE Trigger: +1.2x ATR
             "strategy": "SCALPING",
         })
 
-        # Track candidate signal for top candidates
         candidate_signals[symbol] = {
             "side": side,
             "grade": grade,
@@ -2160,30 +1872,17 @@ Auto-BE Trigger: +1.2x ATR
             "strategy": "SCALPING",
         }
 
-        # =========================
-        # AUTO TRADE (Market Order)
-        # =========================
-
+        # Auto-Trade Execution
         if AUTO_TRADE and not signal_only:
-
             skip_reason = None
+            with state_lock:
+                scalp_count = sum(
+                    1 for t in active_trades.values()
+                    if t.get("status") in ["PENDING", "OPEN"] and t.get("strategy") == "SCALPING"
+                )
+            if scalp_count >= STRATEGY_CONFIG['SCALPING']['MAX_TRADES']:
+                skip_reason = f"Scalping max {STRATEGY_CONFIG['SCALPING']['MAX_TRADES']} position reached"
 
-            # NOTE: no grade filter here — the gatekeeper pipeline above already
-            # requires 100% Pass on every gate before a signal is generated, so
-            # there is no partial grade left to filter on (grade is always "PASS").
-
-            # Max 1 active scalping position
-            if not skip_reason:
-                with state_lock:
-                    scalp_count = sum(
-                        1 for t in active_trades.values()
-                        if t.get("status") in ["PENDING", "OPEN"]
-                        and t.get("strategy") == "SCALPING"
-                    )
-                if scalp_count >= STRATEGY_CONFIG['SCALPING']['MAX_TRADES']:
-                    skip_reason = f"Scalping max {STRATEGY_CONFIG['SCALPING']['MAX_TRADES']} position reached"
-
-            # Regime still valid
             if not skip_reason and CURRENT_REGIME != signal_regime:
                 skip_reason = "MARKET_REGIME_CHANGED"
 
@@ -2192,86 +1891,41 @@ Auto-BE Trigger: +1.2x ATR
                 try:
                     bingx_client.execute_scalp_trade(symbol, side.lower())
                 except Exception:
-                    print(f"[SCALPING_AUTO_TRADE] execute_scalp_trade error", flush=True)
+                    print("[SCALPING_AUTO_TRADE] execute_scalp_trade error", flush=True)
                     print(traceback.format_exc(), flush=True)
             else:
                 print(f"[SCALPING_AUTO_TRADE] {symbol} skipped — {skip_reason}", flush=True)
-
                 if skip_reason != "MARKET_REGIME_CHANGED":
                     send_telegram(
-                        f"\U0001f916 SCALP AUTO TRADE SKIPPED\n\n"
-                        f"Symbol: {symbol}\n"
-                        f"Side: {side}\n"
-                        f"Reason: {skip_reason}\n"
-                        f"Grade: {grade}\n"
-                        f"Score: {score}"
+                        f"🤖 SCALP AUTO TRADE SKIPPED\n\n"
+                        f"Symbol: {symbol}\nSide: {side}\nReason: {skip_reason}"
                     )
 
-        # Google Sheets logging
+        # Logging
         try:
             google_sheet.log_signal(
-                signal_id=signal_id,
-                symbol=symbol,
-                side=side,
-                grade=grade,
-                score=score,
-                entry=entry,
-                sl=sl,
-                tp=tp2,
-                atr=atr_val,
-                adx=adx_val,
-                volume=vol_status,
-                btc_trend=btc_trend,
-                status="SIGNAL",
-                strategy="SCALPING",
-                allocation_decision="ALLOCATED",
-                skip_reason="",
-                vwap_position="ABOVE" if is_above_vwap else "BELOW",
-                stoch_rsi=m3['stoch_rsi'],
-                stretch_pct=round(abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100, 2),
-                candle_color="GREEN" if is_green else "RED",
-                local_regime=local_regime,
-                btc_regime=btc_regime
+                signal_id=signal_id, symbol=symbol, side=side, grade=grade, score=score,
+                entry=entry, sl=sl, tp=tp2, atr=atr_val, adx=adx_val, volume=vol_status,
+                btc_trend=btc_trend, status="SIGNAL", strategy="SCALPING", allocation_decision="ALLOCATED",
+                skip_reason="", vwap_position="ABOVE" if is_above_vwap else "BELOW",
+                stoch_rsi=m3['stoch_rsi'], stretch_pct=round(stretch_pct, 2),
+                candle_color="GREEN" if is_green else "RED", local_regime=local_regime, btc_regime=btc_regime
             )
         except Exception as e:
             print(f"[SCALPING] Google Sheets log error: {e}", flush=True)
 
         google_sheet.log_fill_analysis(
-            symbol=symbol,
-            side=side,
-            current_price=m3['close'],
-            entry_price=entry,
-            grade=grade,
-            score=score,
-            atr=atr_val,
-            adx=adx_val,
-            btc_trend=btc_trend,
-            fill_status="OPEN",
-            local_regime=local_regime,
-            btc_regime=btc_regime
+            symbol=symbol, side=side, current_price=m3['close'], entry_price=entry,
+            grade=grade, score=score, atr=atr_val, adx=adx_val, btc_trend=btc_trend,
+            fill_status="OPEN", local_regime=local_regime, btc_regime=btc_regime
         )
-        
-        # BACKTEST
+
         backtest.record_signal(
-            signal_id=signal_id,
-            symbol=symbol,
-            side=side,
-            entry=entry,
-            sl=sl,
-            tp=tp2,
-            grade=grade,
-            score=score,
-            rr=rr,
-            strategy="SCALPING",
-            local_regime=local_regime,
-            btc_regime=btc_regime,
-            adx=adx_val,
-            atr_pct=atr_val,
-            vol_status=vol_status,
-            btc_trend=btc_trend,
-            vwap_pos="ABOVE" if is_above_vwap else "BELOW",
-            stoch_rsi=round(m3['stoch_rsi'], 2),
-            stretch_pct=round(abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100, 2),
+            signal_id=signal_id, symbol=symbol, side=side, entry=entry, sl=sl, tp=tp2,
+            grade=grade, score=score, rr=rr, strategy="SCALPING", local_regime=local_regime,
+            btc_regime=btc_regime, adx=adx_val, atr_pct=atr_val, vol_status=vol_status,
+            btc_trend=btc_trend, vwap_pos="ABOVE" if is_above_vwap else "BELOW",
+            stoch_rsi=round(m3['stoch_rsi'], 2), stretch_pct=round(stretch_pct, 2),
             candle_color="GREEN" if is_green else "RED"
         )
 
@@ -2281,7 +1935,6 @@ Auto-BE Trigger: +1.2x ATR
         print(f"[SCALPING ERROR] {symbol}", flush=True)
         print(traceback.format_exc(), flush=True)
         set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
-        google_sheet.log_debug(symbol, "Error (SCALPING)", strategy="SCALPING", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
         return {"symbol": symbol, "result": "error"}
 
 
