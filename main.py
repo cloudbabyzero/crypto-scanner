@@ -25,6 +25,7 @@ from config import (
     symbols,
     SCALPING_SYMBOLS,
     AUTO_TRADE,
+    ORDER_AMOUNT_USDT,
     MAX_LONG_TRADES,
     MAX_SHORT_TRADES,
     MAX_ACTIVE_TRADES,
@@ -364,6 +365,108 @@ def send_telegram(message):
             e,
             flush=True
         )
+
+
+# =========================
+# SPOT SIGNAL-DRIVEN DCA
+# =========================
+
+def execute_spot_dca(symbol, price):
+    """ซื้อ Spot Market ไม้ละ ORDER_AMOUNT_USDT แล้วอัปเดต Weighted Average Cost ลง active_trades[symbol]"""
+    result = bingx_client.spot_market_buy(symbol, ORDER_AMOUNT_USDT)
+    if not result:
+        return False
+
+    fill_price = float(result.get("avg_price") or price)
+    cost = float(result.get("cost") or ORDER_AMOUNT_USDT)
+    qty = float(result.get("filled_qty") or cost / fill_price)
+
+    with state_lock:
+        prev = active_trades.get(symbol) or {}
+        new_qty = prev.get("total_qty", 0.0) + qty
+        new_cost = prev.get("total_cost_usdt", 0.0) + cost
+        new_entries = prev.get("entry_count", 0) + 1
+        new_avg = new_cost / new_qty
+
+        active_trades[symbol] = {
+            "symbol": symbol,
+            "side": "LONG",
+            "status": "OPEN",
+            "entry": fill_price,
+            "weighted_avg_price": new_avg,
+            "sl": "No SL (Accumulating)",
+            "tp2": "Infinity Run (+2.5%)",
+            "total_qty": new_qty,
+            "total_cost_usdt": new_cost,
+            "entry_count": new_entries,
+            "highest_price": fill_price,
+            "infinity_active": False,
+            "updated_at": time.time()
+        }
+
+    send_telegram(
+        f"🛒 [SPOT DCA] ซื้อ {symbol} สำเร็จ\n\n"
+        f"ยอดซื้อ: {cost:.2f} USDT @ {fill_price:.4f}\n"
+        f"ไม้ที่: {new_entries}\n"
+        f"ต้นทุนเฉลี่ยรวมใหม่: {new_avg:.4f}\n"
+        f"ถือรวม: {new_qty:.6f} (ทุนรวม {new_cost:.2f} USDT)"
+    )
+    return True
+
+
+def run_priority_dca_engine():
+    """Worst-Performer Priority Engine: เรียงตาม Drawdown ติดลบหนักสุดก่อน
+    และข้ามเหรียญที่กำลังรันกำไร Infinity Run อยู่ เพื่อไม่ให้รีเซ็ต Trailing สูญเปล่า"""
+    if not AUTO_TRADE:
+        return
+
+    buy_signals = [s for s in candidate_signals.values() if s.get("side") == "LONG"]
+    if not buy_signals:
+        return
+
+    with state_lock:
+        active_pos_map = dict(active_trades)
+
+    ranked_candidates = []
+    for sig in buy_signals:
+        sym = sig["symbol"]
+        pos = active_pos_map.get(sym)
+
+        # 🛡️ อุดรูรั่ว Edge Case: ถ้าเหรียญนี้เปิด Infinity Run อยู่ หรือกำไรแล้ว ห้ามซื้อ DCA ซ้ำเด็ดขาด!
+        if pos and pos.get("total_qty", 0.0) > 0:
+            if pos.get("infinity_active", False):
+                print(f"[PRIORITY DCA] {sym} กำลังรันกำไร Infinity Run อยู่ ➔ ข้ามการซื้อเพิ่มเพื่อปล่อยให้รันต่อ", flush=True)
+                continue
+
+            avg = pos.get("weighted_avg_price", 0.0)
+            if avg > 0 and sig["entry"] >= avg:
+                print(f"[PRIORITY DCA] {sym} ราคา {sig['entry']} สูงกว่าทุนเฉลี่ย {avg} ➔ ข้ามการซื้อเพิ่ม (DCA เฉพาะตอนย่อต่ำกว่าทุน)", flush=True)
+                continue
+
+            drawdown_pct = ((sig["entry"] - avg) / avg) * 100 if avg > 0 else 0.0
+        else:
+            # ไม้ที่ 1 (ยังไม่เคยถือ)
+            drawdown_pct = 0.0
+
+        ranked_candidates.append({
+            "symbol": sym,
+            "entry": sig["entry"],
+            "drawdown_pct": drawdown_pct
+        })
+
+    # เรียงลำดับ: ติดลบหนักที่สุดขึ้นก่อน
+    ranked_candidates.sort(key=lambda x: x["drawdown_pct"])
+
+    for cand in ranked_candidates:
+        if bingx_client.get_spot_free_balance('USDT') < ORDER_AMOUNT_USDT:
+            print("[PRIORITY DCA] USDT ไม่พอ หยุดยิงซื้อรอบนี้", flush=True)
+            break
+        print(f"[PRIORITY DCA] {cand['symbol']} drawdown={cand['drawdown_pct']:+.2f}%", flush=True)
+        try:
+            execute_spot_dca(cand["symbol"], cand["entry"])
+        except Exception:
+            print(f"[PRIORITY DCA] execute_spot_dca error: {cand['symbol']}", flush=True)
+            print(traceback.format_exc(), flush=True)
 
 
 # =========================
@@ -1301,7 +1404,7 @@ def detect_market_regime():
         (regime, btc_adx, btc_atr_percent) tuple
     """
     try:
-        df_1h = get_dataframe('BTC/USDT:USDT', '1h')
+        df_1h = get_dataframe('BTC/USDT', '1h')
         btc = df_1h.iloc[-2]
 
         btc_adx = round(btc['adx'], 2)
@@ -1313,7 +1416,7 @@ def detect_market_regime():
         has_trend_alignment = is_uptrend or is_downtrend
 
         # MOMENTUM: strongest trend, price far from EMA7, consecutive candles
-        momentum_info = detect_momentum('BTC/USDT:USDT')
+        momentum_info = detect_momentum('BTC/USDT')
         if momentum_info['is_momentum']:
             return "MOMENTUM", btc_adx, btc_atr_percent
 
@@ -1597,7 +1700,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         def check_side(side):
             # 1.1 BTC Macro Alignment (สำหรับ BTC เท่านั้น)
-            if symbol == "BTC/USDT:USDT":
+            if symbol == "BTC/USDT":
                 if side == "LONG" and btc_trend == "bearish":
                     return "Blocked: BTC Macro Trend Bearish"
                 if side == "SHORT" and btc_trend == "bullish":
@@ -1870,36 +1973,11 @@ Auto-BE Trigger: +1.2x ATR
             "score": score,
             "symbol": symbol,
             "strategy": "SCALPING",
+            "entry": entry,
         }
 
-        # Auto-Trade Execution
-        if AUTO_TRADE and not signal_only:
-            skip_reason = None
-            with state_lock:
-                scalp_count = sum(
-                    1 for t in active_trades.values()
-                    if t.get("status") in ["PENDING", "OPEN"] and t.get("strategy") == "SCALPING"
-                )
-            if scalp_count >= STRATEGY_CONFIG['SCALPING']['MAX_TRADES']:
-                skip_reason = f"Scalping max {STRATEGY_CONFIG['SCALPING']['MAX_TRADES']} position reached"
-
-            if not skip_reason and CURRENT_REGIME != signal_regime:
-                skip_reason = "MARKET_REGIME_CHANGED"
-
-            if not skip_reason:
-                print(f"[SCALPING_AUTO_TRADE] {symbol} {side} — executing market order", flush=True)
-                try:
-                    bingx_client.execute_scalp_trade(symbol, side.lower())
-                except Exception:
-                    print("[SCALPING_AUTO_TRADE] execute_scalp_trade error", flush=True)
-                    print(traceback.format_exc(), flush=True)
-            else:
-                print(f"[SCALPING_AUTO_TRADE] {symbol} skipped — {skip_reason}", flush=True)
-                if skip_reason != "MARKET_REGIME_CHANGED":
-                    send_telegram(
-                        f"🤖 SCALP AUTO TRADE SKIPPED\n\n"
-                        f"Symbol: {symbol}\nSide: {side}\nReason: {skip_reason}"
-                    )
+        # Auto-Trade: ย้ายไปที่ run_priority_dca_engine() ใน main loop
+        # (อนุญาตซื้อซ้ำเหรียญเดิมหลายไม้ ไม่จำกัด MAX_TRADES ต่อเหรียญ)
 
         # Logging
         try:
@@ -2042,7 +2120,7 @@ def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # =========================
         # BTC FILTER (Strict Macro Alignment)
         # =========================
-        if symbol != 'BTC/USDT:USDT':
+        if symbol != 'BTC/USDT':
             if btc_trend == "bullish":
                 short_score = 0  # Forbid SHORT in Bull Market
             elif btc_trend == "bearish":
@@ -2586,7 +2664,7 @@ def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=
         # =========================
         # BTC FILTER (Strict Macro Alignment)
         # =========================
-        if symbol != 'BTC/USDT:USDT':
+        if symbol != 'BTC/USDT':
             if btc_trend == "bullish":
                 short_score = 0  # Forbid SHORT in Bull Market
             elif btc_trend == "bearish":
@@ -3641,7 +3719,7 @@ def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # BTC FILTER (Strict Macro Alignment)
         # =========================
         btc_trend = get_btc_trend()
-        if symbol != 'BTC/USDT:USDT':
+        if symbol != 'BTC/USDT':
             if btc_trend == "bullish" and side == "SHORT":
                 sideways_score = 0  # Forbid SHORT in Bull Market
             elif btc_trend == "bearish" and side == "LONG":
@@ -4401,6 +4479,7 @@ def main():
             # =========================
             
             reset_cycle_counters()
+            candidate_signals.clear()  # ให้เหลือเฉพาะสัญญาณของรอบสแกนนี้
 
             # SCALPING mode uses dedicated symbol list; other modes use main list
             # FIX: also check CONTROL_MODE so FORCE_SCALPING always uses SCALPING_SYMBOLS
@@ -4411,6 +4490,9 @@ def main():
                 analyze(symbol)
 
                 time.sleep(2)
+
+            # Worst-Performer Priority Engine: ยิง Spot DCA หลังสแกนครบทุกเหรียญ
+            run_priority_dca_engine()
 
             # BACKTEST: ตรวจสอบ signals ที่ครบ 4h แล้ว
             backtest.check_pending()
