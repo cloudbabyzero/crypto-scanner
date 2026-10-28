@@ -1699,184 +1699,98 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             return reason
 
         def check_side(side):
-            # 1.1 BTC Macro Alignment (สำหรับ BTC เท่านั้น)
-            if symbol == "BTC/USDT":
-                if side == "LONG" and btc_trend == "bearish":
-                    return "Blocked: BTC Macro Trend Bearish"
-                if side == "SHORT" and btc_trend == "bullish":
-                    return "Blocked: BTC Macro Trend Bullish"
-
-            # 1.2 15m StochRSI Floor/Ceiling
-            if not strong_trend and side == "SHORT" and stoch_rsi < 20:
-                return "Blocked: StochRSI Oversold Floor"
+            # 1. 15m StochRSI Floor/Ceiling
             if not strong_trend and side == "LONG" and stoch_rsi > 80:
                 return "Blocked: StochRSI Overbought Ceiling"
 
-            # =================================================================
-            # จุดที่ 2: DYNAMIC 1H STOCHRSI & 15m STRUCTURE ตามความแรงของ ADX
-            # =================================================================
-            # ถ้า ADX สูงขึ้น ให้ปรับขยายกรอบ StochRSI 1H ให้ยืดหยุ่นขึ้นทันที
-            # Base: SHORT ห้ามเกิน 70, LONG ห้ามต่ำกว่า 30
-            # Scaling: ทุกๆ 1 จุดของ ADX ที่เกิน 25 จะขยายเพดานออก 0.8%
+            # 2. Dynamic 1H StochRSI Guard (Scaled with ADX)
             stoch_rsi_1h = h1.get('stoch_rsi', 50)
             adx_factor = max(0.0, (adx_val - 25.0) * 0.8)
+            dynamic_long_stoch_min = max(15.0, 30.0 - adx_factor)
 
-            dynamic_short_stoch_max = min(85.0, 70.0 + adx_factor)  # ขยายเพดาน SHORT สูงสุดไม่เกิน 85
-            dynamic_long_stoch_min  = max(15.0, 30.0 - adx_factor)  # ลดพื้น LONG ต่ำสุดไม่เกิน 15
+            if not strong_trend and stoch_rsi_1h < dynamic_long_stoch_min:
+                return f"Blocked: 1H StochRSI Oversold ({round(stoch_rsi_1h, 1)} < Dynamic {round(dynamic_long_stoch_min, 1)})"
 
-            if not strong_trend:
-                if side == "SHORT" and stoch_rsi_1h > dynamic_short_stoch_max:
-                    return f"Blocked: 1H StochRSI Overbought ({round(stoch_rsi_1h, 1)} > Dynamic {round(dynamic_short_stoch_max, 1)})"
-                if side == "LONG" and stoch_rsi_1h < dynamic_long_stoch_min:
-                    return f"Blocked: 1H StochRSI Oversold ({round(stoch_rsi_1h, 1)} < Dynamic {round(dynamic_long_stoch_min, 1)})"
-
-            # 1H Rejection Wick Guard
+            # 3. 1H Rejection Wick Guard
             body_h1 = abs(h1['close'] - h1['open'])
             range_h1 = h1['high'] - h1['low']
             if range_h1 > 0:
-                if side == "SHORT":
-                    lower_wick_h1 = min(h1['close'], h1['open']) - h1['low']
-                    if lower_wick_h1 > body_h1 * 1.0 and lower_wick_h1 > range_h1 * 0.35:
-                        return "Blocked: 1H Lower Wick Rejection"
-                else:
-                    upper_wick_h1 = h1['high'] - max(h1['close'], h1['open'])
-                    if upper_wick_h1 > body_h1 * 1.0 and upper_wick_h1 > range_h1 * 0.35:
-                        return "Blocked: 1H Upper Wick Rejection"
+                upper_wick_h1 = h1['high'] - max(h1['close'], h1['open'])
+                if upper_wick_h1 > body_h1 * 1.0 and upper_wick_h1 > range_h1 * 0.35:
+                    return "Blocked: 1H Upper Wick Rejection"
 
-            # 15m Structure Alignment
-            # ถ้าเป็น strong_trend หรือค่าความชัน EMA25 ชันหนุนชัดเจน จะข้ามการบล็อก HL/LH สั้นๆ 3 แท่งนี้
-            structure_bypass = strong_trend or (side == "LONG" and ema25_slope > 0.08) or (side == "SHORT" and ema25_slope < -0.08)
+            # 4. 15m Structure Alignment
+            structure_bypass = strong_trend or (ema25_slope > 0.08)
             if not structure_bypass:
-                low_2, low_3, low_4 = df_3m.iloc[-2]['low'], df_3m.iloc[-3]['low'], df_3m.iloc[-4]['low']
                 high_2, high_3, high_4 = df_3m.iloc[-2]['high'], df_3m.iloc[-3]['high'], df_3m.iloc[-4]['high']
-                if side == "SHORT" and (low_2 > low_3 > low_4):
-                    return "Blocked: 15m Higher Lows Forming"
-                if side == "LONG" and (high_2 < high_3 < high_4):
+                if high_2 < high_3 < high_4:
                     return "Blocked: 15m Lower Highs Forming"
 
-            # 2.1 VWAP Confirmation
-            if not strong_trend and side == "LONG" and not vwap_confirmed_above:
+            # 5. VWAP Confirmation
+            if not strong_trend and not vwap_confirmed_above:
                 return "Blocked: Below VWAP (LONG forbidden)"
-            if not strong_trend and side == "SHORT" and not vwap_confirmed_below:
-                return "Blocked: Above VWAP (SHORT forbidden)"
 
-            # 2.2 EMA Alignment
-            if side == "LONG" and not (m3['ema7'] > m3['ema25']):
+            # 6. EMA Alignment
+            if not (m3['ema7'] > m3['ema25']):
                 return "Blocked: 15m EMA7 not above EMA25"
-            if side == "SHORT" and not (m3['ema7'] < m3['ema25']):
-                return "Blocked: 15m EMA7 not below EMA25"
 
-            # 2.3 1H EMA99 Macro Support/Resistance
-            ema99_1h = h1.get('ema99', h1['ema25'])
-            if side == "LONG" and m3['close'] < ema99_1h:
-                return "Blocked: Below 1H EMA99 Resistance"
-            if side == "SHORT" and m3['close'] > ema99_1h:
-                return "Blocked: Above 1H EMA99 Support"
-
-            # =================================================================
-            # จุดที่ 1: ANTI-CHASE GUARD คำนวณร่วมกับ EMA25 SLOPE
-            # =================================================================
-            # Base Multiplier = 0.6x ATR
+            # 7. Anti-Chase Guard (EMA25 Slope-adjusted)
             base_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT', 0.6)
-
-            # ตรวจสอบความชันต่อทิศทาง:
-            # LONG ต้องการ slope เป็นบวก, SHORT ต้องการ slope เป็นลบ
-            if side == "LONG":
-                # ถ้า slope > 0.05% ต่อ 2 แท่ง ขยายขอบเขตไล่ราคาได้สูงสุดถึง 1.2x ATR
-                # ถ้า slope <= 0.02% (เริ่มแบน/ราบ) บีบลงเหลือ 0.35x ATR บังคับรอรับใกล้ EMA7
-                if ema25_slope >= 0.08:
-                    slope_scale = min(1.2, base_mult + (ema25_slope * 4.0))
-                elif ema25_slope <= 0.02:
-                    slope_scale = max(0.35, base_mult * 0.6)
-                else:
-                    slope_scale = base_mult
+            if ema25_slope >= 0.08:
+                slope_scale = min(1.2, base_mult + (ema25_slope * 4.0))
+            elif ema25_slope <= 0.02:
+                slope_scale = max(0.35, base_mult * 0.6)
             else:
-                # SHORT (slope ติดลบคือเทรนด์ลงแรง)
-                if ema25_slope <= -0.08:
-                    slope_scale = min(1.2, base_mult + (abs(ema25_slope) * 4.0))
-                elif ema25_slope >= -0.02:
-                    slope_scale = max(0.35, base_mult * 0.6)
-                else:
-                    slope_scale = base_mult
+                slope_scale = base_mult
 
             anti_chase_floor_pct = scalp_filters.get('ANTI_CHASE_MIN_PCT', 0.15)
             anti_chase_threshold = max(anti_chase_floor_pct, atr_val * slope_scale)
 
-            if side == "LONG" and ema7_dist_pct > anti_chase_threshold:
+            if ema7_dist_pct > anti_chase_threshold:
                 return f"Blocked: Anti-Chase LONG (Stretch {round(ema7_dist_pct, 2)}% > Limit {round(anti_chase_threshold, 2)}% | Slope {round(ema25_slope, 3)}%)"
-            if side == "SHORT" and ema7_dist_pct < -anti_chase_threshold:
-                return f"Blocked: Anti-Chase SHORT (Stretch {round(ema7_dist_pct, 2)}% < Limit -{round(anti_chase_threshold, 2)}% | Slope {round(ema25_slope, 3)}%)"
 
-            # 2.5 Clearance to Breakeven
-            if side == "LONG":
-                swing_high_12 = df_3m.iloc[-14:-2]['high'].max()
-                if m3['close'] < swing_high_12 and (swing_high_12 - m3['close']) < (m3['atr'] * 1.3):
-                    return "Blocked: Clearance to Swing High < 1.3x ATR"
-            else:
-                swing_low_12 = df_3m.iloc[-14:-2]['low'].min()
-                if m3['close'] > swing_low_12 and (m3['close'] - swing_low_12) < (m3['atr'] * 1.3):
-                    return "Blocked: Clearance to Swing Low < 1.3x ATR"
+            # 8. Clearance to Breakeven
+            swing_high_12 = df_3m.iloc[-14:-2]['high'].max()
+            if m3['close'] < swing_high_12 and (swing_high_12 - m3['close']) < (m3['atr'] * 1.3):
+                return "Blocked: Clearance to Swing High < 1.3x ATR"
 
-            # 3.1 Trigger Candle Color
-            if side == "LONG" and not is_green:
-                return "Blocked: Candle Not Green"
-            if side == "SHORT" and not is_red:
-                return "Blocked: Candle Not Red"
+            # 9. 5m Micro-Trend Alignment
+            if not ((m5['ema7'] >= m5['ema25']) and (m5['close'] >= m5['ema7'])):
+                return "Blocked: 5m Micro-Trend Bearish"
 
-            # 3.2 5m Micro-Trend Alignment
-            if side == "LONG":
-                if not ((m5['ema7'] >= m5['ema25']) and (m5['close'] >= m5['ema7'])):
-                    return "Blocked: 5m Micro-Trend Bearish"
-            else:
-                if not ((m5['ema7'] <= m5['ema25']) and (m5['close'] <= m5['ema7'])):
-                    return "Blocked: 5m Micro-Trend Bullish"
-
-            # 3.3 Rejection Wick Filter (15m)
+            # 10. 15m Rejection Wick Filter
             body_m3 = abs(m3['close'] - m3['open'])
             range_m3 = m3['high'] - m3['low']
             prev1 = df_3m.iloc[-3]
             body_prev1 = abs(prev1['close'] - prev1['open'])
             range_prev1 = prev1['high'] - prev1['low']
 
-            if side == "LONG":
-                upper_wick_m3 = m3['high'] - max(m3['close'], m3['open'])
-                upper_wick_prev1 = prev1['high'] - max(prev1['close'], prev1['open'])
-                if (upper_wick_m3 > body_m3 * 1.2 and upper_wick_m3 > range_m3 * 0.35) or \
-                   (upper_wick_prev1 > body_prev1 * 1.2 and upper_wick_prev1 > range_prev1 * 0.35):
-                    return "Blocked: Upper Wick Rejection"
-            else:
-                lower_wick_m3 = min(m3['close'], m3['open']) - m3['low']
-                lower_wick_prev1 = min(prev1['close'], prev1['open']) - prev1['low']
-                if (lower_wick_m3 > body_m3 * 1.2 and lower_wick_m3 > range_m3 * 0.35) or \
-                   (lower_wick_prev1 > body_prev1 * 1.2 and lower_wick_prev1 > range_prev1 * 0.35):
-                    return "Blocked: Lower Wick Rejection"
+            upper_wick_m3 = m3['high'] - max(m3['close'], m3['open'])
+            upper_wick_prev1 = prev1['high'] - max(prev1['close'], prev1['open'])
+            if (upper_wick_m3 > body_m3 * 1.2 and upper_wick_m3 > range_m3 * 0.35) or \
+               (upper_wick_prev1 > body_prev1 * 1.2 and upper_wick_prev1 > range_prev1 * 0.35):
+                return "Blocked: Upper Wick Rejection"
 
-            # 3.4 RSI Momentum Bound
-            if side == "LONG" and m3['rsi'] > scalp_filters.get('RSI_SAFE_LONG_MAX', 60):
+            # 11. RSI Momentum Bound
+            if m3['rsi'] > scalp_filters.get('RSI_SAFE_LONG_MAX', 60):
                 return f"Blocked: RSI Overbought ({rsi_val} > {scalp_filters.get('RSI_SAFE_LONG_MAX', 60)})"
-            if side == "SHORT" and m3['rsi'] < scalp_filters.get('RSI_SAFE_SHORT_MIN', 38):
-                return f"Blocked: RSI Oversold ({rsi_val} < {scalp_filters.get('RSI_SAFE_SHORT_MIN', 38)})"
 
             return None
 
-        # Execute Pipeline
-        side = None
-        entry = None
-        long_reject_reason = check_side("LONG")
-        if long_reject_reason is None:
-            side = "LONG"
-            entry = round(m3['close'], 4)
-        else:
-            short_reject_reason = check_side("SHORT")
-            if short_reject_reason is None:
-                side = "SHORT"
-                entry = round(m3['close'], 4)
-
-        if side is None:
-            reason = long_reject_reason if is_green else short_reject_reason
-            _reject(reason)
+        # =========================================================
+        # EXECUTE PIPELINE (LONG ONLY FOR SPOT DCA)
+        # =========================================================
+        # ถ้าไม่ใช่แท่งเขียว ให้ข้ามไปเงียบๆ ไม่ต้องบันทึกลง Debug Log
+        if not is_green:
             return {"symbol": symbol, "result": "skipped"}
 
+        long_reject_reason = check_side("LONG")
+        if long_reject_reason is not None:
+            _reject(long_reject_reason)
+            return {"symbol": symbol, "result": "skipped"}
+
+        side = "LONG"
+        entry = round(m3['close'], 4)
         grade = "PASS"
         score = 100
 
