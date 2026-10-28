@@ -335,14 +335,42 @@ def build_recovery_message(trades):
     return "\n".join(lines)
 
 
+STATE_BACKUP_FILE = STATE_STORAGE_FILE + ".bak"
+
+
+def _read_state_file(path):
+    with open(path, "r") as f:
+        return json.load(f)
+
+
 def load_active_trades():
-    """Load active trades from disk to prevent amnesia on restart (Spot DCA)."""
+    """Load active trades from disk (Spot DCA) พร้อมกู้จาก .bak ถ้าไฟล์หลักเสีย/หาย"""
     global active_trades
     try:
         data = {}
+        alert = None
+
         if os.path.exists(STATE_STORAGE_FILE):
-            with open(STATE_STORAGE_FILE, "r") as f:
-                data = json.load(f)
+            try:
+                data = _read_state_file(STATE_STORAGE_FILE)
+            except Exception as e:
+                print(f"[STATE] ไฟล์หลักอ่านไม่ได้: {e}", flush=True)
+                try:  # เก็บไฟล์เสียไว้เป็นหลักฐาน ไม่ให้ถูกเขียนทับ
+                    os.replace(STATE_STORAGE_FILE, f"{STATE_STORAGE_FILE}.corrupt-{int(time.time())}")
+                except Exception:
+                    pass
+                try:
+                    data = _read_state_file(STATE_BACKUP_FILE)
+                    alert = "🚨 [STATE ERROR] ไฟล์พอร์ตเสีย — กู้จากไฟล์สำรอง (.bak) สำเร็จ ตรวจสอบรายการด้านล่างให้ตรงกับยอดจริง"
+                except Exception:
+                    data = {}
+                    alert = "🚨 [STATE ERROR] ไฟล์พอร์ตเสียและกู้จากไฟล์สำรองไม่ได้ — เริ่มด้วยพอร์ตว่าง! ตรวจสอบยอดเหรียญบน BingX ทันที"
+        elif os.path.exists(STATE_BACKUP_FILE):
+            try:
+                data = _read_state_file(STATE_BACKUP_FILE)
+                alert = "⚠️ [STATE] ไม่พบไฟล์พอร์ตหลัก — กู้จากไฟล์สำรอง (.bak)"
+            except Exception:
+                data = {}
 
         clean, dropped = sanitize_active_trades(data)
         if dropped:
@@ -351,23 +379,39 @@ def load_active_trades():
         with state_lock:
             active_trades = clean
 
+        if alert:
+            send_telegram(alert)
         send_telegram(build_recovery_message(clean))
         print(f"[STATE] Loaded {len(clean)} coin positions from {STATE_STORAGE_FILE}", flush=True)
     except Exception as e:
         print(f"[STATE] Error loading {STATE_STORAGE_FILE}: {e}", flush=True)
 
+
 def save_state_loop():
-    """Background loop to auto-save active trades."""
-    import time as pytime
+    """เซฟพอร์ตแบบ atomic (เขียนไฟล์ชั่วคราว + สลับชื่อ) และเก็บ .bak ของไฟล์ที่ยังอ่านได้"""
+    import shutil
+    last_payload = None
     while True:
         try:
             with state_lock:
-                data = dict(active_trades)
-            with open(STATE_STORAGE_FILE, "w") as f:
-                json.dump(data, f)
+                payload = json.dumps(active_trades)
+            if payload != last_payload:
+                tmp = STATE_STORAGE_FILE + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write(payload)
+                    f.flush()
+                    os.fsync(f.fileno())
+                if os.path.exists(STATE_STORAGE_FILE):
+                    try:
+                        _read_state_file(STATE_STORAGE_FILE)  # สำรองเฉพาะไฟล์ที่ยังสมบูรณ์
+                        shutil.copy2(STATE_STORAGE_FILE, STATE_BACKUP_FILE)
+                    except Exception:
+                        pass
+                os.replace(tmp, STATE_STORAGE_FILE)
+                last_payload = payload
         except Exception as e:
-            pass
-        pytime.sleep(10)
+            print(f"[STATE] save error: {e}", flush=True)
+        time.sleep(10)
 
 
 # =========================
@@ -462,7 +506,8 @@ def execute_spot_dca(symbol, price):
             "entry_count": new_entries,
             "highest_price": fill_price,
             "infinity_active": False,
-            "updated_at": time.time()
+            "updated_at": time.time(),
+            "last_seen_ts": time.time()
         }
 
     if new_entries <= 1:
@@ -4052,6 +4097,38 @@ def telegram_polling():
 
 
 # =========================
+# TRADE MANAGER WATCHDOG
+# =========================
+
+trade_thread = None
+WATCHDOG_STALE_SECONDS = 90
+
+
+def start_trade_thread():
+    global trade_thread
+    trade_thread = threading.Thread(target=trade_manager.check_trades, daemon=True)
+    trade_thread.start()
+    trade_manager.last_loop_ts = time.time()
+
+
+def trade_watchdog():
+    """เฝ้าลูป Infinity Run: ถ้า thread ตาย ➔ สตาร์ตใหม่ + แจ้งเตือน, ถ้าค้างเกิน 90 วิ ➔ แจ้งเตือน (ทุก 10 นาที)"""
+    last_stale_alert = 0
+    while True:
+        time.sleep(30)
+        try:
+            age = time.time() - trade_manager.last_loop_ts
+            if trade_thread is None or not trade_thread.is_alive():
+                send_telegram("🚨 [WATCHDOG] ระบบเฝ้าราคา (Infinity Run) หยุดทำงาน — กำลังสตาร์ตใหม่อัตโนมัติ")
+                start_trade_thread()
+            elif age > WATCHDOG_STALE_SECONDS and time.time() - last_stale_alert > 600:
+                last_stale_alert = time.time()
+                send_telegram(f"⚠️ [WATCHDOG] ระบบเฝ้าราคาไม่ตอบสนองมา {int(age)} วินาที (อาจค้างที่การเรียก BingX)")
+        except Exception:
+            print(traceback.format_exc(), flush=True)
+
+
+# =========================
 # HEARTBEAT THREAD
 # =========================
 
@@ -4072,6 +4149,9 @@ def heartbeat_thread():
                 "",
                 f"สถานะ: ออนไลน์ปกติ (Uptime: {uptime_hours}h)",
                 f"ยอดเงินสดคงเหลือ: {cash:.2f} USDT",
+                (f"🛡️ ระบบเฝ้าราคา: ปกติ (อัปเดตล่าสุด {int(time.time() - trade_manager.last_loop_ts)} วินาทีที่แล้ว)"
+                 if time.time() - trade_manager.last_loop_ts <= WATCHDOG_STALE_SECONDS
+                 else f"⚠️ ระบบเฝ้าราคาไม่ตอบสนองมา {int(time.time() - trade_manager.last_loop_ts)} วินาที"),
                 "",
                 "📦 สถานะพอร์ตเหรียญทั้งหมด:",
             ]
@@ -4091,7 +4171,9 @@ def heartbeat_thread():
                     price_line = "N/A"
 
                 if pos.get("infinity_active"):
-                    target_line = f"🚀 Infinity Run ทำงานอยู่ (Floor: {pos.get('sl', 'N/A')})"
+                    _sp = float(pos.get("stop_price") or 0.0)
+                    _sl_state = f"SL กระดาน ✅ {_sp:.4f}" if pos.get("stop_order_id") else "SL กระดาน ⚠️ ยังไม่ได้ตั้ง"
+                    target_line = f"🚀 Infinity Run ทำงานอยู่ (Floor: {pos.get('sl', 'N/A')} | {_sl_state})"
                 else:
                     target_line = f"🚀 {avg * (1.0 + config.INFINITY_ACTIVATION_PCT):.4f}"
 
@@ -4206,10 +4288,8 @@ def main():
     # Perform startup cleanup: cancel stale pending limit orders and report open positions
     startup_cleanup()
 
-    threading.Thread(
-        target=trade_manager.check_trades,
-        daemon=True
-    ).start()
+    start_trade_thread()
+    threading.Thread(target=trade_watchdog, daemon=True).start()
 
     # =========================
     # HEARTBEAT

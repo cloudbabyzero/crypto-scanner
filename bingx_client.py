@@ -113,3 +113,63 @@ def spot_sell_all(symbol):
         print(err_msg, flush=True)
         traceback.print_exc()
         return None
+
+
+# =====================================================================
+# EXCHANGE-SIDE STOP LOSS (TAKE_STOP_MARKET) — ส่งคำสั่งตรงเข้า BingX Spot API
+# ไม่ผ่าน create_order ของ ccxt เพราะถ้า ccxt ไม่รู้จักพารามิเตอร์ SL มันจะกลายเป็น Market Sell ขายทิ้งทันที
+# =====================================================================
+last_stop_error = ""
+
+def spot_place_stop_sell(symbol, stop_price):
+    """ตั้ง Stop-Loss ฝั่งขาย (TAKE_STOP_MARKET) บน BingX สำหรับเหรียญว่างทั้งหมดในกระเป๋า
+    คืน {'id','stop_price','qty'} หรือ None (เหตุผลอยู่ใน last_stop_error)"""
+    global last_stop_error
+    last_stop_error = ""
+    exchange = get_exchange()
+    base_coin = symbol.split('/')[0]
+    try:
+        free_qty = get_spot_free_balance(base_coin)
+        if free_qty <= 0:
+            last_stop_error = f"ไม่มียอด {base_coin} ว่างให้ตั้ง SL (อาจถูกล็อกในออเดอร์เดิม)"
+            return None
+
+        qty = float(exchange.amount_to_precision(symbol, free_qty))
+        sp = float(exchange.price_to_precision(symbol, stop_price))
+        if qty * sp < 4.8:
+            last_stop_error = f"มูลค่าต่ำกว่าขั้นต่ำ ({qty * sp:.2f} USDT)"
+            return None
+
+        fn = getattr(exchange, "spotV1PrivatePostTradeOrder", None)
+        if fn is None:
+            last_stop_error = "ccxt เวอร์ชันนี้ไม่มี endpoint spot trade/order (ไม่ได้ส่งคำสั่งใดๆ)"
+            return None
+
+        resp = fn({
+            "symbol": exchange.market(symbol)["id"],
+            "side": "SELL",
+            "type": "TAKE_STOP_MARKET",
+            "quantity": qty,
+            "stopPrice": sp,
+        })
+
+        if isinstance(resp, dict) and str(resp.get("code", 0)) != "0":
+            last_stop_error = f"BingX ปฏิเสธ: {resp.get('msg') or resp}"
+            return None
+
+        data = (resp or {}).get("data") or {}
+        if isinstance(data.get("order"), dict):
+            data = data["order"]
+        order_id = data.get("orderId") or data.get("orderID") or data.get("id")
+        if not order_id:
+            last_stop_error = f"ไม่พบ orderId ในผลลัพธ์: {resp}"
+            return None
+
+        print(f"[BINGX SPOT] ตั้ง SL บนกระดาน {symbol} qty={qty} stop={sp} id={order_id}", flush=True)
+        return {"id": str(order_id), "stop_price": sp, "qty": qty}
+
+    except Exception as e:
+        last_stop_error = str(e)
+        print(f"[BINGX SPOT] ตั้ง SL ไม่สำเร็จ {symbol}: {e}", flush=True)
+        traceback.print_exc()
+        return None
