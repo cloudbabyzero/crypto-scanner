@@ -1700,7 +1700,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
         def check_side(side):
             # 1. 15m StochRSI Floor/Ceiling
-            if not strong_trend and side == "LONG" and stoch_rsi > 80:
+            if not strong_trend and stoch_rsi > 80:
                 return "Blocked: StochRSI Overbought Ceiling"
 
             # 2. Dynamic 1H StochRSI Guard (Scaled with ADX)
@@ -1711,7 +1711,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             if not strong_trend and stoch_rsi_1h < dynamic_long_stoch_min:
                 return f"Blocked: 1H StochRSI Oversold ({round(stoch_rsi_1h, 1)} < Dynamic {round(dynamic_long_stoch_min, 1)})"
 
-            # 3. 1H Rejection Wick Guard
+            # 3. 1H Rejection Wick Guard (ตรวจไส้บนแท่ง 1H)
             body_h1 = abs(h1['close'] - h1['open'])
             range_h1 = h1['high'] - h1['low']
             if range_h1 > 0:
@@ -1719,46 +1719,30 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 if upper_wick_h1 > body_h1 * 1.0 and upper_wick_h1 > range_h1 * 0.35:
                     return "Blocked: 1H Upper Wick Rejection"
 
-            # 4. 15m Structure Alignment
-            structure_bypass = strong_trend or (ema25_slope > 0.08)
-            if not structure_bypass:
-                high_2, high_3, high_4 = df_3m.iloc[-2]['high'], df_3m.iloc[-3]['high'], df_3m.iloc[-4]['high']
-                if high_2 < high_3 < high_4:
-                    return "Blocked: 15m Lower Highs Forming"
-
-            # 5. VWAP Confirmation
+            # 4. VWAP Confirmation (ยืนเหนือต้นทุนเฉลี่ยวัน)
             if not strong_trend and not vwap_confirmed_above:
                 return "Blocked: Below VWAP (LONG forbidden)"
 
-            # 6. EMA Alignment
+            # 5. EMA Alignment (EMA7 > EMA25 ยืนยันแนวโน้มขาขึ้น)
             if not (m3['ema7'] > m3['ema25']):
                 return "Blocked: 15m EMA7 not above EMA25"
 
-            # 7. Anti-Chase Guard (EMA25 Slope-adjusted)
-            base_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT', 0.6)
+            # 6. Anti-Chase Guard (EMA25 Slope-adjusted) ปรับกรอบใหม่
+            base_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT', 0.8)
             if ema25_slope >= 0.08:
-                slope_scale = min(1.2, base_mult + (ema25_slope * 4.0))
+                slope_scale = min(1.3, base_mult + (ema25_slope * 4.0))
             elif ema25_slope <= 0.02:
-                slope_scale = max(0.35, base_mult * 0.6)
+                slope_scale = max(0.40, base_mult * 0.6)
             else:
                 slope_scale = base_mult
 
-            anti_chase_floor_pct = scalp_filters.get('ANTI_CHASE_MIN_PCT', 0.15)
+            anti_chase_floor_pct = scalp_filters.get('ANTI_CHASE_MIN_PCT', 0.30)
             anti_chase_threshold = max(anti_chase_floor_pct, atr_val * slope_scale)
 
             if ema7_dist_pct > anti_chase_threshold:
                 return f"Blocked: Anti-Chase LONG (Stretch {round(ema7_dist_pct, 2)}% > Limit {round(anti_chase_threshold, 2)}% | Slope {round(ema25_slope, 3)}%)"
 
-            # 8. Clearance to Breakeven
-            swing_high_12 = df_3m.iloc[-14:-2]['high'].max()
-            if m3['close'] < swing_high_12 and (swing_high_12 - m3['close']) < (m3['atr'] * 1.3):
-                return "Blocked: Clearance to Swing High < 1.3x ATR"
-
-            # 9. 5m Micro-Trend Alignment
-            if not ((m5['ema7'] >= m5['ema25']) and (m5['close'] >= m5['ema7'])):
-                return "Blocked: 5m Micro-Trend Bearish"
-
-            # 10. 15m Rejection Wick Filter
+            # 7. 15m Rejection Wick Filter (กันโดนเทขายแท่ง 15m)
             body_m3 = abs(m3['close'] - m3['open'])
             range_m3 = m3['high'] - m3['low']
             prev1 = df_3m.iloc[-3]
@@ -1771,9 +1755,9 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                (upper_wick_prev1 > body_prev1 * 1.2 and upper_wick_prev1 > range_prev1 * 0.35):
                 return "Blocked: Upper Wick Rejection"
 
-            # 11. RSI Momentum Bound
-            if m3['rsi'] > scalp_filters.get('RSI_SAFE_LONG_MAX', 60):
-                return f"Blocked: RSI Overbought ({rsi_val} > {scalp_filters.get('RSI_SAFE_LONG_MAX', 60)})"
+            # 8. RSI Momentum Bound (เพดาน 68)
+            if m3['rsi'] > scalp_filters.get('RSI_SAFE_LONG_MAX', 68):
+                return f"Blocked: RSI Overbought ({rsi_val} > {scalp_filters.get('RSI_SAFE_LONG_MAX', 68)})"
 
             return None
 

@@ -73,10 +73,10 @@ STRATEGY_CONFIG = {
             "MIN_ADX": 20,
             "MAX_ADX": 50,
             "STRONG_TREND_ADX_BYPASS": 28,
-            "RSI_SAFE_LONG_MAX": 60,
+            "RSI_SAFE_LONG_MAX": 68,          # ขยายจาก 60 เป็น 68 (เปิดรับโมเมนตัมขาขึ้นที่แข็งแรง)
             "RSI_SAFE_SHORT_MIN": 38,
-            "ANTI_CHASE_ATR_MULT": 0.6,
-            "ANTI_CHASE_MIN_PCT": 0.15
+            "ANTI_CHASE_ATR_MULT": 0.8,        # ขยายตัวคูณจาก 0.6 เป็น 0.8
+            "ANTI_CHASE_MIN_PCT": 0.30         # ขยายระยะห่างขั้นต่ำจาก 0.15% เป็น 0.30%
         }
     },
     "TRENDING": {
