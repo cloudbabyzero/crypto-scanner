@@ -281,18 +281,78 @@ if os.path.isdir(DATA_DIR):
 else:
     STATE_STORAGE_FILE = "active_trades.json"
 
+def log_only(message):
+    """แทน send_telegram สำหรับข้อความที่ถูกตัดออกจากแผน (พิมพ์ลง log เท่านั้น ไม่ส่ง Telegram)"""
+    try:
+        print(f"[LOG-ONLY] {str(message).splitlines()[0] if str(message).strip() else ''}", flush=True)
+    except Exception:
+        pass
+
+
+def sanitize_active_trades(data):
+    """เก็บเฉพาะ key ที่เป็นชื่อเหรียญใน The Core 5 และมีของถืออยู่จริง
+    ตัด UUID สัญญาณผี / status SIGNAL / เหรียญนอกลิสต์ ออกทั้งหมด"""
+    clean = {}
+    dropped = []
+    if not isinstance(data, dict):
+        return clean, ["<root is not a dict>"]
+    for key, pos in data.items():
+        try:
+            ok = (
+                key in symbols
+                and isinstance(pos, dict)
+                and float(pos.get("total_qty", 0.0)) > 0
+                and float(pos.get("weighted_avg_price", 0.0)) > 0
+            )
+        except (TypeError, ValueError):
+            ok = False
+        if ok:
+            clean[key] = pos
+        else:
+            dropped.append(str(key))
+    return clean, dropped
+
+
+def build_recovery_message(trades):
+    """🔄 [SYSTEM RECOVERY] รายงานพอร์ตที่กู้คืนหลังรีสตาร์ต"""
+    if not trades:
+        return "🔄 [SYSTEM RECOVERY]\n\nบอทรีสตาร์ตสำเร็จ! พอร์ตว่างเปล่า (เงินสด 100% พร้อมช้อนไม้ 1)"
+
+    lines = ["🔄 [SYSTEM RECOVERY]", "", "บอทรีสตาร์ตสำเร็จ! กู้คืนพอร์ตสะสมเหรียญได้ครบถ้วน:", ""]
+    total_cost_all = 0.0
+    for sym, pos in trades.items():
+        base = sym.split("/")[0]
+        cost = float(pos.get("total_cost_usdt", 0.0))
+        total_cost_all += cost
+        lines += [
+            f"• {sym} ({int(pos.get('entry_count', 1))} ไม้):",
+            f"   - ทุนเฉลี่ย: {float(pos.get('weighted_avg_price', 0.0)):.4f}",
+            f"   - ถือรวม: {float(pos.get('total_qty', 0.0)):.6f} {base}",
+            f"   - ทุนรวม: {cost:.2f} USDT",
+            "",
+        ]
+    lines.append(f"💰 รวมเงินทุนสะสมทั้งหมด: {total_cost_all:.2f} USDT")
+    return "\n".join(lines)
+
+
 def load_active_trades():
-    """Load active trades from disk to prevent amnesia on restart."""
+    """Load active trades from disk to prevent amnesia on restart (Spot DCA)."""
     global active_trades
     try:
+        data = {}
         if os.path.exists(STATE_STORAGE_FILE):
             with open(STATE_STORAGE_FILE, "r") as f:
                 data = json.load(f)
-                with state_lock:
-                    active_trades = data
-            msg = f"🔄 [SYSTEM] โหลดสถานะบอทสำเร็จ\nเรียกคืน {len(active_trades)} ออเดอร์จากหน่วยความจำ"
-            send_telegram(msg)
-            print(f"[STATE] Loaded {len(active_trades)} trades from {STATE_STORAGE_FILE}", flush=True)
+
+        clean, dropped = sanitize_active_trades(data)
+        if dropped:
+            print(f"[STATE] ตัดรายการที่ไม่ใช่พอร์ต Spot ออก: {dropped}", flush=True)
+
+        with state_lock:
+            active_trades = clean
+
+        send_telegram(build_recovery_message(clean))
+        print(f"[STATE] Loaded {len(clean)} coin positions from {STATE_STORAGE_FILE}", flush=True)
     except Exception as e:
         print(f"[STATE] Error loading {STATE_STORAGE_FILE}: {e}", flush=True)
 
@@ -383,6 +443,7 @@ def execute_spot_dca(symbol, price):
 
     with state_lock:
         prev = active_trades.get(symbol) or {}
+        prev_avg = float(prev.get("weighted_avg_price", 0.0) or 0.0)
         new_qty = prev.get("total_qty", 0.0) + qty
         new_cost = prev.get("total_cost_usdt", 0.0) + cost
         new_entries = prev.get("entry_count", 0) + 1
@@ -404,14 +465,38 @@ def execute_spot_dca(symbol, price):
             "updated_at": time.time()
         }
 
+    if new_entries <= 1:
+        status_line = "🆕 ไม้ที่ 1 (เข้าซื้อครั้งแรก)"
+    else:
+        status_line = f"🔄 ไม้ที่ {new_entries} (DCA ช้อนเพิ่มจากทุนเดิม {prev_avg:.4f})"
+    base = symbol.split("/")[0]
+
     send_telegram(
-        f"🛒 [SPOT DCA] ซื้อ {symbol} สำเร็จ\n\n"
-        f"ยอดซื้อ: {cost:.2f} USDT @ {fill_price:.4f}\n"
-        f"ไม้ที่: {new_entries}\n"
-        f"ต้นทุนเฉลี่ยรวมใหม่: {new_avg:.4f}\n"
-        f"ถือรวม: {new_qty:.6f} (ทุนรวม {new_cost:.2f} USDT)"
+        f"🛒 [SPOT DCA BOUGHT]\n\n"
+        f"เหรียญ: {symbol} (🟩 LONG)\n"
+        f"สถานะ: {status_line}\n\n"
+        f"• ราคาที่ซื้อได้: {fill_price:.4f}\n"
+        f"• ต้นทุนเฉลี่ยรวมใหม่: {new_avg:.4f}\n"
+        f"• ถือรวม: {new_qty:.6f} {base} (ทุนรวม {new_cost:.2f} USDT)"
     )
     return True
+
+
+last_dca_paused_alert = {}          # symbol -> timestamp ล่าสุดที่แจ้งเตือน
+DCA_PAUSED_ALERT_COOLDOWN = 6 * 3600  # แจ้งเตือนเหรียญเดิมซ้ำได้อย่างเร็วทุก 6 ชม. (กันสแปมจากสแกนทุก 60 วินาที)
+
+
+def notify_dca_paused(symbol, free_usdt):
+    now_ts = time.time()
+    if now_ts - last_dca_paused_alert.get(symbol, 0) < DCA_PAUSED_ALERT_COOLDOWN:
+        return
+    last_dca_paused_alert[symbol] = now_ts
+    send_telegram(
+        f"⚠️ [SPOT DCA PAUSED — USDT ไม่พอ]\n\n"
+        f"บอทเจอสัญญาณซื้อของ {symbol} ที่น่าสนใจ แต่เงินสดในพอร์ตเหลือ {free_usdt:.2f} USDT "
+        f"(ต้องการอย่างน้อย {ORDER_AMOUNT_USDT:.1f} USDT)\n"
+        f"👉 บอทขอข้ามรอบนี้ไปก่อน รอคุณเติมเงินสัปดาห์ถัดไปครับ!"
+    )
 
 
 def run_priority_dca_engine():
@@ -458,8 +543,10 @@ def run_priority_dca_engine():
     ranked_candidates.sort(key=lambda x: x["drawdown_pct"])
 
     for cand in ranked_candidates:
-        if bingx_client.get_spot_free_balance('USDT') < ORDER_AMOUNT_USDT:
+        free_usdt = bingx_client.get_spot_free_balance('USDT')
+        if free_usdt < ORDER_AMOUNT_USDT:
             print("[PRIORITY DCA] USDT ไม่พอ หยุดยิงซื้อรอบนี้", flush=True)
+            notify_dca_paused(cand["symbol"], free_usdt)
             break
         print(f"[PRIORITY DCA] {cand['symbol']} drawdown={cand['drawdown_pct']:+.2f}%", flush=True)
         try:
@@ -490,8 +577,8 @@ def startup_market_scan():
     
     print("[STARTUP_SCAN] Beginning startup market scan", flush=True)
     
-    send_telegram("🚀 Bot Started")
-    send_telegram("🔍 Startup Market Scan")
+    log_only("🚀 Bot Started")
+    log_only("🔍 Startup Market Scan")
     
     try:
         # Detect current BTC market regime
@@ -499,7 +586,7 @@ def startup_market_scan():
         btc_trend_str = get_btc_trend().upper()
         
         # Send regime info
-        send_telegram(
+        log_only(
             f"Regime: {startup_regime}\n"
             f"BTC Trend: {btc_trend_str}\n"
             f"BTC ADX: {btc_adx}\n"
@@ -519,22 +606,22 @@ def startup_market_scan():
         # Set market mode based on control mode
         if CONTROL_MODE == "FORCE_TREND":
             MARKET_MODE = "TRENDING"
-            send_telegram("✅ Trend Mode Activated (FORCE_TREND override)")
+            log_only("✅ Trend Mode Activated (FORCE_TREND override)")
         elif CONTROL_MODE == "FORCE_SIDEWAY":
             MARKET_MODE = "SIDEWAYS"
-            send_telegram("✅ Sideways Mode Activated (FORCE_SIDEWAY override)")
+            log_only("✅ Sideways Mode Activated (FORCE_SIDEWAY override)")
         else:
             new_mode = determine_mode_from_regime(startup_regime)
             MARKET_MODE = new_mode
             if CONTROL_MODE == "SCALP_SIDEWAYS":
-                send_telegram("✅ Scalp & Sideways Mode Activated (SCALP_SIDEWAYS override)")
+                log_only("✅ Scalp & Sideways Mode Activated (SCALP_SIDEWAYS override)")
             elif CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]:
                 MARKET_MODE = "SCALPING"  # FIX: ensure scan loop uses SCALPING_SYMBOLS
-                send_telegram("✅ Scalping Mode Activated (SCALPING override)")
+                log_only("✅ Scalping Mode Activated (SCALPING override)")
             elif CONTROL_MODE == "FORCE_MOMENTUM":
-                send_telegram("✅ Momentum Mode Activated (FORCE_MOMENTUM override)")
+                log_only("✅ Momentum Mode Activated (FORCE_MOMENTUM override)")
             else:
-                send_telegram(f"✅ {new_mode} Mode Activated (auto)")
+                log_only(f"✅ {new_mode} Mode Activated (auto)")
         
         # Save updated state to persistent storage
         save_regime_storage()
@@ -542,7 +629,7 @@ def startup_market_scan():
         LAST_REGIME_CHECK = time.time()
 
         # Feature 5: Run immediate full rescan after startup scan (read-only)
-        send_telegram("🔄 Startup Full Rescan")
+        log_only("🔄 Startup Full Rescan")
         immediate_full_rescan(is_startup=True, read_only=True)
         
         # Feature 6: Send top candidates from startup rescan
@@ -559,9 +646,9 @@ def startup_market_scan():
         mode_text += "\nSummary:\n"
         for m, c in mode_counts.items():
             mode_text += f"{m}: {c}\n"
-        send_telegram(mode_text)
+        log_only(mode_text)
 
-        send_telegram("✅ Bot Ready")
+        log_only("✅ Bot Ready")
         
     except Exception as e:
         print(f"[STARTUP_SCAN] Error: {e}", flush=True)
@@ -597,7 +684,7 @@ def startup_cleanup():
                     print(f"Failed to cancel order {order.get('id')}: {cancel_err}", flush=True)
 
         # 3. Send Telegram notification about cancelled orders
-        send_telegram(f"🧹 STARTUP CLEANUP\n\nCancelled {cancelled_count} stale pending orders.")
+        log_only(f"🧹 STARTUP CLEANUP\n\nCancelled {cancelled_count} stale pending orders.")
 
         # 4. Check for open positions (do not close them)
         positions = exchange.fetch_positions()
@@ -614,7 +701,7 @@ def startup_cleanup():
                 open_positions.append(f"{symbol} {side}")
         if open_positions:
             positions_msg = "\n".join(open_positions)
-            send_telegram(f"⚠️ OPEN POSITIONS DETECTED\n\n{positions_msg}\n\nManual review required.")
+            log_only(f"⚠️ OPEN POSITIONS DETECTED\n\n{positions_msg}\n\nManual review required.")
 
         # 5. Log debug entry to Google Sheet
         google_sheet.log_debug(
@@ -652,7 +739,7 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
     # Feature 8: Skip auto-switch if override mode is active
     if CONTROL_MODE == "FORCE_TREND":
         print(f"Regime changed to {new_regime}, but FORCE_TREND override active", flush=True)
-        send_telegram(
+        log_only(
             f"🚨 MARKET REGIME CHANGED\n\n"
             f"{old_regime} → {new_regime}\n\n"
             f"BTC ADX: {btc_adx}\n"
@@ -665,7 +752,7 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
     
     if CONTROL_MODE == "FORCE_SIDEWAY":
         print(f"Regime changed to {new_regime}, but FORCE_SIDEWAY override active", flush=True)
-        send_telegram(
+        log_only(
             f"🚨 MARKET REGIME CHANGED\n\n"
             f"{old_regime} → {new_regime}\n\n"
             f"BTC ADX: {btc_adx}\n"
@@ -678,7 +765,7 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
 
     if CONTROL_MODE == "FORCE_MOMENTUM":
         print(f"Regime changed to {new_regime}, but FORCE_MOMENTUM override active", flush=True)
-        send_telegram(
+        log_only(
             f"🚨 MARKET REGIME CHANGED\n\n"
             f"{old_regime} → {new_regime}\n\n"
             f"BTC ADX: {btc_adx}\n"
@@ -692,7 +779,7 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
     if CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]:
         print(f"Regime changed to {new_regime}, but SCALPING override active", flush=True)
         MARKET_MODE = "SCALPING"  # FIX: re-lock in case regime switch overwrote it
-        send_telegram(
+        log_only(
             f"🚨 MARKET REGIME CHANGED\n\n"
             f"{old_regime} → {new_regime}\n\n"
             f"BTC ADX: {btc_adx}\n"
@@ -705,7 +792,7 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
         
     if CONTROL_MODE == "SCALP_SIDEWAYS":
         print(f"Regime changed to {new_regime}, but SCALP_SIDEWAYS override active", flush=True)
-        send_telegram(
+        log_only(
             f"🚨 MARKET REGIME CHANGED\n\n"
             f"{old_regime} → {new_regime}\n\n"
             f"BTC ADX: {btc_adx}\n"
@@ -777,7 +864,7 @@ def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
         f"Mode: {old_mode} -> {new_mode}",
         flush=True
     )
-    send_telegram(notification)
+    log_only(notification)
 
 
 def determine_mode_from_regime(regime):
@@ -896,7 +983,7 @@ def send_top_candidates():
             f"   Strategy: {strategy}\n\n"
         )
     
-    send_telegram(message.strip())
+    log_only(message.strip())
     print(f"Top candidates sent: {len(top_candidates)} signals", flush=True)
 
 
@@ -1809,23 +1896,17 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         side_icon = "🟩" if side == "LONG" else "🟥"
         dynamic_sl_line = f"🛡️ Dynamic SL: {'🔥 HIGH NOISE' if dynamic_sl_mode == 'HIGH_NOISE' else '🟢 NORMAL'} ({sl_atr_mult}x ATR)"
 
-        message = f"""⚡ SCALPING SIGNAL [GATE PASS]
+        # ---------- Spot signal message (เฉพาะส่วนสำคัญ ก๊อปไปให้คนอื่นได้) ----------
+        _act_pct = config.INFINITY_ACTIVATION_PCT
+        _lock_pct = config.INFINITY_MIN_LOCK_PCT
 
-Symbol: {symbol} ({side_icon} {side})
-Setup: 100% Gatekeeper Verified
+        message = f"""⚡ BUY SIGNAL — {symbol} ({side_icon} {side})
 
-Entry: {entry}
-SL: {sl} ({sl_atr_mult}x ATR)
-Target (2.0 RR): {tp2}
-Auto-BE Trigger: +1.2x ATR
-
-{dynamic_sl_line}
-   ATR%: {atr_val}% | 1H BBW: {round(h1_bbw, 2)}% (Median: {round(median_bbw_40, 2)}%)
-   EMA25 Slope: {round(ema25_slope, 4)}%
-
-📊 Market Context:
-• 15m ADX: {adx_val} | RSI: {round(rsi_val, 2)}
-• BTC Macro Trend: {btc_trend}
+ราคาเข้า: {entry}
+เริ่ม Trailing: ≥ {entry * (1 + _act_pct):.4f} (+{_act_pct * 100:.1f}%)
+ล็อกกำไรขั้นต่ำ: {entry * (1 + _lock_pct):.4f} (+{_lock_pct * 100:.1f}%)
+Trail: {config.TRAILING_PCT_TIER1 * 100:.1f}% / {config.TRAILING_PCT_TIER2 * 100:.1f}% / {config.TRAILING_PCT_TIER3 * 100:.1f}% (ตามกำไร)
+ไม่มี Stop Loss
 """
         print(message, flush=True)
 
@@ -1834,25 +1915,7 @@ Auto-BE Trigger: +1.2x ATR
 
         if not signal_only:
             save_signal(signal_id, symbol, side, grade, score, entry, sl, tp1, tp2)
-            signal_regime = CURRENT_REGIME
             with state_lock:
-                active_trades[signal_id] = {
-                    "symbol": symbol,
-                    "status": "SIGNAL",
-                    "side": side,
-                    "entry": entry,
-                    "sl": sl,
-                    "tp1": tp1,
-                    "tp2": tp2,
-                    "atr": atr,
-                    "sl_atr_mult": sl_atr_mult,
-                    "dynamic_sl_mode": dynamic_sl_mode,
-                    "signal_regime": signal_regime,
-                    "created_at": time.time(),
-                    "grade": grade,
-                    "score": score,
-                    "strategy": "SCALPING",
-                }
                 last_alert[(symbol, "SCALPING")] = now_ts
 
         set_scan_result(symbol, {
@@ -3993,145 +4056,58 @@ def telegram_polling():
 # =========================
 
 def heartbeat_thread():
-
+    """💓 [HEARTBEAT - SPOT DCA] รายงานสถานะพอร์ตรายชั่วโมง"""
     while True:
-
         try:
-
             time.sleep(HEARTBEAT_INTERVAL)
 
-            uptime_seconds = int(
-                time.time() - BOT_START_TIME
-            )
-
-            uptime_hours = uptime_seconds // 3600
-            uptime_minutes = (uptime_seconds % 3600) // 60
-
-            uptime_str = (
-                f"{uptime_hours}h {uptime_minutes}m"
-            )
+            uptime_hours = int(time.time() - BOT_START_TIME) // 3600
+            cash = bingx_client.get_spot_free_balance('USDT')
 
             with state_lock:
-                active_count = len(
-                    [
-                        t
-                        for t in active_trades.values()
-                        if t.get("status")
-                        in ["PENDING", "OPEN"]
-                    ]
-                )
+                trades_snapshot = {k: dict(v) for k, v in active_trades.items()}
 
-            auto_trade_status = (
-                "ON" if AUTO_TRADE else "OFF"
-            )
+            lines = [
+                "💓 [HEARTBEAT - SPOT DCA]",
+                "",
+                f"สถานะ: ออนไลน์ปกติ (Uptime: {uptime_hours}h)",
+                f"ยอดเงินสดคงเหลือ: {cash:.2f} USDT",
+                "",
+                "📦 สถานะพอร์ตเหรียญทั้งหมด:",
+            ]
 
-            current_time = time.strftime(
-                "%Y-%m-%d %H:%M:%S UTC",
-                time.gmtime()
-            )
+            for sym in symbols:
+                pos = trades_snapshot.get(sym)
+                if not pos or float(pos.get("total_qty", 0.0)) <= 0:
+                    lines.append(f"• {sym}: ⚪ ยังไม่มีออเดอร์ (รอสัญญาณไม้ 1)")
+                    lines.append("")
+                    continue
 
-            market_mode_text = MARKET_MODE
-
-            current_regime_text = CURRENT_REGIME
-
-            # Also show control mode in heartbeat
-            control_mode_text = CONTROL_MODE
-
-            # Fetch portfolio balance
-            try:
-                balance = exchange.fetch_balance()
-                current_usdt = float(balance['total'].get('USDT', 0.0))
-            except Exception:
-                current_usdt = 0.0
-
-            # BTC Trend for heartbeat MARKET section
-            try:
-                btc_trend_hb = get_btc_trend()
-            except Exception:
-                btc_trend_hb = "neutral"
-
-            if btc_trend_hb == "bullish":
-                btc_trend_line = "📈 ขาขึ้น (BULLISH)"
-            elif btc_trend_hb == "bearish":
-                btc_trend_line = "📉 ขาลง (BEARISH)"
-            else:
-                btc_trend_line = "⚖️ ไซด์เวย์ (NEUTRAL)"
-
-            # =========================
-            # COMPILE VOLATILITY STATUS
-            # =========================
-            hb_base_tf = STRATEGY_CONFIG['SCALPING'].get('BASE_TF', '15m')
-            vol_report = f"\n🌊 VOLATILITY STATUS ({hb_base_tf} Scalping)\n"
-            target_symbols = SCALPING_SYMBOLS if MODE in ["FORCE_SCALPING", "SCALPING"] else symbols
-            scalp_filters_hb = STRATEGY_CONFIG['SCALPING']['FILTERS']
-            hb_fee_floor = scalp_filters_hb.get('MIN_ATR_PCT', 0.15)
-            hb_hard_max = scalp_filters_hb.get('MAX_ATR_PCT', 0.45)
-            hb_min_ceiling = scalp_filters_hb.get('MIN_CEILING_ATR_PCT', 0.30)
-            for sym in target_symbols:
+                avg = float(pos.get("weighted_avg_price", 0.0))
                 try:
-                    df = get_dataframe(sym, hb_base_tf)
-                    w20 = df.iloc[-21:-1]
-                    med_20 = (w20['atr'] / w20['close'] * 100).median()
-                    target_min_atr = round(max(hb_fee_floor, med_20 * 0.85), 2)  # floor matches analyze_scalping
-                    target_max_atr = round(min(hb_hard_max, max(hb_min_ceiling, med_20 * 1.80)), 2)  # ceiling matches analyze_scalping
-
-                    r5 = df.iloc[-6:-1]
-                    cur_avg = round((r5['atr'] / r5['close'] * 100).mean(), 2)
-
-                    symbol_short = sym.split('/')[0]
-                    if cur_avg < target_min_atr:
-                        status_emoji, status_label = "🔴", "Chop"
-                    elif cur_avg > target_max_atr:
-                        status_emoji, status_label = "⚠️", "Wild"
-                    else:
-                        status_emoji, status_label = "🟢", "Ready"
-                    vol_report += f"• {symbol_short:<4} : {cur_avg:.2f}% [{target_min_atr:.2f}% - {target_max_atr:.2f}%] {status_emoji} ({status_label})\n"
+                    price = float(exchange.fetch_ticker(sym)["last"])
+                    price_line = f"{price:.4f} ({(price - avg) / avg * 100:+.2f}%)"
                 except Exception:
-                    vol_report += f"• {sym.split('/')[0]:<4} : N/A\n"
+                    price_line = "N/A"
 
-            message = f"""
-💓 HEARTBEAT
+                if pos.get("infinity_active"):
+                    target_line = f"🚀 Infinity Run ทำงานอยู่ (Floor: {pos.get('sl', 'N/A')})"
+                else:
+                    target_line = f"🚀 {avg * (1.0 + config.INFINITY_ACTIVATION_PCT):.4f}"
 
-Status: ONLINE
-Uptime: {uptime_str}
+                lines += [
+                    f"• {sym} ({int(pos.get('entry_count', 1))} ไม้):",
+                    f"   - ทุนเฉลี่ย: {avg:.4f}",
+                    f"   - ราคาปัจจุบัน: {price_line}",
+                    f"   - เป้า Infinity Run: {target_line}",
+                    "",
+                ]
 
-📊 BOT STATUS
-
-Active Trades: {active_count}
-Coins: {len(symbols)}
-Auto Trade: {auto_trade_status}
-Portfolio: {round(current_usdt, 2)} USDT
-Loss Streak: {current_loss_streak}
-
-📈 MARKET
-
-Market Mode: {market_mode_text}
-Market Regime: {current_regime_text}
-Control Mode: {control_mode_text}
-BTC Trend: {btc_trend_line}
-{vol_report}
-📋 SCAN STATS
-
-Signals Generated: {scan_counters['Signal Generated']}
-Cooldown Rejects: {scan_counters['Cooldown']}
-Low Score Rejects: {scan_counters['Score Below MIN_SCORE']}
-
-Time: {current_time}
-"""
-
-            send_telegram(message)
+            send_telegram("\n".join(lines).rstrip())
 
         except Exception:
-
-            print(
-                "Heartbeat error",
-                flush=True
-            )
-
-            print(
-                traceback.format_exc(),
-                flush=True
-            )
+            print("Heartbeat error", flush=True)
+            print(traceback.format_exc(), flush=True)
 
 
 # =========================
@@ -4304,7 +4280,7 @@ def main():
         except Exception:
             vol_report += f"• {sym.split('/')[0]:<4} : N/A\n"
 
-    send_telegram(
+    log_only(
         f"🚀 STARTUP REPORT\n\n"
         f"Status: STARTED\n"
         f"Time: {startup_time}\n"

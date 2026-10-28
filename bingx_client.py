@@ -36,8 +36,7 @@ def spot_market_buy(symbol, usdt_amount):
 
     if free_usdt < usdt_amount:
         msg = f"⚠️ [SPOT BUY SKIPPED] {symbol}\nUSDT ไม่พอซื้อ (ต้องการ: {usdt_amount} USDT | มีจริง: {free_usdt:.2f} USDT)\nปล่อยข้ามรอบนี้ไปก่อนเพื่อรอเงินเติมสัปดาห์ถัดไป"
-        if hasattr(main_mod, 'send_telegram'):
-            main_mod.send_telegram(msg)
+        # ข้อความ Telegram ย้ายไปแจ้งเป็น [SPOT DCA PAUSED] ที่ run_priority_dca_engine (มี cooldown กันสแปม)
         print(f"[SPOT BUY] {msg}", flush=True)
         return None
 

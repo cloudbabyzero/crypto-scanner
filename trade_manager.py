@@ -107,7 +107,7 @@ def check_trades():
                         with main_mod.state_lock:
                             pos["infinity_active"] = True
                             pos["highest_price"] = current_price
-                        msg = f"🚀 [INFINITY RUN ACTIVATED]\n\nเหรียญ: {symbol}\nทุนเฉลี่ยรวม: {weighted_avg:.4f}\nราคาปัจจุบัน: {current_price:.4f} (+{gain_pct:.2f}%)\n🟢 เริ่มลาก Trailing SL ล็อกกำไรอัตโนมัติ"
+                        msg = f"🚀 [INFINITY RUN ACTIVATED]\n\nเหรียญ: {symbol}\nทุนเฉลี่ยรวม: {weighted_avg:.4f}\nราคาปัจจุบัน: {current_price:.4f} (+{gain_pct:.2f}%)\n🟢 กำไรแตะเป้า! เริ่มลาก Trailing SL ล็อกกำไรอัตโนมัติ (ขั้นต่ำ +{INFINITY_MIN_LOCK_PCT*100:.1f}%)"
                         main_mod.send_telegram(msg)
                         print(msg, flush=True)
 
@@ -136,12 +136,13 @@ def check_trades():
                             exit_msg = f"""🏆 [PROFIT HARVEST — ปิดรอบสำเร็จ]
 
 เหรียญ: {symbol}
-กำไรสุทธิ: +{pnl_usdt:.4f} USDT (+{gain_pct:.2f}%)
+กำไรสุทธิ: {pnl_usdt:+.4f} USDT ({gain_pct:+.2f}%)
 สะสมมาทั้งหมด: {entries} ไม้ (รวมทุน {total_cost:.2f} USDT)
 ราคาขายเฉลี่ย: {current_price:.4f}
 ระดับเทรนด์: {tier_name}
 
-🟢 กวาดเงินต้น + กำไรคืนกระเป๋า USDT 100% เรียบร้อย!"""
+🟢 กวาดเงินต้น + กำไรคืนกระเป๋า USDT 100% เรียบร้อย!
+รีเซ็ตสถานะเหรียญเพื่อรอสแกนรอบสะสมใหม่"""
                             main_mod.send_telegram(exit_msg)
 
                             try:
