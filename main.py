@@ -4249,47 +4249,38 @@ def main():
     market_mode_text = MARKET_MODE
 
     # =========================
-    # COMPILE STARTUP VOLATILITY STATUS
+    # STARTUP REPORT (กระชับ เฉพาะข้อมูลสำคัญ)
     # =========================
-    su_base_tf = STRATEGY_CONFIG['SCALPING'].get('BASE_TF', '15m')
-    vol_report = f"\n\n🌊 VOLATILITY STATUS ({su_base_tf} Scalping)\n"
-    target_symbols = SCALPING_SYMBOLS if MODE in ["FORCE_SCALPING", "SCALPING"] else symbols
-    scalp_filters_su = STRATEGY_CONFIG['SCALPING']['FILTERS']
-    su_fee_floor = scalp_filters_su.get('MIN_ATR_PCT', 0.15)
-    su_hard_max = scalp_filters_su.get('MAX_ATR_PCT', 0.45)
-    su_min_ceiling = scalp_filters_su.get('MIN_CEILING_ATR_PCT', 0.30)
-    for sym in target_symbols:
+    try:
+        btc_trend_su = get_btc_trend()
+    except Exception:
+        btc_trend_su = "neutral"
+    if btc_trend_su == "bullish":
+        btc_trend_line = "📈 ขาขึ้น (BULLISH)"
+    elif btc_trend_su == "bearish":
+        btc_trend_line = "📉 ขาลง (BEARISH)"
+    else:
+        btc_trend_line = "⚖️ ไซด์เวย์ (NEUTRAL)"
+
+    cash_su = bingx_client.get_spot_free_balance('USDT')
+
+    price_lines = ""
+    for _sym in symbols:
         try:
-            df = get_dataframe(sym, su_base_tf)
-            w20 = df.iloc[-21:-1]
-            med_20 = (w20['atr'] / w20['close'] * 100).median()
-            target_min_atr = round(max(su_fee_floor, med_20 * 0.85), 2)  # floor matches analyze_scalping
-            target_max_atr = round(min(su_hard_max, max(su_min_ceiling, med_20 * 1.80)), 2)  # ceiling matches analyze_scalping
-
-            r5 = df.iloc[-6:-1]
-            cur_avg = round((r5['atr'] / r5['close'] * 100).mean(), 2)
-
-            symbol_short = sym.split('/')[0]
-            if cur_avg < target_min_atr:
-                status_emoji, status_label = "🔴", "Chop"
-            elif cur_avg > target_max_atr:
-                status_emoji, status_label = "⚠️", "Wild"
-            else:
-                status_emoji, status_label = "🟢", "Ready"
-            vol_report += f"• {symbol_short:<4} : {cur_avg:.2f}% [{target_min_atr:.2f}% - {target_max_atr:.2f}%] {status_emoji} ({status_label})\n"
+            _p = float(exchange.fetch_ticker(_sym)["last"])
+            price_lines += f"• {_sym.split('/')[0]}: {_p:,.4f}\n"
         except Exception:
-            vol_report += f"• {sym.split('/')[0]:<4} : N/A\n"
+            price_lines += f"• {_sym.split('/')[0]}: N/A\n"
 
-    log_only(
-        f"🚀 STARTUP REPORT\n\n"
-        f"Status: STARTED\n"
-        f"Time: {startup_time}\n"
-        f"Coins: {len(symbols)}\n"
-        f"Active Trades Restored: {restored_trades}\n"
-        f"Auto Trade: {auto_status}\n"
-        f"Market Mode: {market_mode_text}\n"
-        f"Market Regime: {CURRENT_REGIME}"
-        f"{vol_report}"
+    send_telegram(
+        f"🚀 [BOT STARTED]\n\n"
+        f"เวลา: {startup_time}\n"
+        f"BTC เทรนด์: {btc_trend_line}\n"
+        f"Market Regime: {CURRENT_REGIME}\n"
+        f"โหมด: {market_mode_text} | Auto Trade: {auto_status}\n\n"
+        f"💲 ราคาตอนนี้:\n{price_lines}\n"
+        f"💰 เงินสดคงเหลือ: {cash_su:.2f} USDT\n"
+        f"📦 เหรียญที่ถืออยู่: {restored_trades}/{len(symbols)}"
     )
 
     # =========================
