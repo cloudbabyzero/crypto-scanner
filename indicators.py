@@ -18,8 +18,12 @@ def get_dataframe(symbol, timeframe):
     load_markets_if_needed()
     
     exchange = get_exchange()
+
+    # ตัด :USDT ออกเพื่อรองรับกระดาน Spot
+    clean_symbol = symbol.replace(':USDT', '') if ':USDT' in symbol else symbol
+
     ohlcv = exchange.fetch_ohlcv(
-        symbol,
+        clean_symbol,
         timeframe=timeframe,
         limit=200
     )
@@ -192,7 +196,7 @@ def detect_symbol_regime(df_1h):
 # MOMENTUM DETECTION
 # =========================
 
-def detect_momentum(symbol='BTC/USDT:USDT'):
+def detect_momentum(symbol='BTC/USDT'):
     """Detect if a symbol is in Momentum regime (strong directional move, no pullback).
 
     Returns:
@@ -296,26 +300,31 @@ def get_btc_trend():
         if _time.time() - _btc_trend_cache["timestamp"] < _BTC_TREND_CACHE_SECONDS:
             return _btc_trend_cache["value"]
 
-    df_4h = get_dataframe('BTC/USDT:USDT', '4h')
-    btc_4h = df_4h.iloc[-2]
+    try:
+        df_4h = get_dataframe('BTC/USDT', '4h')
+        btc_4h = df_4h.iloc[-2]
 
-    df_1h = get_dataframe('BTC/USDT:USDT', '1h')
-    btc_1h = df_1h.iloc[-2]
+        df_1h = get_dataframe('BTC/USDT', '1h')
+        btc_1h = df_1h.iloc[-2]
 
-    score = 0
-    if btc_4h['ema25'] > btc_4h['ema99']: score += 2
-    if btc_4h['ema7']  > btc_4h['ema25']: score += 1
-    if btc_1h['ema7']  > btc_1h['ema25']: score += 1
-    if btc_1h['close'] > btc_1h['ema25']: score += 1
-    if btc_1h['ema25'] > btc_1h['ema99']: score += 1
+        score = 0
+        if btc_4h['ema25'] > btc_4h['ema99']: score += 2
+        if btc_4h['ema7']  > btc_4h['ema25']: score += 1
+        if btc_1h['ema7']  > btc_1h['ema25']: score += 1
+        if btc_1h['close'] > btc_1h['ema25']: score += 1
+        if btc_1h['ema25'] > btc_1h['ema99']: score += 1
 
-    if score >= 4:
-        result = "bullish"
-    elif score <= 2:
-        result = "bearish"
-    else:
-        result = "neutral"
+        if score >= 4:
+            result = "bullish"
+        elif score <= 2:
+            result = "bearish"
+        else:
+            result = "neutral"
 
-    _btc_trend_cache["value"] = result
-    _btc_trend_cache["timestamp"] = _time.time()
-    return result
+        _btc_trend_cache["value"] = result
+        _btc_trend_cache["timestamp"] = _time.time()
+        return result
+    except Exception as e:
+        # เน็ตกระตุก/ดึงกราฟไม่ได้ -> คืน neutral แทนการแครช (ไม่เขียนทับ cache)
+        print(f"⚠️ get_btc_trend failed, fallback to neutral: {e}")
+        return "neutral"
