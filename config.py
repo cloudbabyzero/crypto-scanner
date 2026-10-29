@@ -123,3 +123,25 @@ MARKET_REGIME_ATR_VOLATILE = 1.0
 # Momentum detection thresholds (ใช้ใน indicators.detect_momentum)
 MOMENTUM_MIN_PRICE_DISTANCE = 0.5   # % ระยะห่างของ close จาก EMA7 (4h)
 MOMENTUM_MIN_CANDLES = 3            # จำนวนแท่งเทียนทิศเดียวกันขั้นต่ำ
+
+# =====================================================================
+# ACTIVE EQUAL-WEIGHTED INDEX & RISK SAFEGUARDS CONFIG
+# =====================================================================
+MAX_PORTFOLIO_ALLOC_PCT = 0.20          # เพดานสูงสุด 20% ของมูลค่าพอร์ตต่อเหรียญ
+MIN_PORTFOLIO_ALLOC_FLOOR_USDT = 12.0   # เพดานขั้นต่ำสำหรับพอร์ตเล็ก (ซื้อได้ 2 ไม้เสมอ)
+
+FLASH_CRASH_DROP_PCT = 12.0             # แท่ง 1H ร่วงเกิน 12% ➔ พักช้อน
+FLASH_CRASH_FREEZE_HOURS = 12           # ระยะเวลาแช่แข็งการซื้อ (ชั่วโมง)
+
+SCALED_TP_ENABLED = True
+SCALED_TP_MULTI_ENTRY_PCT = 0.020       # สะสม >= 2 ไม้ ลดเป้า Infinity Run เหลือ +2.0%
+SCALED_TP_MULTI_LOCK_PCT = 0.012        # สะสม >= 2 ไม้ ล็อกกำไรขั้นต่ำ +1.2%
+
+SPOT_ROUNDTRIP_FEE_PCT = 0.002          # ค่าธรรมเนียมไป-กลับรวม 0.2%
+DEPOSIT_DETECT_MIN_USDT = 10.0          # ยอดเงินเข้าขั้นต่ำที่ถือว่าเป็นการเติมเงิน
+
+def get_activation_params(entry_count):
+    """คืน (activation_pct, min_lock_pct) ตามจำนวนไม้ที่สะสม (Scaled-Down TP)"""
+    if SCALED_TP_ENABLED and int(entry_count or 1) >= 2:
+        return SCALED_TP_MULTI_ENTRY_PCT, SCALED_TP_MULTI_LOCK_PCT
+    return INFINITY_ACTIVATION_PCT, INFINITY_MIN_LOCK_PCT

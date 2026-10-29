@@ -559,9 +559,78 @@ def notify_dca_skipped(items):
     send_telegram(f"⏭️ [SPOT DCA SKIPPED — ไม่ซื้อ]\n\n{lines}")
 
 
+# ตัวแปรจำเวลาแช่แข็งเหรียญที่โดน Flash Crash
+flash_crash_frozen_until = {}
+
+
+def get_total_portfolio_equity():
+    """มูลค่ารวมพอร์ต = เงินสด USDT + ทุนที่ลงไปในเหรียญที่ถืออยู่ทั้งหมด"""
+    free_usdt = bingx_client.get_spot_free_balance('USDT')
+    with state_lock:
+        allocated_cost = sum(float(p.get("total_cost_usdt", 0.0)) for p in active_trades.values())
+    return free_usdt + allocated_cost
+
+
+def check_flash_crash(symbol):
+    """คืน (True, None) ถ้าซื้อได้ / (False, เหตุผล) ถ้าติด Circuit Breaker"""
+    now = time.time()
+    frozen_ts = flash_crash_frozen_until.get(symbol, 0)
+    if now < frozen_ts:
+        remaining_hrs = (frozen_ts - now) / 3600
+        return False, f"อยู่ในช่วงแช่แข็ง Flash Crash (เหลืออีก {remaining_hrs:.1f} ชม.)"
+
+    try:
+        df_1h = get_dataframe(symbol, '1h')
+        if len(df_1h) >= 2:
+            last_h1 = df_1h.iloc[-2]
+            h1_change_pct = ((last_h1['close'] - last_h1['open']) / last_h1['open']) * 100
+            threshold = -abs(getattr(config, 'FLASH_CRASH_DROP_PCT', 12.0))
+            if h1_change_pct <= threshold:
+                freeze_hours = getattr(config, 'FLASH_CRASH_FREEZE_HOURS', 12)
+                flash_crash_frozen_until[symbol] = now + freeze_hours * 3600
+                send_telegram(
+                    f"🚨 [CIRCUIT BREAKER ACTIVATED] {symbol}\n\n"
+                    f"ตรวจพบแท่ง 1H ทุบลงมา {h1_change_pct:.2f}% (เกินเกณฑ์ {threshold}%)\n"
+                    f"บอทสั่งแช่แข็งการช้อนซื้อเหรียญนี้ {freeze_hours} ชั่วโมง เพื่อความปลอดภัย"
+                )
+                return False, f"แท่ง 1H ร่วงรุนแรง ({h1_change_pct:.2f}%)"
+    except Exception as e:
+        print(f"[CIRCUIT BREAKER ERROR] {symbol}: {e}", flush=True)
+
+    return True, None
+
+
+last_recorded_usdt_balance = None
+
+
+def check_deposit_injection():
+    """ตรวจจับเงินเติมเข้ากระเป๋า Spot (เพิ่มขึ้น >= DEPOSIT_DETECT_MIN_USDT)
+    หมายเหตุ: trade_manager จะรีเซ็ตค่า baseline หลังขายปิดรอบ เพื่อไม่ให้นับเงินขายเป็นเงินเติม"""
+    global last_recorded_usdt_balance
+    current_cash = bingx_client.get_spot_free_balance('USDT')
+    if last_recorded_usdt_balance is not None:
+        diff = current_cash - last_recorded_usdt_balance
+        if diff >= getattr(config, 'DEPOSIT_DETECT_MIN_USDT', 10.0):
+            total_eq = get_total_portfolio_equity()
+            alloc_pct = getattr(config, 'MAX_PORTFOLIO_ALLOC_PCT', 0.20)
+            new_cap = max(getattr(config, 'MIN_PORTFOLIO_ALLOC_FLOOR_USDT', 12.0), total_eq * alloc_pct)
+            bullets = int(current_cash // ORDER_AMOUNT_USDT)
+            send_telegram(
+                f"🎉 [DEPOSIT DETECTED — ตรวจพบเงินเติมใหม่]\n\n"
+                f"ยอดเงินโอนเข้า: +{diff:.2f} USDT\n"
+                f"เงินสดพร้อมใช้งาน: {current_cash:.2f} USDT (~{bullets} ไม้)\n"
+                f"มูลค่าพอร์ตทั้งหมด: {total_eq:.2f} USDT\n"
+                f"🛡️ เพดานสะสมต่อเหรียญ ({alloc_pct*100:.0f}%) ขยายเป็น: {new_cap:.2f} USDT\n\n"
+                f"พร้อมช้อนซื้อรอบใหม่ตามแผนครับ! 🚀"
+            )
+    last_recorded_usdt_balance = current_cash
+
+
 def run_priority_dca_engine():
-    """Worst-Performer Priority Engine: เรียงตาม Drawdown ติดลบหนักสุดก่อน
-    และข้ามเหรียญที่กำลังรันกำไร Infinity Run อยู่ เพื่อไม่ให้รีเซ็ต Trailing สูญเปล่า"""
+    """Worst-Performer Priority Engine + Safeguards:
+    1) Flash-Crash Circuit Breaker  2) เพดานต่อเหรียญ 20% ของพอร์ต
+    3) Drawdown Step  4) ข้ามเหรียญที่กำลังรัน Infinity Run
+    แล้วเรียงเหรียญที่ติดลบหนักสุดก่อน"""
     if not AUTO_TRADE:
         return
 
@@ -572,27 +641,43 @@ def run_priority_dca_engine():
     with state_lock:
         active_pos_map = dict(active_trades)
 
+    total_equity = get_total_portfolio_equity()
+    alloc_pct = getattr(config, 'MAX_PORTFOLIO_ALLOC_PCT', 0.20)
+    alloc_floor = getattr(config, 'MIN_PORTFOLIO_ALLOC_FLOOR_USDT', 12.0)
+    max_cap_per_coin = max(alloc_floor, total_equity * alloc_pct)
+    min_dca_step = getattr(config, "MIN_DCA_DRAWDOWN_PCT", 3.0)
+
     ranked_candidates = []
     skipped = []   # (symbol, entry, เหตุผลที่ไม่ซื้อ)
     for sig in buy_signals:
         sym = sig["symbol"]
         pos = active_pos_map.get(sym)
 
-        # 🛡️ อุดรูรั่ว Edge Case: ถ้าเหรียญนี้เปิด Infinity Run อยู่ หรือกำไรแล้ว ห้ามซื้อ DCA ซ้ำเด็ดขาด!
+        # ด่าน 1: Flash-Crash Circuit Breaker
+        safe, crash_reason = check_flash_crash(sym)
+        if not safe:
+            skipped.append((sym, sig["entry"], crash_reason))
+            continue
+
         if pos and pos.get("total_qty", 0.0) > 0:
             if pos.get("infinity_active", False):
-                print(f"[PRIORITY DCA] {sym} กำลังรันกำไร Infinity Run อยู่ ➔ ข้ามการซื้อเพิ่มเพื่อปล่อยให้รันต่อ", flush=True)
+                print(f"[PRIORITY DCA] {sym} กำลังรันกำไร Infinity Run อยู่ ➔ ข้ามการซื้อเพิ่ม", flush=True)
                 skipped.append((sym, sig["entry"], "กำลังรัน Infinity Run อยู่ (ไม่ซื้อเพิ่มเพื่อไม่ให้รีเซ็ต Trailing)"))
                 continue
 
+            # ด่าน 2: เพดานต่อเหรียญ
+            current_cost = float(pos.get("total_cost_usdt", 0.0))
+            if (current_cost + ORDER_AMOUNT_USDT) > max_cap_per_coin:
+                skipped.append((sym, sig["entry"],
+                    f"ติดเพดาน {alloc_pct*100:.0f}% ของพอร์ต (ถืออยู่ {current_cost:.1f}/{max_cap_per_coin:.1f} USDT) รอเงินเติม"))
+                continue
+
+            # ด่าน 3: Drawdown Step
             avg = float(pos.get("weighted_avg_price", 0.0) or 0.0)
             if avg > 0:
                 drawdown_pct = ((sig["entry"] - avg) / avg) * 100
-                min_dca_step = getattr(config, "MIN_DCA_DRAWDOWN_PCT", 3.0)
-
-                # Drawdown Step: ต้องย่อลึกถึงเกณฑ์ก่อนถึงจะช้อนไม้ถัดไป (ครอบคลุมกรณีราคาสูงกว่าทุนด้วย)
                 if drawdown_pct > -min_dca_step:
-                    print(f"[PRIORITY DCA] {sym} ย่อตัวเพียง {drawdown_pct:+.2f}% (ยังไม่ถึงเกณฑ์ -{min_dca_step:.1f}%) ➔ ข้ามการซื้อเพิ่ม", flush=True)
+                    print(f"[PRIORITY DCA] {sym} ย่อตัวเพียง {drawdown_pct:+.2f}% (ยังไม่ถึงเกณฑ์ -{min_dca_step:.1f}%) ➔ ข้าม", flush=True)
                     if drawdown_pct >= 0:
                         reason = f"ราคาสูงกว่าทุนเฉลี่ย {avg:.4f} (DCA เฉพาะตอนราคาต่ำกว่าทุน)"
                     else:
@@ -602,7 +687,10 @@ def run_priority_dca_engine():
             else:
                 drawdown_pct = 0.0
         else:
-            # ไม้ที่ 1 (ยังไม่เคยถือ)
+            # ไม้ที่ 1
+            if ORDER_AMOUNT_USDT > max_cap_per_coin:
+                skipped.append((sym, sig["entry"], "มูลค่าไม้สูงกว่าเพดานพอร์ต"))
+                continue
             drawdown_pct = 0.0
 
         ranked_candidates.append({
@@ -611,9 +699,7 @@ def run_priority_dca_engine():
             "drawdown_pct": drawdown_pct
         })
 
-    # เรียงลำดับ: ติดลบหนักที่สุดขึ้นก่อน
     ranked_candidates.sort(key=lambda x: x["drawdown_pct"])
-
     notify_dca_skipped(skipped)
 
     for idx, cand in enumerate(ranked_candidates):
@@ -4204,7 +4290,8 @@ def heartbeat_thread():
                     _sl_state = f"SL กระดาน ✅ {_sp:.4f}" if pos.get("stop_order_id") else "SL กระดาน ⚠️ ยังไม่ได้ตั้ง"
                     target_line = f"🚀 Infinity Run ทำงานอยู่ (Floor: {pos.get('sl', 'N/A')} | {_sl_state})"
                 else:
-                    target_line = f"🚀 {avg * (1.0 + config.INFINITY_ACTIVATION_PCT):.4f}"
+                    _act, _ = config.get_activation_params(pos.get("entry_count", 1))
+                    target_line = f"🚀 {avg * (1.0 + _act):.4f} (+{_act*100:.1f}%)"
 
                 lines += [
                     f"• {sym} ({int(pos.get('entry_count', 1))} ไม้):",
@@ -4452,6 +4539,11 @@ def main():
             # NORMAL SCAN CYCLE
             # =========================
             
+            try:
+                check_deposit_injection()
+            except Exception as dep_err:
+                print(f"[DEPOSIT CHECK ERROR] {dep_err}", flush=True)
+
             reset_cycle_counters()
             candidate_signals.clear()  # ให้เหลือเฉพาะสัญญาณของรอบสแกนนี้
 

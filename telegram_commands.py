@@ -1304,6 +1304,136 @@ def set_max_trades(message):
 
 
 # =========================
+# PORTFOLIO DASHBOARD (/p) & PANIC SELL
+# =========================
+
+import config as cfg_mod   # ไม่ใช้ชื่อ config เพราะถูก def config(message) ด้านบนทับอยู่
+
+
+def _is_owner(message):
+    """รับคำสั่งเฉพาะแชตของเจ้าของบอท (CHAT_ID)"""
+    try:
+        return str(message.chat.id) == str(cfg_mod.CHAT_ID)
+    except Exception:
+        return False
+
+
+@bot.message_handler(commands=['p', 'portfolio'])
+def cmd_portfolio(message):
+    if not _is_owner(message):
+        return
+    try:
+        m = main_mod
+        free_usdt = bingx_client.get_spot_free_balance('USDT')
+        total_equity = m.get_total_portfolio_equity()
+        alloc_pct = getattr(cfg_mod, 'MAX_PORTFOLIO_ALLOC_PCT', 0.20)
+        max_cap = max(getattr(cfg_mod, 'MIN_PORTFOLIO_ALLOC_FLOOR_USDT', 12.0), total_equity * alloc_pct)
+
+        with m.state_lock:
+            trades_snap = {k: dict(v) for k, v in m.active_trades.items()}
+
+        lines = [
+            "📊 [ACTIVE INDEX PORTFOLIO]",
+            f"💰 เงินสดว่าง: {free_usdt:.2f} USDT",
+            f"📈 มูลค่าพอร์ตรวม: {total_equity:.2f} USDT",
+            f"🛡️ เพดานต่อเหรียญ ({alloc_pct*100:.0f}%): {max_cap:.2f} USDT",
+            "───────────────────",
+        ]
+
+        for sym in cfg_mod.symbols:
+            pos = trades_snap.get(sym)
+            if not pos or float(pos.get("total_qty", 0.0)) <= 0:
+                lines.append(f"• {sym}: ⚪ ว่าง (รอจังหวะสะสมไม้ 1)")
+                continue
+
+            avg = float(pos.get("weighted_avg_price", 0.0))
+            cost = float(pos.get("total_cost_usdt", 0.0))
+            entries = int(pos.get("entry_count", 1))
+            try:
+                curr_px = float(m.exchange.fetch_ticker(sym)["last"])
+                gain_pct = ((curr_px - avg) / avg) * 100 if avg > 0 else 0.0
+                px_line = f"{curr_px:.4f} ({gain_pct:+.2f}%)"
+            except Exception:
+                px_line = "N/A"
+
+            tp_pct, _lock = cfg_mod.get_activation_params(entries)
+            tp_note = f" [Fast Recycle +{tp_pct*100:.1f}%]" if tp_pct != cfg_mod.INFINITY_ACTIVATION_PCT else ""
+            tp_target = avg * (1.0 + tp_pct)
+            cap_usage = (cost / max_cap) * 100 if max_cap > 0 else 0
+
+            if pos.get("infinity_active"):
+                status_line = f"🚀 รันกำไรอยู่ (Floor: {pos.get('sl', 'N/A')})"
+            else:
+                status_line = f"🎯 เป้า TP: {tp_target:.4f}{tp_note}"
+
+            lines.append(
+                f"• {sym} ({entries} ไม้ | ทุนรวม {cost:.1f} USDT — ใช้โควตา {cap_usage:.0f}%):\n"
+                f"   - ทุนเฉลี่ย: {avg:.4f} | ปัจจุบัน: {px_line}\n"
+                f"   - สถานะ: {status_line}"
+            )
+
+        bot.reply_to(message, "\n".join(lines))
+    except Exception as e:
+        bot.reply_to(message, f"❌ ดึงข้อมูลพอร์ตไม่สำเร็จ: {e}")
+
+
+@bot.message_handler(commands=['panic_sell'])
+def cmd_panic_sell(message):
+    """ขายฉุกเฉิน: /panic_sell AAVE (ยกเลิก SL บนกระดานแล้วขายเกลี้ยงเป็น USDT)"""
+    if not _is_owner(message):
+        return
+    try:
+        m = main_mod
+        args = message.text.split()
+        if len(args) < 2:
+            bot.reply_to(message, "⚠️ ระบุชื่อเหรียญ เช่น /panic_sell AAVE หรือ /panic_sell SOL/USDT")
+            return
+
+        raw_coin = args[1].upper()
+        symbol = raw_coin if "/USDT" in raw_coin else f"{raw_coin}/USDT"
+        if symbol not in cfg_mod.symbols:
+            bot.reply_to(message, f"⚠️ {symbol} ไม่ได้อยู่ในรายการเหรียญของบอท")
+            return
+
+        with m.state_lock:
+            pos = m.active_trades.get(symbol)
+
+        if not pos or float(pos.get("total_qty", 0.0)) <= 0:
+            bot.reply_to(message, f"⚠️ ไม่พบยอดเหรียญ {symbol} ที่ถืออยู่ในพอร์ตบอท")
+            return
+
+        # 1) ยกเลิก SL บนกระดาน (ไม่งั้นเหรียญถูกล็อกในออเดอร์ ขายไม่ได้)
+        sid = pos.get("stop_order_id")
+        if sid:
+            try:
+                m.exchange.cancel_order(sid, symbol)
+                with m.state_lock:
+                    pos.pop("stop_order_id", None)
+                    pos.pop("stop_price", None)
+            except Exception as ce:
+                print(f"[PANIC CANCEL SL ERROR] {ce}", flush=True)
+                bot.reply_to(message, f"⚠️ ยกเลิก SL บนกระดานไม่สำเร็จ ({ce}) — จะลองขายต่อ")
+
+        # 2) Market sell ทั้งหมด
+        total_cost = float(pos.get("total_cost_usdt", 0.0))
+        order = bingx_client.spot_sell_all(symbol)
+        if order:
+            with m.state_lock:
+                m.active_trades.pop(symbol, None)
+            m.last_recorded_usdt_balance = None  # ไม่ให้นับเงินขายเป็นเงินเติม
+            bot.reply_to(
+                message,
+                f"🚨 [PANIC SELL EXECUTED] ขาย {symbol} เกลี้ยงพอร์ตแล้ว (ทุนที่ลงไป {total_cost:.2f} USDT)\n"
+                f"เงินคืนเข้า USDT — ดูผลจริงบนแอป BingX"
+            )
+        else:
+            bot.reply_to(message, f"❌ ขาย {symbol} ไม่สำเร็จ โปรดตรวจสอบบนแอป BingX โดยตรง")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ เกิดข้อผิดพลาดในการ Panic Sell: {e}")
+
+
+# =========================
 # HELP COMMAND
 # =========================
 
@@ -1400,6 +1530,14 @@ Example: /sideatr 0.20
 
 /heartbeat
 ดูสถานะแบบละเอียด
+
+💼 Spot Portfolio
+
+/p
+ดูแดชบอร์ดพอร์ต (เงินสด, เพดาน 20%, เป้า TP)
+
+/panic_sell AAVE
+ขายเหรียญนั้นเกลี้ยงทันที (ยกเลิก SL บนกระดานก่อน)
 
 📊 Other
 

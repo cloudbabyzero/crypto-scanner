@@ -94,7 +94,7 @@ def backfill_peaks_after_restart():
                 with main_mod.state_lock:
                     pos["highest_price"] = peak
                 print(f"[BACKFILL] {symbol} อัปเดต highest_price {old_high:.4f} ➔ {peak:.4f}", flush=True)
-        elif peak_gain >= INFINITY_ACTIVATION_PCT:
+        elif peak_gain >= config.get_activation_params(pos.get('entry_count', 1))[0]:
             with main_mod.state_lock:
                 pos["infinity_active"] = True
                 pos["highest_price"] = max(peak, old_high)
@@ -155,15 +155,22 @@ def reconcile_closed_trades_on_restart(pre_restart_snapshot):
 # =====================================================================
 # 3-TIER INFINITY RUN ENGINE
 # =====================================================================
-def calculate_tier_trailing_floor(gain, highest_price, weighted_avg):
-    if gain < INFINITY_ACTIVATION_PCT:
+def calculate_tier_trailing_floor(gain, highest_price, weighted_avg, entry_count=1):
+    """คำนวณ Trailing Floor โดยลดเป้าอัตโนมัติเมื่อสะสมหลายไม้ (Scaled-Down TP)"""
+    act_pct, lock_pct = config.get_activation_params(entry_count)
+    if act_pct != INFINITY_ACTIVATION_PCT:
+        tier1_prefix = f"Fast Recycle (+{act_pct*100:.1f}% ถึง +5%)"
+    else:
+        tier1_prefix = f"Tier 1 (+{act_pct*100:.1f}% ถึง +5%)"
+
+    if gain < act_pct:
         return 0.0, "None", 0.0
 
-    min_lock_price = weighted_avg * (1.0 + INFINITY_MIN_LOCK_PCT)
+    min_lock_price = weighted_avg * (1.0 + lock_pct)
 
     if gain < 0.05:
         floor = highest_price * (1.0 - TRAILING_PCT_TIER1)
-        tier_name = f"Tier 1 (+{INFINITY_ACTIVATION_PCT*100:.1f}% ถึง +5% | Trail {TRAILING_PCT_TIER1*100:.1f}%)"
+        tier_name = f"{tier1_prefix} | Trail {TRAILING_PCT_TIER1*100:.1f}%"
         trail_pct = TRAILING_PCT_TIER1
     elif gain < 0.15:
         floor = highest_price * (1.0 - TRAILING_PCT_TIER2)
@@ -195,7 +202,9 @@ def _report_harvest(symbol, pos, exit_price, revenue, tier_name, via_exchange=Fa
     """ส่ง [PROFIT HARVEST] + บันทึก Google Sheets (ใช้ร่วมกันทั้งขายโดยบอทและขายโดย SL บนกระดาน)"""
     total_cost = float(pos.get("total_cost_usdt", 0.0))
     weighted_avg = float(pos.get("weighted_avg_price", 0.0))
-    pnl_usdt = round(revenue - total_cost, 4)
+    fee_pct = getattr(config, 'SPOT_ROUNDTRIP_FEE_PCT', 0.002)
+    est_fees = (total_cost + revenue) * (fee_pct / 2.0)
+    pnl_usdt = round((revenue - total_cost) - est_fees, 4)
     gain_pct = ((exit_price - weighted_avg) / weighted_avg * 100) if weighted_avg > 0 else 0.0
     entries = int(pos.get("entry_count", 1))
 
@@ -206,7 +215,8 @@ def _report_harvest(symbol, pos, exit_price, revenue, tier_name, via_exchange=Fa
     exit_msg = f"""🏆 [PROFIT HARVEST — ปิดรอบสำเร็จ]
 
 เหรียญ: {symbol}
-กำไรสุทธิ: {pnl_usdt:+.4f} USDT ({gain_pct:+.2f}%)
+กำไรสุทธิ (หักค่าคอมฯ): {pnl_usdt:+.4f} USDT ({gain_pct:+.2f}%)
+ค่าคอมมิชชันโดยประมาณ: {est_fees:.4f} USDT
 สะสมมาทั้งหมด: {entries} ไม้ (รวมทุน {total_cost:.2f} USDT)
 ราคาขายเฉลี่ย: {exit_price:.4f}
 ระดับเทรนด์: {tier_name}{note}
@@ -214,6 +224,11 @@ def _report_harvest(symbol, pos, exit_price, revenue, tier_name, via_exchange=Fa
 🟢 กวาดเงินต้น + กำไรคืนกระเป๋า USDT 100% เรียบร้อย!
 รีเซ็ตสถานะเหรียญเพื่อรอสแกนรอบสะสมใหม่"""
     main_mod.send_telegram(exit_msg)
+    # กันระบบตรวจเงินเติมเข้าใจผิดว่าเงินที่ได้จากการขายคือเงินเติม
+    try:
+        main_mod.last_recorded_usdt_balance = None
+    except Exception:
+        pass
 
     try:
         import google_sheet
@@ -232,7 +247,7 @@ def _tier_name_for(pos):
     highest = float(pos.get("highest_price", 0.0) or 0.0)
     if avg <= 0:
         return "N/A"
-    return calculate_tier_trailing_floor((highest - avg) / avg, highest, avg)[1]
+    return calculate_tier_trailing_floor((highest - avg) / avg, highest, avg, int(pos.get('entry_count', 1)))[1]
 
 def _finalize_exchange_sell(symbol, pos, order, downtime=False):
     """ออเดอร์ SL บนกระดานถูก fill แล้ว ➔ ปิดรอบ"""
@@ -398,7 +413,9 @@ def check_trades():
                 gain = (current_price - weighted_avg) / weighted_avg
                 gain_pct = gain * 100
 
-                if not (gain >= INFINITY_ACTIVATION_PCT or pos.get("infinity_active", False)):
+                entries_count = int(pos.get("entry_count", 1))
+                act_pct, lock_pct = config.get_activation_params(entries_count)
+                if not (gain >= act_pct or pos.get("infinity_active", False)):
                     continue
 
                 if not pos.get("infinity_active", False):
@@ -407,7 +424,7 @@ def check_trades():
                         pos["highest_price"] = current_price
                     msg = (f"🚀 [INFINITY RUN ACTIVATED]\n\nเหรียญ: {symbol}\nทุนเฉลี่ยรวม: {weighted_avg:.4f}\n"
                            f"ราคาปัจจุบัน: {current_price:.4f} (+{gain_pct:.2f}%)\n"
-                           f"🟢 กำไรแตะเป้า! เริ่มลาก Trailing SL ล็อกกำไรอัตโนมัติ (ขั้นต่ำ +{INFINITY_MIN_LOCK_PCT*100:.1f}%)")
+                           f"🟢 กำไรแตะเป้า! เริ่มลาก Trailing SL ล็อกกำไรอัตโนมัติ (ขั้นต่ำ +{lock_pct*100:.1f}%)")
                     main_mod.send_telegram(msg)
                     print(msg, flush=True)
 
@@ -417,7 +434,7 @@ def check_trades():
 
                 highest = pos["highest_price"]
                 calc_floor, tier_name, trail_pct = calculate_tier_trailing_floor(
-                    (highest - weighted_avg) / weighted_avg, highest, weighted_avg)
+                    (highest - weighted_avg) / weighted_avg, highest, weighted_avg, entries_count)
 
                 # Floor ขึ้นอย่างเดียว ไม่ลดลงแม้เปลี่ยน Tier
                 trailing_floor = max(calc_floor, float(pos.get("trailing_floor", 0.0) or 0.0))
