@@ -504,7 +504,7 @@ def execute_spot_dca(symbol, price):
             "entry": fill_price,
             "weighted_avg_price": new_avg,
             "sl": "No SL (Accumulating)",
-            "tp2": "Infinity Run (+2.5%)",
+            "tp2": f"Infinity Run (+{config.INFINITY_ACTIVATION_PCT*100:.1f}%)",
             "total_qty": new_qty,
             "total_cost_usdt": new_cost,
             "entry_count": new_entries,
@@ -585,13 +585,22 @@ def run_priority_dca_engine():
                 skipped.append((sym, sig["entry"], "กำลังรัน Infinity Run อยู่ (ไม่ซื้อเพิ่มเพื่อไม่ให้รีเซ็ต Trailing)"))
                 continue
 
-            avg = pos.get("weighted_avg_price", 0.0)
-            if avg > 0 and sig["entry"] >= avg:
-                print(f"[PRIORITY DCA] {sym} ราคา {sig['entry']} สูงกว่าทุนเฉลี่ย {avg} ➔ ข้ามการซื้อเพิ่ม (DCA เฉพาะตอนย่อต่ำกว่าทุน)", flush=True)
-                skipped.append((sym, sig["entry"], f"ราคาสูงกว่าทุนเฉลี่ย {avg:.4f} (DCA เฉพาะตอนราคาต่ำกว่าทุน)"))
-                continue
+            avg = float(pos.get("weighted_avg_price", 0.0) or 0.0)
+            if avg > 0:
+                drawdown_pct = ((sig["entry"] - avg) / avg) * 100
+                min_dca_step = getattr(config, "MIN_DCA_DRAWDOWN_PCT", 3.0)
 
-            drawdown_pct = ((sig["entry"] - avg) / avg) * 100 if avg > 0 else 0.0
+                # Drawdown Step: ต้องย่อลึกถึงเกณฑ์ก่อนถึงจะช้อนไม้ถัดไป (ครอบคลุมกรณีราคาสูงกว่าทุนด้วย)
+                if drawdown_pct > -min_dca_step:
+                    print(f"[PRIORITY DCA] {sym} ย่อตัวเพียง {drawdown_pct:+.2f}% (ยังไม่ถึงเกณฑ์ -{min_dca_step:.1f}%) ➔ ข้ามการซื้อเพิ่ม", flush=True)
+                    if drawdown_pct >= 0:
+                        reason = f"ราคาสูงกว่าทุนเฉลี่ย {avg:.4f} (DCA เฉพาะตอนราคาต่ำกว่าทุน)"
+                    else:
+                        reason = f"ย่อตัวเพียง {drawdown_pct:+.2f}% จากทุนเฉลี่ย {avg:.4f} (ต้องลึกถึง -{min_dca_step:.1f}%)"
+                    skipped.append((sym, sig["entry"], reason))
+                    continue
+            else:
+                drawdown_pct = 0.0
         else:
             # ไม้ที่ 1 (ยังไม่เคยถือ)
             drawdown_pct = 0.0

@@ -163,7 +163,7 @@ def calculate_tier_trailing_floor(gain, highest_price, weighted_avg):
 
     if gain < 0.05:
         floor = highest_price * (1.0 - TRAILING_PCT_TIER1)
-        tier_name = "Tier 1 (+2.5% ถึง +5% | Trail 1.2%)"
+        tier_name = f"Tier 1 (+{INFINITY_ACTIVATION_PCT*100:.1f}% ถึง +5% | Trail {TRAILING_PCT_TIER1*100:.1f}%)"
         trail_pct = TRAILING_PCT_TIER1
     elif gain < 0.15:
         floor = highest_price * (1.0 - TRAILING_PCT_TIER2)

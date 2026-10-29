@@ -38,13 +38,14 @@ AUTO_TRADE = True
 ORDER_AMOUNT_USDT = 6.0       # ขนาดไม้คงที่ 6 USDT
 MIN_USDT_BALANCE = 6.0        # ยอดเงินสดขั้นต่ำที่ยอมให้ยิงซื้อ
 MAX_ACTIVE_COINS = 5          # จำนวนเหรียญสูงสุดที่ถือพร้อมกัน
+MIN_DCA_DRAWDOWN_PCT = 3.0    # ต้องย่อต่ำกว่าทุนเฉลี่ยอย่างน้อย 3.0% ถึงจะช้อนไม้ถัดไป
 
 # =========================
 # 3-TIER INFINITY RUN CONFIG
 # =========================
-INFINITY_ACTIVATION_PCT = 0.025  # แตะ +2.5% เริ่มรัน Trailing
-INFINITY_MIN_LOCK_PCT = 0.015    # ล็อกกำไรขั้นต่ำทันทีที่ +1.5%
-TRAILING_PCT_TIER1 = 0.012       # Tier 1: Trail 1.2%
+INFINITY_ACTIVATION_PCT = 0.030  # แตะ +3.0% เริ่มรัน Trailing
+INFINITY_MIN_LOCK_PCT = 0.018    # ล็อกกำไรขั้นต่ำทันทีที่ +1.8%
+TRAILING_PCT_TIER1 = 0.018       # Tier 1: Trail 1.8%
 TRAILING_PCT_TIER2 = 0.025       # Tier 2: Trail 2.5%
 TRAILING_PCT_TIER3 = 0.040       # Tier 3: Trail 4.0%
 
