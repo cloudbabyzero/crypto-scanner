@@ -479,6 +479,10 @@ def execute_spot_dca(symbol, price):
     """ซื้อ Spot Market ไม้ละ ORDER_AMOUNT_USDT แล้วอัปเดต Weighted Average Cost ลง active_trades[symbol]"""
     result = bingx_client.spot_market_buy(symbol, ORDER_AMOUNT_USDT)
     if not result:
+        send_telegram(
+            f"❌ [SPOT DCA FAILED]\n\n"
+            f"สั่งซื้อ {symbol} ไม่สำเร็จ (BingX ไม่ตอบรับออเดอร์) — ดู Railway log เพื่อหาสาเหตุ"
+        )
         return False
 
     fill_price = float(result.get("avg_price") or price)
@@ -528,20 +532,31 @@ def execute_spot_dca(symbol, price):
 
 
 last_dca_paused_alert = {}          # symbol -> timestamp ล่าสุดที่แจ้งเตือน
-DCA_PAUSED_ALERT_COOLDOWN = 6 * 3600  # แจ้งเตือนเหรียญเดิมซ้ำได้อย่างเร็วทุก 6 ชม. (กันสแปมจากสแกนทุก 60 วินาที)
+DCA_PAUSED_ALERT_COOLDOWN = 300     # กันส่งซ้ำของ "สัญญาณเดิม" เท่านั้น (สัญญาณใหม่มาจาก cooldown 15 นาทีของ analyze อยู่แล้ว)
 
 
-def notify_dca_paused(symbol, free_usdt):
+def notify_dca_paused(symbols, free_usdt):
+    """แจ้งทุกเหรียญที่มีสัญญาณแต่ซื้อไม่ได้เพราะ USDT ไม่พอ (รวมเป็นข้อความเดียวต่อรอบ)"""
     now_ts = time.time()
-    if now_ts - last_dca_paused_alert.get(symbol, 0) < DCA_PAUSED_ALERT_COOLDOWN:
+    fresh = [s for s in symbols if now_ts - last_dca_paused_alert.get(s, 0) >= DCA_PAUSED_ALERT_COOLDOWN]
+    if not fresh:
         return
-    last_dca_paused_alert[symbol] = now_ts
+    for s in fresh:
+        last_dca_paused_alert[s] = now_ts
     send_telegram(
         f"⚠️ [SPOT DCA PAUSED — USDT ไม่พอ]\n\n"
-        f"บอทเจอสัญญาณซื้อของ {symbol} ที่น่าสนใจ แต่เงินสดในพอร์ตเหลือ {free_usdt:.2f} USDT "
-        f"(ต้องการอย่างน้อย {ORDER_AMOUNT_USDT:.1f} USDT)\n"
-        f"👉 บอทขอข้ามรอบนี้ไปก่อน รอคุณเติมเงินสัปดาห์ถัดไปครับ!"
+        f"บอทเจอสัญญาณซื้อ: {', '.join(fresh)}\n"
+        f"แต่เงินสดในพอร์ตเหลือ {free_usdt:.2f} USDT (ต้องการอย่างน้อย {ORDER_AMOUNT_USDT:.1f} USDT)\n"
+        f"👉 บอทข้ามรอบนี้ รอคุณเติมเงินครับ"
     )
+
+
+def notify_dca_skipped(items):
+    """แจ้งเหรียญที่มีสัญญาณแต่บอท 'ตั้งใจไม่ซื้อ' พร้อมเหตุผล (ข้อความเดียวต่อรอบ)"""
+    if not items:
+        return
+    lines = "\n".join(f"• {sym} @ {entry}: {reason}" for sym, entry, reason in items)
+    send_telegram(f"⏭️ [SPOT DCA SKIPPED — ไม่ซื้อ]\n\n{lines}")
 
 
 def run_priority_dca_engine():
@@ -558,6 +573,7 @@ def run_priority_dca_engine():
         active_pos_map = dict(active_trades)
 
     ranked_candidates = []
+    skipped = []   # (symbol, entry, เหตุผลที่ไม่ซื้อ)
     for sig in buy_signals:
         sym = sig["symbol"]
         pos = active_pos_map.get(sym)
@@ -566,11 +582,13 @@ def run_priority_dca_engine():
         if pos and pos.get("total_qty", 0.0) > 0:
             if pos.get("infinity_active", False):
                 print(f"[PRIORITY DCA] {sym} กำลังรันกำไร Infinity Run อยู่ ➔ ข้ามการซื้อเพิ่มเพื่อปล่อยให้รันต่อ", flush=True)
+                skipped.append((sym, sig["entry"], "กำลังรัน Infinity Run อยู่ (ไม่ซื้อเพิ่มเพื่อไม่ให้รีเซ็ต Trailing)"))
                 continue
 
             avg = pos.get("weighted_avg_price", 0.0)
             if avg > 0 and sig["entry"] >= avg:
                 print(f"[PRIORITY DCA] {sym} ราคา {sig['entry']} สูงกว่าทุนเฉลี่ย {avg} ➔ ข้ามการซื้อเพิ่ม (DCA เฉพาะตอนย่อต่ำกว่าทุน)", flush=True)
+                skipped.append((sym, sig["entry"], f"ราคาสูงกว่าทุนเฉลี่ย {avg:.4f} (DCA เฉพาะตอนราคาต่ำกว่าทุน)"))
                 continue
 
             drawdown_pct = ((sig["entry"] - avg) / avg) * 100 if avg > 0 else 0.0
@@ -587,11 +605,13 @@ def run_priority_dca_engine():
     # เรียงลำดับ: ติดลบหนักที่สุดขึ้นก่อน
     ranked_candidates.sort(key=lambda x: x["drawdown_pct"])
 
-    for cand in ranked_candidates:
+    notify_dca_skipped(skipped)
+
+    for idx, cand in enumerate(ranked_candidates):
         free_usdt = bingx_client.get_spot_free_balance('USDT')
         if free_usdt < ORDER_AMOUNT_USDT:
             print("[PRIORITY DCA] USDT ไม่พอ หยุดยิงซื้อรอบนี้", flush=True)
-            notify_dca_paused(cand["symbol"], free_usdt)
+            notify_dca_paused([c["symbol"] for c in ranked_candidates[idx:]], free_usdt)
             break
         print(f"[PRIORITY DCA] {cand['symbol']} drawdown={cand['drawdown_pct']:+.2f}%", flush=True)
         try:
@@ -1963,6 +1983,34 @@ Trail: {config.TRAILING_PCT_TIER1 * 100:.1f}% / {config.TRAILING_PCT_TIER2 * 100
             with state_lock:
                 last_alert[(symbol, "SCALPING")] = now_ts
 
+            # Logging (เฉพาะโหมดปกติ — Startup/Regime Rescan แบบ read-only ต้องไม่เขียน Sheets/Backtest)
+            try:
+                google_sheet.log_signal(
+                    signal_id=signal_id, symbol=symbol, side=side, grade=grade, score=score,
+                    entry=entry, sl=sl, tp=tp2, atr=atr_val, adx=adx_val, volume=vol_status,
+                    btc_trend=btc_trend, status="SIGNAL", strategy="SCALPING", allocation_decision="ALLOCATED",
+                    skip_reason="", vwap_position="ABOVE" if is_above_vwap else "BELOW",
+                    stoch_rsi=m3['stoch_rsi'], stretch_pct=round(stretch_pct, 2),
+                    candle_color="GREEN" if is_green else "RED", local_regime=local_regime, btc_regime=btc_regime
+                )
+            except Exception as e:
+                print(f"[SCALPING] Google Sheets log error: {e}", flush=True)
+
+            google_sheet.log_fill_analysis(
+                symbol=symbol, side=side, current_price=m3['close'], entry_price=entry,
+                grade=grade, score=score, atr=atr_val, adx=adx_val, btc_trend=btc_trend,
+                fill_status="OPEN", local_regime=local_regime, btc_regime=btc_regime
+            )
+
+            backtest.record_signal(
+                signal_id=signal_id, symbol=symbol, side=side, entry=entry, sl=sl, tp=tp2,
+                grade=grade, score=score, rr=rr, strategy="SCALPING", local_regime=local_regime,
+                btc_regime=btc_regime, adx=adx_val, atr_pct=atr_val, vol_status=vol_status,
+                btc_trend=btc_trend, vwap_pos="ABOVE" if is_above_vwap else "BELOW",
+                stoch_rsi=round(m3['stoch_rsi'], 2), stretch_pct=round(stretch_pct, 2),
+                candle_color="GREEN" if is_green else "RED"
+            )
+
         set_scan_result(symbol, {
             "status": "Signal Generated",
             "score": score,
@@ -1984,34 +2032,6 @@ Trail: {config.TRAILING_PCT_TIER1 * 100:.1f}% / {config.TRAILING_PCT_TIER2 * 100
 
         # Auto-Trade: ย้ายไปที่ run_priority_dca_engine() ใน main loop
         # (อนุญาตซื้อซ้ำเหรียญเดิมหลายไม้ ไม่จำกัด MAX_TRADES ต่อเหรียญ)
-
-        # Logging
-        try:
-            google_sheet.log_signal(
-                signal_id=signal_id, symbol=symbol, side=side, grade=grade, score=score,
-                entry=entry, sl=sl, tp=tp2, atr=atr_val, adx=adx_val, volume=vol_status,
-                btc_trend=btc_trend, status="SIGNAL", strategy="SCALPING", allocation_decision="ALLOCATED",
-                skip_reason="", vwap_position="ABOVE" if is_above_vwap else "BELOW",
-                stoch_rsi=m3['stoch_rsi'], stretch_pct=round(stretch_pct, 2),
-                candle_color="GREEN" if is_green else "RED", local_regime=local_regime, btc_regime=btc_regime
-            )
-        except Exception as e:
-            print(f"[SCALPING] Google Sheets log error: {e}", flush=True)
-
-        google_sheet.log_fill_analysis(
-            symbol=symbol, side=side, current_price=m3['close'], entry_price=entry,
-            grade=grade, score=score, atr=atr_val, adx=adx_val, btc_trend=btc_trend,
-            fill_status="OPEN", local_regime=local_regime, btc_regime=btc_regime
-        )
-
-        backtest.record_signal(
-            signal_id=signal_id, symbol=symbol, side=side, entry=entry, sl=sl, tp=tp2,
-            grade=grade, score=score, rr=rr, strategy="SCALPING", local_regime=local_regime,
-            btc_regime=btc_regime, adx=adx_val, atr_pct=atr_val, vol_status=vol_status,
-            btc_trend=btc_trend, vwap_pos="ABOVE" if is_above_vwap else "BELOW",
-            stoch_rsi=round(m3['stoch_rsi'], 2), stretch_pct=round(stretch_pct, 2),
-            candle_color="GREEN" if is_green else "RED"
-        )
 
         return {"symbol": symbol, "result": "signal", "side": side, "score": score}
 

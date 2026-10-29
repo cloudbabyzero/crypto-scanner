@@ -118,3 +118,7 @@ PAUSE_MAX_ATR = 0.15
 MARKET_REGIME_ADX_TRENDING = 30
 MARKET_REGIME_ADX_SIDEWAYS = 25
 MARKET_REGIME_ATR_VOLATILE = 1.0
+
+# Momentum detection thresholds (ใช้ใน indicators.detect_momentum)
+MOMENTUM_MIN_PRICE_DISTANCE = 0.5   # % ระยะห่างของ close จาก EMA7 (4h)
+MOMENTUM_MIN_CANDLES = 3            # จำนวนแท่งเทียนทิศเดียวกันขั้นต่ำ
