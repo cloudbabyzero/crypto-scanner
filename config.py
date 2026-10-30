@@ -77,7 +77,16 @@ STRATEGY_CONFIG = {
             "RSI_SAFE_LONG_MAX": 68,          # ขยายจาก 60 เป็น 68 (เปิดรับโมเมนตัมขาขึ้นที่แข็งแรง)
             "RSI_SAFE_SHORT_MIN": 38,
             "ANTI_CHASE_ATR_MULT": 0.8,        # ขยายตัวคูณจาก 0.6 เป็น 0.8
-            "ANTI_CHASE_MIN_PCT": 0.30         # ขยายระยะห่างขั้นต่ำจาก 0.15% เป็น 0.30%
+            "ANTI_CHASE_MIN_PCT": 0.30,        # ขยายระยะห่างขั้นต่ำจาก 0.15% เป็น 0.30%
+
+            # --- Spot DCA entry-quality gates (ปิด/เปิดได้ทีละข้อ) ---
+            "ENABLE_1H_STOCH_OVERSOLD_BLOCK": False,  # False = ไม่บล็อกตอน 1H StochRSI ต่ำ (DCA ต้องซื้อโซนย่อ)
+            "ENABLE_EMA99_ROOM": True,                # ห้ามซื้อถ้าราคาอยู่ใต้ 15m EMA99 แต่เหลือพื้นที่ไม่ถึง X ATR
+            "EMA99_ROOM_ATR": 1.2,
+            "ENABLE_SWING_HIGH_CLEARANCE": True,      # ห้ามซื้อใต้ Swing High 12 แท่ง ถ้าห่างไม่ถึง X ATR
+            "SWING_HIGH_CLEARANCE_ATR": 1.3,
+            "ENABLE_5M_MICRO_TREND": True,            # 5m ต้อง EMA7>=EMA25 และ close>=EMA7
+            "ENABLE_15M_LOWER_HIGHS": True            # ห้ามซื้อถ้า 15m ทำยอดเตี้ยลง 3 แท่งติด
         }
     },
     "TRENDING": {

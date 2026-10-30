@@ -1955,7 +1955,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             adx_factor = max(0.0, (adx_val - 25.0) * 0.8)
             dynamic_long_stoch_min = max(15.0, 30.0 - adx_factor)
 
-            if not strong_trend and stoch_rsi_1h < dynamic_long_stoch_min:
+            if scalp_filters.get('ENABLE_1H_STOCH_OVERSOLD_BLOCK', False) and \
+               not strong_trend and stoch_rsi_1h < dynamic_long_stoch_min:
                 return f"Blocked: 1H StochRSI Oversold ({round(stoch_rsi_1h, 1)} < Dynamic {round(dynamic_long_stoch_min, 1)})"
 
             # 3. 1H Rejection Wick Guard (ตรวจไส้บนแท่ง 1H)
@@ -1988,6 +1989,32 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 
             if ema7_dist_pct > anti_chase_threshold:
                 return f"Blocked: Anti-Chase LONG (Stretch {round(ema7_dist_pct, 2)}% > Limit {round(anti_chase_threshold, 2)}% | Slope {round(ema25_slope, 3)}%)"
+
+            # 6.1 Swing High Clearance (ซื้อจ่อใต้ยอด 12 แท่งล่าสุดไม่ได้)
+            if scalp_filters.get('ENABLE_SWING_HIGH_CLEARANCE', True):
+                swing_high_12 = df_3m.iloc[-14:-2]['high'].max()
+                clr_mult = scalp_filters.get('SWING_HIGH_CLEARANCE_ATR', 1.3)
+                if m3['close'] < swing_high_12 and (swing_high_12 - m3['close']) < (m3['atr'] * clr_mult):
+                    return f"Blocked: Clearance to Swing High < {clr_mult}x ATR"
+
+            # 6.2 Room to 15m EMA99 (ใต้ EMA99 ต้องมีพื้นที่ว่างก่อนชนแนวต้าน)
+            if scalp_filters.get('ENABLE_EMA99_ROOM', True):
+                ema99_15m = m3.get('ema99')
+                if ema99_15m is not None and ema99_15m == ema99_15m and m3['close'] < ema99_15m:
+                    room_mult = scalp_filters.get('EMA99_ROOM_ATR', 1.2)
+                    if (ema99_15m - m3['close']) < (m3['atr'] * room_mult):
+                        return f"Blocked: Too Close Under 15m EMA99 (< {room_mult}x ATR)"
+
+            # 6.3 5m Micro-Trend Alignment
+            if scalp_filters.get('ENABLE_5M_MICRO_TREND', True):
+                if not ((m5['ema7'] >= m5['ema25']) and (m5['close'] >= m5['ema7'])):
+                    return "Blocked: 5m Micro-Trend Bearish"
+
+            # 6.4 15m Lower Highs (ยอดเตี้ยลง 3 แท่งติด)
+            if scalp_filters.get('ENABLE_15M_LOWER_HIGHS', True):
+                _h2, _h3, _h4 = df_3m.iloc[-2]['high'], df_3m.iloc[-3]['high'], df_3m.iloc[-4]['high']
+                if _h2 < _h3 < _h4:
+                    return "Blocked: 15m Lower Highs Forming"
 
             # 7. 15m Rejection Wick Filter (กันโดนเทขายแท่ง 15m)
             body_m3 = abs(m3['close'] - m3['open'])
