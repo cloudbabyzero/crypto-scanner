@@ -1,0 +1,4641 @@
+import requests
+import time
+import os
+import traceback
+import csv
+import threading
+import uuid
+import json
+from telebot import types
+
+# =========================
+# GOOGLE SHEETS - Import google_sheet module
+# =========================
+
+import google_sheet
+
+# =========================
+# CONFIG - Import from config.py
+# =========================
+
+from config import (
+    bot,
+    TELEGRAM_TOKEN,
+    CHAT_ID,
+    symbols,
+    SCALPING_SYMBOLS,
+    AUTO_TRADE,
+    ORDER_AMOUNT_USDT,
+    MAX_LONG_TRADES,
+    MAX_SHORT_TRADES,
+    MAX_ACTIVE_TRADES,
+    GRADE_PRIORITY,
+    HEARTBEAT_INTERVAL,
+    MARKET_REGIME_ADX_TRENDING,
+    MARKET_REGIME_ADX_SIDEWAYS,
+    MARKET_REGIME_ATR_VOLATILE,
+    MODE,
+    TOP_CANDIDATES_COUNT,
+    MAX_CONSECUTIVE_LOSSES,
+    LOSS_STREAK_RESET_ON_WIN,
+    PULLBACK_MIN_DISTANCE_PCT,
+    ALLOW_PENDING_OVERRIDE,
+    MIN_SCORE_GAP_TO_OVERRIDE,
+    SCALPING_DETECT_ADX_MIN,
+    SCALPING_DETECT_ADX_MAX,
+    SCALPING_DETECT_ATR_MIN,
+    SCALPING_DETECT_ATR_MAX,
+    PAUSE_MAX_ADX,
+    PAUSE_MAX_ATR,
+    STRATEGY_CONFIG,
+    get_strategy_config
+)
+import config
+
+# =========================
+# DYNAMIC CONFIG DEFAULTS
+# =========================
+TREND_HIGH_VOLUME_ONLY = False
+SIDEWAYS_HIGH_VOLUME_ONLY = False
+ADX_FILTER = 18                   # Used to add bonus score for strong trend
+MIN_SCORE = 80                    # Global fallback for telegram overrides
+
+# ADX and Stretch Filters Limits
+ADX_CEILING_LIMIT = 60.0          # Maximum allowed ADX (overextended trend penalty)
+STRETCH_MAX_DISTANCE_PCT = 2.5    # Maximum allowed distance from EMA in % (stretch penalty)
+
+# =========================
+# INDICATORS - Import from indicators.py
+# =========================
+
+from indicators import get_dataframe, get_btc_trend, detect_momentum, detect_symbol_regime
+
+# =========================
+# EXCHANGE CLIENT
+# =========================
+
+from exchange_client import get_exchange, load_markets_if_needed
+
+# Create and share exchange instance for other modules
+exchange = get_exchange()
+
+# Import handlers after bot is created
+import bingx_client
+import telegram_commands
+import trade_manager
+import backtest
+
+last_alert = {}
+last_loss = {}   # FIX: per-symbol loss cooldown — tracks last LOSS time per symbol
+
+active_trades = {}
+state_lock = threading.RLock()
+
+BOT_START_TIME = time.time()
+
+scan_results = {}
+
+# Lifetime statistics
+scan_counters = {
+    "Total Scans": 0,
+    "Signal Generated": 0,
+    "Sideways Market": 0,
+    "Score Below MIN_SCORE": 0,
+    "Cooldown": 0,
+    "Candle Too Big": 0,
+    "Too Close EMA99": 0,
+    "Error": 0,
+}
+
+# Current scan cycle statistics
+cycle_counters = {
+    "Total Scans": 0,
+    "Signal Generated": 0,
+    "Sideways Market": 0,
+    "Score Below MIN_SCORE": 0,
+    "Cooldown": 0,
+    "Candle Too Big": 0,
+    "Too Close EMA99": 0,
+    "Error": 0,
+}
+
+# =========================
+# LOSS STREAK TRACKING
+# =========================
+
+current_wins = 0
+current_losses = 0
+current_loss_streak = 0
+pause_trading = False
+pause_until = 0  # timestamp when auto-resume kicks in (0 = no timer)
+
+def reset_cycle_counters():
+    global cycle_counters
+
+    cycle_counters = {
+        "Total Scans": 0,
+        "Signal Generated": 0,
+        "Sideways Market": 0,
+        "Score Below MIN_SCORE": 0,
+        "Cooldown": 0,
+        "Candle Too Big": 0,
+        "Too Close EMA99": 0,
+        "Error": 0,
+    }
+
+    print("[CYCLE_COUNTERS] Reset", flush=True)
+
+
+def set_scan_result(symbol, data):
+    """Store scan result and update counters."""
+
+    global scan_results
+    global scan_counters
+    global cycle_counters
+
+    scan_counters["Total Scans"] += 1
+    cycle_counters["Total Scans"] += 1
+
+    status = data.get("status", "Unknown")
+
+    if status in scan_counters:
+        scan_counters[status] += 1
+
+    if status in cycle_counters:
+        cycle_counters[status] += 1
+
+    scan_results[symbol] = data
+
+
+def calculate_sideways_levels(entry, atr, bb_mid, side, ai_override=None):
+    """Calculate SL and TP for sideways mean reversion trades.
+
+    SL: ATR * STRATEGY_CONFIG['SIDEWAYS']['SL_ATR_MULT']
+    TP: Bollinger Middle Band
+    """
+    import config as main_config
+    sl_mult = STRATEGY_CONFIG['SIDEWAYS']['SL_ATR_MULT']
+    
+    if ai_override and ai_override.get("approved") and ai_override.get("confidence", 0) >= getattr(main_config, 'AI_FILTER_MIN_CONFIDENCE', 75):
+        if ai_override.get("sl_atr_mult"):
+            sl_mult = ai_override.get("sl_atr_mult")
+
+    if side == "LONG":
+        sl = round(entry - atr * sl_mult, 4)
+        tp = round(bb_mid, 4)
+        risk = entry - sl
+        reward = tp - entry
+    else:
+        sl = round(entry + atr * sl_mult, 4)
+        tp = round(bb_mid, 4)
+        risk = sl - entry
+        reward = entry - tp
+
+    rr = round(reward / risk, 2) if risk > 0 else 0
+    return sl, tp, rr
+
+
+# =========================
+# MARKET REGIME STATE
+# =========================
+
+MARKET_MODE = "TRENDING"
+
+CURRENT_REGIME = "UNKNOWN"
+LAST_REGIME = "UNKNOWN"
+LAST_REGIME_CHECK = 0
+REGIME_CHECK_INTERVAL = 300  # 5 minutes (sync with scan cycle)
+
+# Feature 3 & 4: Signal cache and cooldown bypass
+candidate_signals = {}      # Symbols that generated signals (for top candidates)
+rejected_signals = set()    # Symbols rejected in current regime
+signal_cache = {}           # Cache of signal results by symbol
+ignore_cooldown_once = False  # Feature 4: Bypass cooldown for one rescan
+
+# Feature 8: Override mode
+CONTROL_MODE = MODE  # "AUTO", "FORCE_TREND", "FORCE_SIDEWAY"
+
+# =========================
+# PERSISTENT STORAGE (Feature 7)
+# =========================
+
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+if os.path.isdir(DATA_DIR):
+    REGIME_STORAGE_FILE = os.path.join(DATA_DIR, "regime_storage.json")
+else:
+    REGIME_STORAGE_FILE = "regime_storage.json"
+
+
+def save_regime_storage():
+    """Save current_mode and control_mode to persistent storage.
+    
+    Feature 7: Current mode must survive restart.
+    """
+    try:
+        data = {
+            "MARKET_MODE": MARKET_MODE,
+            "CONTROL_MODE": CONTROL_MODE,
+            "CURRENT_REGIME": CURRENT_REGIME,
+            "CONFIG_MODE": MODE,
+        }
+        with open(REGIME_STORAGE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+        print(f"Regime storage saved: {data}", flush=True)
+    except Exception as e:
+        print(f"Error saving regime storage: {e}", flush=True)
+
+
+def load_regime_storage():
+    """Load saved regime settings from persistent storage.
+    
+    Feature 7: On startup, load saved configuration before scanning.
+    """
+    global MARKET_MODE, CONTROL_MODE, CURRENT_REGIME
+    try:
+        if os.path.exists(REGIME_STORAGE_FILE):
+            with open(REGIME_STORAGE_FILE, "r") as f:
+                data = json.load(f)
+            MARKET_MODE = data.get("MARKET_MODE", MARKET_MODE)
+            CURRENT_REGIME = data.get("CURRENT_REGIME", CURRENT_REGIME)
+            
+            # User UX Fix: If config.py was edited while offline, prioritize it over saved state
+            saved_config_mode = data.get("CONFIG_MODE")
+            if saved_config_mode is not None and saved_config_mode != MODE:
+                print(f"[CONFIG OVERRIDE] config.py MODE ({MODE}) differs from saved ({saved_config_mode}). Using config.py.", flush=True)
+                CONTROL_MODE = MODE
+            else:
+                CONTROL_MODE = data.get("CONTROL_MODE", CONTROL_MODE)
+                
+            print(f"Regime storage loaded: {data}", flush=True)
+        else:
+            print("No regime storage file found, using defaults", flush=True)
+    except Exception as e:
+        print(f"Error loading regime storage: {e}, using defaults", flush=True)
+
+# =========================
+# STATE STORAGE (ACTIVE TRADES)
+# =========================
+
+if os.path.isdir(DATA_DIR):
+    STATE_STORAGE_FILE = os.path.join(DATA_DIR, "active_trades.json")
+else:
+    STATE_STORAGE_FILE = "active_trades.json"
+
+def log_only(message):
+    """แทน send_telegram สำหรับข้อความที่ถูกตัดออกจากแผน (พิมพ์ลง log เท่านั้น ไม่ส่ง Telegram)"""
+    try:
+        print(f"[LOG-ONLY] {str(message).splitlines()[0] if str(message).strip() else ''}", flush=True)
+    except Exception:
+        pass
+
+
+def sanitize_active_trades(data):
+    """เก็บเฉพาะ key ที่เป็นชื่อเหรียญใน The Core 5 และมีของถืออยู่จริง
+    ตัด UUID สัญญาณผี / status SIGNAL / เหรียญนอกลิสต์ ออกทั้งหมด"""
+    clean = {}
+    dropped = []
+    if not isinstance(data, dict):
+        return clean, ["<root is not a dict>"]
+    for key, pos in data.items():
+        try:
+            ok = (
+                key in symbols
+                and isinstance(pos, dict)
+                and float(pos.get("total_qty", 0.0)) > 0
+                and float(pos.get("weighted_avg_price", 0.0)) > 0
+            )
+        except (TypeError, ValueError):
+            ok = False
+        if ok:
+            clean[key] = pos
+        else:
+            dropped.append(str(key))
+    return clean, dropped
+
+
+def build_recovery_message(trades):
+    """🔄 [SYSTEM RECOVERY] รายงานพอร์ตที่กู้คืนหลังรีสตาร์ต"""
+    if not trades:
+        return "🔄 [SYSTEM RECOVERY]\n\nบอทรีสตาร์ตสำเร็จ! พอร์ตว่างเปล่า (เงินสด 100% พร้อมช้อนไม้ 1)"
+
+    lines = ["🔄 [SYSTEM RECOVERY]", "", "บอทรีสตาร์ตสำเร็จ! กู้คืนพอร์ตสะสมเหรียญได้ครบถ้วน:", ""]
+    total_cost_all = 0.0
+    for sym, pos in trades.items():
+        base = sym.split("/")[0]
+        cost = float(pos.get("total_cost_usdt", 0.0))
+        total_cost_all += cost
+        lines += [
+            f"• {sym} ({int(pos.get('entry_count', 1))} ไม้):",
+            f"   - ทุนเฉลี่ย: {float(pos.get('weighted_avg_price', 0.0)):.4f}",
+            f"   - ถือรวม: {float(pos.get('total_qty', 0.0)):.6f} {base}",
+            f"   - ทุนรวม: {cost:.2f} USDT",
+            "",
+        ]
+    lines.append(f"💰 รวมเงินทุนสะสมทั้งหมด: {total_cost_all:.2f} USDT")
+    return "\n".join(lines)
+
+
+STATE_BACKUP_FILE = STATE_STORAGE_FILE + ".bak"
+
+
+def _read_state_file(path):
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def load_active_trades():
+    """Load active trades from disk (Spot DCA) พร้อมกู้จาก .bak ถ้าไฟล์หลักเสีย/หาย"""
+    global active_trades
+    try:
+        data = {}
+        alert = None
+
+        if os.path.exists(STATE_STORAGE_FILE):
+            try:
+                data = _read_state_file(STATE_STORAGE_FILE)
+            except Exception as e:
+                print(f"[STATE] ไฟล์หลักอ่านไม่ได้: {e}", flush=True)
+                try:  # เก็บไฟล์เสียไว้เป็นหลักฐาน ไม่ให้ถูกเขียนทับ
+                    os.replace(STATE_STORAGE_FILE, f"{STATE_STORAGE_FILE}.corrupt-{int(time.time())}")
+                except Exception:
+                    pass
+                try:
+                    data = _read_state_file(STATE_BACKUP_FILE)
+                    alert = "🚨 [STATE ERROR] ไฟล์พอร์ตเสีย — กู้จากไฟล์สำรอง (.bak) สำเร็จ ตรวจสอบรายการด้านล่างให้ตรงกับยอดจริง"
+                except Exception:
+                    data = {}
+                    alert = "🚨 [STATE ERROR] ไฟล์พอร์ตเสียและกู้จากไฟล์สำรองไม่ได้ — เริ่มด้วยพอร์ตว่าง! ตรวจสอบยอดเหรียญบน BingX ทันที"
+        elif os.path.exists(STATE_BACKUP_FILE):
+            try:
+                data = _read_state_file(STATE_BACKUP_FILE)
+                alert = "⚠️ [STATE] ไม่พบไฟล์พอร์ตหลัก — กู้จากไฟล์สำรอง (.bak)"
+            except Exception:
+                data = {}
+
+        clean, dropped = sanitize_active_trades(data)
+        if dropped:
+            print(f"[STATE] ตัดรายการที่ไม่ใช่พอร์ต Spot ออก: {dropped}", flush=True)
+
+        with state_lock:
+            active_trades = clean
+
+        if alert:
+            send_telegram(alert)
+        send_telegram(build_recovery_message(clean))
+        print(f"[STATE] Loaded {len(clean)} coin positions from {STATE_STORAGE_FILE}", flush=True)
+    except Exception as e:
+        print(f"[STATE] Error loading {STATE_STORAGE_FILE}: {e}", flush=True)
+
+
+def save_state_loop():
+    """เซฟพอร์ตแบบ atomic (เขียนไฟล์ชั่วคราว + สลับชื่อ) และเก็บ .bak ของไฟล์ที่ยังอ่านได้"""
+    import shutil
+    last_payload = None
+    while True:
+        try:
+            with state_lock:
+                payload = json.dumps(active_trades)
+            if payload != last_payload:
+                tmp = STATE_STORAGE_FILE + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write(payload)
+                    f.flush()
+                    os.fsync(f.fileno())
+                if os.path.exists(STATE_STORAGE_FILE):
+                    try:
+                        _read_state_file(STATE_STORAGE_FILE)  # สำรองเฉพาะไฟล์ที่ยังสมบูรณ์
+                        shutil.copy2(STATE_STORAGE_FILE, STATE_BACKUP_FILE)
+                    except Exception:
+                        pass
+                os.replace(tmp, STATE_STORAGE_FILE)
+                last_payload = payload
+        except Exception as e:
+            print(f"[STATE] save error: {e}", flush=True)
+        time.sleep(10)
+
+
+# =========================
+# SIGNAL CACHE MANAGEMENT (Feature 3)
+# =========================
+
+def reset_signal_cache():
+    """Clear all cached signals when regime changes.
+    
+    Feature 3: Signals rejected in SIDEWAYS mode may become valid in TRENDING mode.
+    Old regime data must not affect the new regime.
+    
+    Clears:
+        candidate_signals - Symbols that generated signals
+        rejected_signals  - Symbols rejected in current regime
+        signal_cache      - Cached signal results
+    """
+    global candidate_signals, rejected_signals, signal_cache
+    
+    print("🔄 Clearing signal cache for regime change...", flush=True)
+    
+    # Clear all signal caches
+    candidate_signals = {}
+    rejected_signals = set()
+    signal_cache = {}
+    
+    print("✅ Signal cache cleared", flush=True)
+
+
+# =========================
+# TELEGRAM
+# =========================
+
+def send_telegram(message):
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message
+    }
+
+    try:
+
+        requests.post(
+            url,
+            data=payload,
+            timeout=10
+        )
+
+    except Exception as e:
+
+        print(
+            "Telegram Error:",
+            e,
+            flush=True
+        )
+
+
+# =========================
+# SPOT SIGNAL-DRIVEN DCA
+# =========================
+
+def execute_spot_dca(symbol, price):
+    """ซื้อ Spot Market ไม้ละ ORDER_AMOUNT_USDT แล้วอัปเดต Weighted Average Cost ลง active_trades[symbol]"""
+    result = bingx_client.spot_market_buy(symbol, ORDER_AMOUNT_USDT)
+    if not result:
+        send_telegram(
+            f"❌ [SPOT DCA FAILED]\n\n"
+            f"สั่งซื้อ {symbol} ไม่สำเร็จ (BingX ไม่ตอบรับออเดอร์) — ดู Railway log เพื่อหาสาเหตุ"
+        )
+        return False
+
+    fill_price = float(result.get("avg_price") or price)
+    cost = float(result.get("cost") or ORDER_AMOUNT_USDT)
+    qty = float(result.get("filled_qty") or cost / fill_price)
+
+    with state_lock:
+        prev = active_trades.get(symbol) or {}
+        prev_avg = float(prev.get("weighted_avg_price", 0.0) or 0.0)
+        new_qty = prev.get("total_qty", 0.0) + qty
+        new_cost = prev.get("total_cost_usdt", 0.0) + cost
+        new_entries = prev.get("entry_count", 0) + 1
+        new_avg = new_cost / new_qty
+
+        active_trades[symbol] = {
+            "symbol": symbol,
+            "side": "LONG",
+            "status": "OPEN",
+            "entry": fill_price,
+            "weighted_avg_price": new_avg,
+            "sl": "No SL (Accumulating)",
+            "tp2": f"Infinity Run (+{config.INFINITY_ACTIVATION_PCT*100:.1f}%)",
+            "total_qty": new_qty,
+            "total_cost_usdt": new_cost,
+            "entry_count": new_entries,
+            "highest_price": fill_price,
+            "infinity_active": False,
+            "updated_at": time.time(),
+            "last_seen_ts": time.time()
+        }
+
+    if new_entries <= 1:
+        status_line = "🆕 ไม้ที่ 1 (เข้าซื้อครั้งแรก)"
+    else:
+        status_line = f"🔄 ไม้ที่ {new_entries} (DCA ช้อนเพิ่มจากทุนเดิม {prev_avg:.4f})"
+    base = symbol.split("/")[0]
+
+    send_telegram(
+        f"🛒 [SPOT DCA BOUGHT]\n\n"
+        f"เหรียญ: {symbol} (🟩 LONG)\n"
+        f"สถานะ: {status_line}\n\n"
+        f"• ราคาที่ซื้อได้: {fill_price:.4f}\n"
+        f"• ต้นทุนเฉลี่ยรวมใหม่: {new_avg:.4f}\n"
+        f"• ถือรวม: {new_qty:.6f} {base} (ทุนรวม {new_cost:.2f} USDT)"
+    )
+    return True
+
+
+last_dca_paused_alert = {}          # symbol -> timestamp ล่าสุดที่แจ้งเตือน
+DCA_PAUSED_ALERT_COOLDOWN = 300     # กันส่งซ้ำของ "สัญญาณเดิม" เท่านั้น (สัญญาณใหม่มาจาก cooldown 15 นาทีของ analyze อยู่แล้ว)
+
+
+def notify_dca_paused(symbols, free_usdt):
+    """แจ้งทุกเหรียญที่มีสัญญาณแต่ซื้อไม่ได้เพราะ USDT ไม่พอ (รวมเป็นข้อความเดียวต่อรอบ)"""
+    now_ts = time.time()
+    fresh = [s for s in symbols if now_ts - last_dca_paused_alert.get(s, 0) >= DCA_PAUSED_ALERT_COOLDOWN]
+    if not fresh:
+        return
+    for s in fresh:
+        last_dca_paused_alert[s] = now_ts
+    send_telegram(
+        f"⚠️ [SPOT DCA PAUSED — USDT ไม่พอ]\n\n"
+        f"บอทเจอสัญญาณซื้อ: {', '.join(fresh)}\n"
+        f"แต่เงินสดในพอร์ตเหลือ {free_usdt:.2f} USDT (ต้องการอย่างน้อย {ORDER_AMOUNT_USDT:.1f} USDT)\n"
+        f"👉 บอทข้ามรอบนี้ รอคุณเติมเงินครับ"
+    )
+
+
+def notify_dca_skipped(items):
+    """แจ้งเหรียญที่มีสัญญาณแต่บอท 'ตั้งใจไม่ซื้อ' พร้อมเหตุผล (ข้อความเดียวต่อรอบ)"""
+    if not items:
+        return
+    lines = "\n".join(f"• {sym} @ {entry}: {reason}" for sym, entry, reason in items)
+    send_telegram(f"⏭️ [SPOT DCA SKIPPED — ไม่ซื้อ]\n\n{lines}")
+
+
+# ตัวแปรจำเวลาแช่แข็งเหรียญที่โดน Flash Crash
+flash_crash_frozen_until = {}
+
+
+def get_total_portfolio_equity():
+    """มูลค่ารวมพอร์ต = เงินสด USDT + ทุนที่ลงไปในเหรียญที่ถืออยู่ทั้งหมด"""
+    free_usdt = bingx_client.get_spot_free_balance('USDT')
+    with state_lock:
+        allocated_cost = sum(float(p.get("total_cost_usdt", 0.0)) for p in active_trades.values())
+    return free_usdt + allocated_cost
+
+
+def check_flash_crash(symbol):
+    """คืน (True, None) ถ้าซื้อได้ / (False, เหตุผล) ถ้าติด Circuit Breaker"""
+    now = time.time()
+    frozen_ts = flash_crash_frozen_until.get(symbol, 0)
+    if now < frozen_ts:
+        remaining_hrs = (frozen_ts - now) / 3600
+        return False, f"อยู่ในช่วงแช่แข็ง Flash Crash (เหลืออีก {remaining_hrs:.1f} ชม.)"
+
+    try:
+        df_1h = get_dataframe(symbol, '1h')
+        if len(df_1h) >= 2:
+            last_h1 = df_1h.iloc[-2]
+            h1_change_pct = ((last_h1['close'] - last_h1['open']) / last_h1['open']) * 100
+            threshold = -abs(getattr(config, 'FLASH_CRASH_DROP_PCT', 12.0))
+            if h1_change_pct <= threshold:
+                freeze_hours = getattr(config, 'FLASH_CRASH_FREEZE_HOURS', 12)
+                flash_crash_frozen_until[symbol] = now + freeze_hours * 3600
+                send_telegram(
+                    f"🚨 [CIRCUIT BREAKER ACTIVATED] {symbol}\n\n"
+                    f"ตรวจพบแท่ง 1H ทุบลงมา {h1_change_pct:.2f}% (เกินเกณฑ์ {threshold}%)\n"
+                    f"บอทสั่งแช่แข็งการช้อนซื้อเหรียญนี้ {freeze_hours} ชั่วโมง เพื่อความปลอดภัย"
+                )
+                return False, f"แท่ง 1H ร่วงรุนแรง ({h1_change_pct:.2f}%)"
+    except Exception as e:
+        print(f"[CIRCUIT BREAKER ERROR] {symbol}: {e}", flush=True)
+
+    return True, None
+
+
+last_recorded_usdt_balance = None
+
+
+def check_deposit_injection():
+    """ตรวจจับเงินเติมเข้ากระเป๋า Spot (เพิ่มขึ้น >= DEPOSIT_DETECT_MIN_USDT)
+    หมายเหตุ: trade_manager จะรีเซ็ตค่า baseline หลังขายปิดรอบ เพื่อไม่ให้นับเงินขายเป็นเงินเติม"""
+    global last_recorded_usdt_balance
+    current_cash = bingx_client.get_spot_free_balance('USDT')
+    if last_recorded_usdt_balance is not None:
+        diff = current_cash - last_recorded_usdt_balance
+        if diff >= getattr(config, 'DEPOSIT_DETECT_MIN_USDT', 10.0):
+            total_eq = get_total_portfolio_equity()
+            alloc_pct = getattr(config, 'MAX_PORTFOLIO_ALLOC_PCT', 0.20)
+            new_cap = max(getattr(config, 'MIN_PORTFOLIO_ALLOC_FLOOR_USDT', 12.0), total_eq * alloc_pct)
+            bullets = int(current_cash // ORDER_AMOUNT_USDT)
+            send_telegram(
+                f"🎉 [DEPOSIT DETECTED — ตรวจพบเงินเติมใหม่]\n\n"
+                f"ยอดเงินโอนเข้า: +{diff:.2f} USDT\n"
+                f"เงินสดพร้อมใช้งาน: {current_cash:.2f} USDT (~{bullets} ไม้)\n"
+                f"มูลค่าพอร์ตทั้งหมด: {total_eq:.2f} USDT\n"
+                f"🛡️ เพดานสะสมต่อเหรียญ ({alloc_pct*100:.0f}%) ขยายเป็น: {new_cap:.2f} USDT\n\n"
+                f"พร้อมช้อนซื้อรอบใหม่ตามแผนครับ! 🚀"
+            )
+    last_recorded_usdt_balance = current_cash
+
+
+def run_priority_dca_engine():
+    """Worst-Performer Priority Engine + Safeguards:
+    1) Flash-Crash Circuit Breaker  2) เพดานต่อเหรียญ 20% ของพอร์ต
+    3) Drawdown Step  4) ข้ามเหรียญที่กำลังรัน Infinity Run
+    แล้วเรียงเหรียญที่ติดลบหนักสุดก่อน"""
+    if not AUTO_TRADE:
+        return
+
+    buy_signals = [s for s in candidate_signals.values() if s.get("side") == "LONG"]
+    if not buy_signals:
+        return
+
+    with state_lock:
+        active_pos_map = dict(active_trades)
+
+    total_equity = get_total_portfolio_equity()
+    alloc_pct = getattr(config, 'MAX_PORTFOLIO_ALLOC_PCT', 0.20)
+    alloc_floor = getattr(config, 'MIN_PORTFOLIO_ALLOC_FLOOR_USDT', 12.0)
+    max_cap_per_coin = max(alloc_floor, total_equity * alloc_pct)
+    min_dca_step = getattr(config, "MIN_DCA_DRAWDOWN_PCT", 3.0)
+
+    ranked_candidates = []
+    skipped = []   # (symbol, entry, เหตุผลที่ไม่ซื้อ)
+    for sig in buy_signals:
+        sym = sig["symbol"]
+        pos = active_pos_map.get(sym)
+
+        # ด่าน 1: Flash-Crash Circuit Breaker
+        safe, crash_reason = check_flash_crash(sym)
+        if not safe:
+            skipped.append((sym, sig["entry"], crash_reason))
+            continue
+
+        if pos and pos.get("total_qty", 0.0) > 0:
+            if pos.get("infinity_active", False):
+                print(f"[PRIORITY DCA] {sym} กำลังรันกำไร Infinity Run อยู่ ➔ ข้ามการซื้อเพิ่ม", flush=True)
+                skipped.append((sym, sig["entry"], "กำลังรัน Infinity Run อยู่ (ไม่ซื้อเพิ่มเพื่อไม่ให้รีเซ็ต Trailing)"))
+                continue
+
+            # ด่าน 2: เพดานต่อเหรียญ
+            current_cost = float(pos.get("total_cost_usdt", 0.0))
+            if (current_cost + ORDER_AMOUNT_USDT) > max_cap_per_coin:
+                skipped.append((sym, sig["entry"],
+                    f"ติดเพดาน {alloc_pct*100:.0f}% ของพอร์ต (ถืออยู่ {current_cost:.1f}/{max_cap_per_coin:.1f} USDT) รอเงินเติม"))
+                continue
+
+            # ด่าน 3: Drawdown Step
+            avg = float(pos.get("weighted_avg_price", 0.0) or 0.0)
+            if avg > 0:
+                drawdown_pct = ((sig["entry"] - avg) / avg) * 100
+                if drawdown_pct > -min_dca_step:
+                    print(f"[PRIORITY DCA] {sym} ย่อตัวเพียง {drawdown_pct:+.2f}% (ยังไม่ถึงเกณฑ์ -{min_dca_step:.1f}%) ➔ ข้าม", flush=True)
+                    if drawdown_pct >= 0:
+                        reason = f"ราคาสูงกว่าทุนเฉลี่ย {avg:.4f} (DCA เฉพาะตอนราคาต่ำกว่าทุน)"
+                    else:
+                        reason = f"ย่อตัวเพียง {drawdown_pct:+.2f}% จากทุนเฉลี่ย {avg:.4f} (ต้องลึกถึง -{min_dca_step:.1f}%)"
+                    skipped.append((sym, sig["entry"], reason))
+                    continue
+            else:
+                drawdown_pct = 0.0
+        else:
+            # ไม้ที่ 1
+            if ORDER_AMOUNT_USDT > max_cap_per_coin:
+                skipped.append((sym, sig["entry"], "มูลค่าไม้สูงกว่าเพดานพอร์ต"))
+                continue
+            drawdown_pct = 0.0
+
+        ranked_candidates.append({
+            "symbol": sym,
+            "entry": sig["entry"],
+            "drawdown_pct": drawdown_pct
+        })
+
+    ranked_candidates.sort(key=lambda x: x["drawdown_pct"])
+    notify_dca_skipped(skipped)
+
+    for idx, cand in enumerate(ranked_candidates):
+        free_usdt = bingx_client.get_spot_free_balance('USDT')
+        if free_usdt < ORDER_AMOUNT_USDT:
+            print("[PRIORITY DCA] USDT ไม่พอ หยุดยิงซื้อรอบนี้", flush=True)
+            notify_dca_paused([c["symbol"] for c in ranked_candidates[idx:]], free_usdt)
+            break
+        print(f"[PRIORITY DCA] {cand['symbol']} drawdown={cand['drawdown_pct']:+.2f}%", flush=True)
+        try:
+            execute_spot_dca(cand["symbol"], cand["entry"])
+        except Exception:
+            print(f"[PRIORITY DCA] execute_spot_dca error: {cand['symbol']}", flush=True)
+            print(traceback.format_exc(), flush=True)
+
+
+# =========================
+# STARTUP MARKET SCAN (Feature 1)
+# =========================
+
+def startup_market_scan():
+    """Detect current BTC regime immediately after loading storage.
+    
+    Feature 1: After loading regime_storage.json, detect current regime
+    because saved regime may be outdated if market changed while bot was offline.
+    
+    Flow:
+    load_regime_storage()
+    → startup_market_scan()
+    → immediate_full_rescan()
+    → send_top_candidates()
+    → bot_ready()
+    """
+    global CURRENT_REGIME, MARKET_MODE, LAST_REGIME_CHECK
+    
+    print("[STARTUP_SCAN] Beginning startup market scan", flush=True)
+    
+    log_only("🚀 Bot Started")
+    log_only("🔍 Startup Market Scan")
+    
+    try:
+        # Detect current BTC market regime
+        startup_regime, btc_adx, btc_atr_pct = detect_market_regime()
+        btc_trend_str = get_btc_trend().upper()
+        
+        # Send regime info
+        log_only(
+            f"Regime: {startup_regime}\n"
+            f"BTC Trend: {btc_trend_str}\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%"
+        )
+        
+        print(
+            f"[STARTUP_SCAN] Detected regime: {startup_regime}, "
+            f"BTC Trend: {btc_trend_str}, "
+            f"BTC ADX: {btc_adx}, BTC ATR: {btc_atr_pct}%",
+            flush=True
+        )
+        
+        # Update state with live detection
+        CURRENT_REGIME = startup_regime
+        
+        # Set market mode based on control mode
+        if CONTROL_MODE == "FORCE_TREND":
+            MARKET_MODE = "TRENDING"
+            log_only("✅ Trend Mode Activated (FORCE_TREND override)")
+        elif CONTROL_MODE == "FORCE_SIDEWAY":
+            MARKET_MODE = "SIDEWAYS"
+            log_only("✅ Sideways Mode Activated (FORCE_SIDEWAY override)")
+        else:
+            new_mode = determine_mode_from_regime(startup_regime)
+            MARKET_MODE = new_mode
+            if CONTROL_MODE == "SCALP_SIDEWAYS":
+                log_only("✅ Scalp & Sideways Mode Activated (SCALP_SIDEWAYS override)")
+            elif CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]:
+                MARKET_MODE = "SCALPING"  # FIX: ensure scan loop uses SCALPING_SYMBOLS
+                log_only("✅ Scalping Mode Activated (SCALPING override)")
+            elif CONTROL_MODE == "FORCE_MOMENTUM":
+                log_only("✅ Momentum Mode Activated (FORCE_MOMENTUM override)")
+            else:
+                log_only(f"✅ {new_mode} Mode Activated (auto)")
+        
+        # Save updated state to persistent storage
+        save_regime_storage()
+        
+        LAST_REGIME_CHECK = time.time()
+
+        # Feature 5: Run immediate full rescan after startup scan (read-only)
+        log_only("🔄 Startup Full Rescan")
+        immediate_full_rescan(is_startup=True, read_only=True)
+        
+        # Feature 6: Send top candidates from startup rescan
+        send_top_candidates()
+        
+        # Mode summary report
+        mode_counts = {}
+        mode_text = "📊 COIN MODES REPORT\n\n"
+        for sym, res in scan_results.items():
+            if isinstance(res, dict):
+                m = res.get("mode", "UNKNOWN")
+                mode_counts[m] = mode_counts.get(m, 0) + 1
+                mode_text += f"{sym}: {m}\n"
+        mode_text += "\nSummary:\n"
+        for m, c in mode_counts.items():
+            mode_text += f"{m}: {c}\n"
+        log_only(mode_text)
+
+        log_only("✅ Bot Ready")
+        
+    except Exception as e:
+        print(f"[STARTUP_SCAN] Error: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        CURRENT_REGIME = "TRENDING"
+        MARKET_MODE = "TRENDING"
+        send_telegram("⚠️ Startup regime detection failed, defaulting to TRENDING")
+
+
+def startup_cleanup():
+    """Cancel stale pending limit orders and report open positions.
+
+    Steps:
+    1. Fetch all open orders from BingX.
+    2. Cancel any pending LIMIT orders.
+    3. Count how many were cancelled and send a Telegram notification.
+    4. Fetch open positions and report them via Telegram (do not close).
+    5. Log a debug entry to Google Sheet.
+    """
+    try:
+        # 1. Fetch open orders
+        open_orders = exchange.fetch_open_orders()
+        cancelled_count = 0
+        for order in open_orders:
+            # Identify pending limit orders (type == 'limit' and not filled)
+            order_type = (order.get('type') or '').lower()
+            status = (order.get('status') or '').lower()
+            if order_type == 'limit' and status in ['open', 'new', 'active']:
+                try:
+                    exchange.cancel_order(order['id'], order['symbol'])
+                    cancelled_count += 1
+                except Exception as cancel_err:
+                    print(f"Failed to cancel order {order.get('id')}: {cancel_err}", flush=True)
+
+        # 3. Send Telegram notification about cancelled orders
+        log_only(f"🧹 STARTUP CLEANUP\n\nCancelled {cancelled_count} stale pending orders.")
+
+        # 4. Check for open positions (do not close them)
+        positions = exchange.fetch_positions()
+        open_positions = []
+        for pos in positions:
+            try:
+                contracts = float(pos.get('contracts') or 0)
+            except (TypeError, ValueError):
+                contracts = 0
+            if contracts > 0:
+                symbol = pos.get('symbol') or 'UNKNOWN'
+                side_raw = (pos.get('side') or pos.get('positionSide') or '').upper()
+                side = 'LONG' if side_raw in ['LONG', 'BUY'] else ('SHORT' if side_raw in ['SHORT', 'SELL'] else side_raw)
+                open_positions.append(f"{symbol} {side}")
+        if open_positions:
+            positions_msg = "\n".join(open_positions)
+            log_only(f"⚠️ OPEN POSITIONS DETECTED\n\n{positions_msg}\n\nManual review required.")
+
+        # 5. Log debug entry to Google Sheet
+        google_sheet.log_debug(
+            "STARTUP_CLEANUP",
+            f"Cancelled {cancelled_count} orders, {len(open_positions)} open positions"
+        )
+    except Exception as e:
+        print(f"Startup cleanup error: {e}", flush=True)
+        traceback.print_exc()
+
+
+# =========================
+# AUTO REGIME SWITCHING (Feature 2)
+# =========================
+
+def auto_switch_regime(old_regime, new_regime, btc_adx, btc_atr_pct):
+    """Automatically switch market mode when regime changes.
+    
+    Feature 2: Remove dependency on Telegram buttons.
+    
+    When market regime changes:
+    1. Update current mode based on regime
+    2. Save mode to persistent storage
+    3. Send notification
+    4. Clear signal cache (Feature 3)
+    5. Set ignore_cooldown_once flag (Feature 4)
+    6. Trigger immediate full rescan (Feature 5)
+    
+    Feature 8: If CONTROL_MODE is FORCE_TREND or FORCE_SIDEWAY,
+    auto switching is disabled.
+    """
+    global MARKET_MODE, CURRENT_REGIME, LAST_REGIME
+    global ignore_cooldown_once
+    
+    # Feature 8: Skip auto-switch if override mode is active
+    if CONTROL_MODE == "FORCE_TREND":
+        print(f"Regime changed to {new_regime}, but FORCE_TREND override active", flush=True)
+        log_only(
+            f"🚨 MARKET REGIME CHANGED\n\n"
+            f"{old_regime} → {new_regime}\n\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%\n\n"
+            f"🔒 FORCE_TREND override active\n"
+            f"No mode switch applied."
+        )
+        CURRENT_REGIME = new_regime
+        return
+    
+    if CONTROL_MODE == "FORCE_SIDEWAY":
+        print(f"Regime changed to {new_regime}, but FORCE_SIDEWAY override active", flush=True)
+        log_only(
+            f"🚨 MARKET REGIME CHANGED\n\n"
+            f"{old_regime} → {new_regime}\n\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%\n\n"
+            f"🔒 FORCE_SIDEWAY override active\n"
+            f"No mode switch applied."
+        )
+        CURRENT_REGIME = new_regime
+        return
+
+    if CONTROL_MODE == "FORCE_MOMENTUM":
+        print(f"Regime changed to {new_regime}, but FORCE_MOMENTUM override active", flush=True)
+        log_only(
+            f"🚨 MARKET REGIME CHANGED\n\n"
+            f"{old_regime} → {new_regime}\n\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%\n\n"
+            f"🔒 FORCE_MOMENTUM override active\n"
+            f"No mode switch applied."
+        )
+        CURRENT_REGIME = new_regime
+        return
+
+    if CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]:
+        print(f"Regime changed to {new_regime}, but SCALPING override active", flush=True)
+        MARKET_MODE = "SCALPING"  # FIX: re-lock in case regime switch overwrote it
+        log_only(
+            f"🚨 MARKET REGIME CHANGED\n\n"
+            f"{old_regime} → {new_regime}\n\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%\n\n"
+            f"🔒 SCALPING override active\n"
+            f"No mode switch applied."
+        )
+        CURRENT_REGIME = new_regime
+        return
+        
+    if CONTROL_MODE == "SCALP_SIDEWAYS":
+        print(f"Regime changed to {new_regime}, but SCALP_SIDEWAYS override active", flush=True)
+        log_only(
+            f"🚨 MARKET REGIME CHANGED\n\n"
+            f"{old_regime} → {new_regime}\n\n"
+            f"BTC ADX: {btc_adx}\n"
+            f"BTC ATR: {btc_atr_pct}%\n\n"
+            f"🔒 SCALP_SIDEWAYS override active\n"
+            f"No mode switch applied."
+        )
+        CURRENT_REGIME = new_regime
+        return
+        
+    if CONTROL_MODE == "FORCE_PAUSE":
+        print(f"Regime changed to {new_regime}, but FORCE_PAUSE override active", flush=True)
+        # Suppress notifications if it's dead, unless user specifically asks
+        CURRENT_REGIME = new_regime
+        return
+    
+    # Determine the new market mode based on regime
+    new_mode = determine_mode_from_regime(new_regime)
+    
+    # Update state
+    old_mode = MARKET_MODE
+    LAST_REGIME = old_regime
+    CURRENT_REGIME = new_regime
+    MARKET_MODE = new_mode
+    
+    # Feature 3: Clear signal cache
+    reset_signal_cache()
+    # Feature 3b: Cancel pending orders on regime change
+    trade_manager.cancel_pending_orders("Market Regime Changed")
+    
+    # Feature 4: Set ignore_cooldown_once to bypass cooldown for next rescan
+    ignore_cooldown_once = True
+    print(f"🔄 ignore_cooldown_once = True (regime changed)", flush=True)
+    
+    # Save to persistent storage (Feature 7)
+    save_regime_storage()
+    
+    # Feature 5: Run immediate full rescan after regime change (read-only)
+    immediate_full_rescan(is_startup=False, read_only=True)
+    
+    # Feature 4: Disable cooldown bypass after rescan completes
+    ignore_cooldown_once = False
+    
+    # Feature 6: Send top candidates from the rescan
+    send_top_candidates()
+    
+    # Build notification message
+    if new_regime == "TRENDING":
+        regime_icon = "📈"
+    elif new_regime == "SIDEWAYS":
+        regime_icon = "📉"
+    elif new_regime == "MOMENTUM":
+        regime_icon = "🚀"
+    else:
+        regime_icon = "⚡"
+    mode_text = f"{regime_icon} Auto Switched To {new_mode} Mode"
+    
+    notification = (
+        f"🚨 MARKET REGIME CHANGED\n\n"
+        f"{old_regime} → {new_regime}\n\n"
+        f"BTC ADX: {btc_adx}\n"
+        f"BTC ATR: {btc_atr_pct}%\n\n"
+        f"✅ {mode_text}\n\n"
+        f"🔄 Immediate Rescan Complete - Top Candidates Sent"
+    )
+    
+    print(
+        f"Regime auto-switch: {old_regime} -> {new_regime}, "
+        f"Mode: {old_mode} -> {new_mode}",
+        flush=True
+    )
+    log_only(notification)
+
+
+def determine_mode_from_regime(regime):
+    """Map a market regime to the corresponding strategy mode.
+    
+    TRENDING  -> TRENDING strategy
+    SIDEWAYS  -> SIDEWAYS strategy
+    VOLATILE  -> TRENDING strategy (trend following for volatility breakout)
+    MOMENTUM  -> MOMENTUM strategy
+    SCALPING  -> SCALPING strategy
+    """
+    if regime == "SIDEWAYS":
+        return "SIDEWAYS"
+    if regime == "MOMENTUM":
+        return "MOMENTUM"
+    if regime == "SCALPING":
+        return "SCALPING"
+    if regime == "PAUSE":
+        return "PAUSE"
+    # TRENDING, VOLATILE, and default all use TREND mode
+    return "TRENDING"
+
+
+# =========================
+# IMMEDIATE FULL RESCAN (Feature 5)
+# =========================
+
+def immediate_full_rescan(is_startup=False, read_only=True):
+    """Run a complete market scan immediately.
+    
+    Feature 5: When regime changes, run a complete market scan immediately.
+    Feature 1: On startup, scan immediately.
+    
+    Requirements:
+    1. Loop through all symbols.
+    2. Call analyze(symbol, bypass_cooldown=True)
+    3. Rebuild candidate_signals.
+    4. Print start/end logs.
+    5. Return total scanned count.
+    
+    Args:
+        is_startup: If True, this is a startup scan.
+        read_only: If True, do not save signals, create active_trades, or execute trades.
+                   All rescans are read-only — they only build candidate_signals for TOP_CANDIDATES.
+    
+    This does NOT wait for the next scan interval.
+    """
+    global ignore_cooldown_once, scan_results, candidate_signals
+    
+    scan_label = "Startup" if is_startup else "Regime Change"
+    print(f"[RESCAN_START] {scan_label} Full Rescan Started", flush=True)
+    
+    # Reset scan results for fresh data
+    scan_results = {}
+    
+    # Clear previous candidate signals for fresh top candidates
+    candidate_signals = {}
+    
+    scanned_count = 0
+    
+    for symbol in symbols:
+        try:
+            # Always bypass cooldown, silence signals, and skip all signal creation during rescan
+            analyze(symbol, bypass_cooldown=True, silent_mode=True, signal_only=read_only)
+            scanned_count += 1
+            time.sleep(2)
+        except Exception as e:
+            print(f"Error scanning {symbol} during rescan: {e}", flush=True)
+    
+    print(f"[RESCAN_END] {scan_label} Full Rescan Completed - {scanned_count} symbols scanned", flush=True)
+    return scanned_count
+
+
+# =========================
+# TOP CANDIDATES (Feature 6)
+# =========================
+
+def send_top_candidates():
+    """After immediate rescan, send strongest setups found.
+    
+    Feature 6: Send only symbols that pass all filters.
+    
+    Sorts candidate_signals by score descending and sends
+    the top TOP_CANDIDATES_COUNT results.
+    """
+    if not candidate_signals:
+        print("No candidate signals to report", flush=True)
+        return
+    
+    # Sort candidates by score descending
+    sorted_candidates = sorted(
+        candidate_signals.values(),
+        key=lambda x: x.get("score", 0),
+        reverse=True
+    )
+    
+    # Take top N
+    top_count = min(TOP_CANDIDATES_COUNT, len(sorted_candidates))
+    top_candidates = sorted_candidates[:top_count]
+    
+    message = "📊 TOP CANDIDATES\n\n"
+    
+    for i, candidate in enumerate(top_candidates, 1):
+        symbol = candidate.get("symbol", "UNKNOWN")
+        score = candidate.get("score", 0)
+        side = candidate.get("side", "N/A")
+        grade = candidate.get("grade", "N/A")
+        strategy = candidate.get("strategy", "N/A")
+        icon = "🚀" if side == "LONG" else "🔻"
+        
+        message += (
+            f"{i}. {symbol}\n"
+            f"   Score: {score}\n"
+            f"   Side: {icon} {side}\n"
+            f"   Grade: {grade}\n"
+            f"   Strategy: {strategy}\n\n"
+        )
+    
+    log_only(message.strip())
+    print(f"Top candidates sent: {len(top_candidates)} signals", flush=True)
+
+
+# =========================
+# CONFIG PERSISTENCE
+# =========================
+
+def save_config():
+    """Save strategy filter configuration to config.json"""
+    try:
+        config_data = {
+            "STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ADX']": STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ADX'],
+            "STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ATR_PCT']": STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ATR_PCT'],
+            "TREND_HIGH_VOLUME_ONLY": TREND_HIGH_VOLUME_ONLY,
+            "STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX']": STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX'],
+            "STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MIN_ATR_PCT']": STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MIN_ATR_PCT'],
+            "SIDEWAYS_HIGH_VOLUME_ONLY": SIDEWAYS_HIGH_VOLUME_ONLY,
+        }
+        with open('config.json', 'w') as f:
+            json.dump(config_data, f, indent=2)
+    except Exception as e:
+        print(f"Error saving config: {e}", flush=True)
+
+def load_config():
+    """Load strategy filter configuration from config.json"""
+    global TREND_HIGH_VOLUME_ONLY, STRATEGY_CONFIG
+    global SIDEWAYS_HIGH_VOLUME_ONLY
+    
+    try:
+        if os.path.exists('config.json'):
+            with open('config.json', 'r') as f:
+                config_data = json.load(f)
+                
+            STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ADX'] = config_data.get('TREND_MIN_ADX', STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ADX'])
+            STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ATR_PCT'] = config_data.get('TREND_MIN_ATR', STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ATR_PCT'])
+            TREND_HIGH_VOLUME_ONLY = config_data.get('TREND_HIGH_VOLUME_ONLY', TREND_HIGH_VOLUME_ONLY)
+            STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX'] = config_data.get('SIDEWAYS_MAX_ADX', STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX'])
+            STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MIN_ATR_PCT'] = config_data.get('SIDEWAYS_MIN_ATR', STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MIN_ATR_PCT'])
+            SIDEWAYS_HIGH_VOLUME_ONLY = config_data.get('SIDEWAYS_HIGH_VOLUME_ONLY', SIDEWAYS_HIGH_VOLUME_ONLY)
+            
+            print("Config loaded from config.json", flush=True)
+        else:
+            # Create default config file
+            save_config()
+            print("Created default config.json", flush=True)
+    except Exception as e:
+        print(f"Error loading config: {e}, using defaults", flush=True)
+
+# =========================
+# SAVE SIGNAL
+# =========================
+
+def save_signal(
+    signal_id,
+    symbol,
+    side,
+    grade,
+    score,
+    entry,
+    sl,
+    tp1,
+    tp2
+):
+
+    file_exists = os.path.isfile(
+        'signals.csv'
+    )
+
+    with open(
+        'signals.csv',
+        'a',
+        newline=''
+    ) as file:
+
+        writer = csv.writer(file)
+
+        if not file_exists:
+
+            writer.writerow([
+                'signal_id',
+                'time',
+                'symbol',
+                'side',
+                'grade',
+                'score',
+                'entry',
+                'sl',
+                'tp1',
+                'tp2',
+                'result'
+            ])
+
+        writer.writerow([
+            signal_id,
+            int(time.time()),
+            symbol,
+            side,
+            grade,
+            score,
+            entry,
+            sl,
+            tp1,
+            tp2,
+            'OPEN'
+        ])
+
+# =========================
+# UPDATE RESULT
+# =========================
+
+def update_signal_result(
+    signal_id,
+    result
+):
+    global current_wins, current_losses, current_loss_streak, pause_trading, pause_until
+
+    rows = []
+
+    with open(
+        'signals.csv',
+        'r'
+    ) as file:
+
+        reader = csv.reader(file)
+
+        for row in reader:
+
+            if (
+                len(row) > 0
+                and row[0] == str(signal_id)
+            ):
+
+                row[-1] = result
+
+            rows.append(row)
+
+    with open(
+        'signals.csv',
+        'w',
+        newline=''
+    ) as file:
+
+        writer = csv.writer(file)
+
+        writer.writerows(rows)
+
+    # =========================
+    # LOSS STREAK TRACKING
+    # =========================
+
+    was_paused = pause_trading  # Track previous state
+
+    # FIX: TRAILED = closed at profit via trailing SL = counts as WIN for streak purposes
+    if result in ("WIN", "TRAILED"):
+        current_wins += 1
+        current_loss_streak = 0  # Reset on win
+    elif result == "LOSS":
+        current_losses += 1
+        current_loss_streak += 1
+
+    # Check if loss streak threshold exceeded
+    if current_loss_streak >= MAX_CONSECUTIVE_LOSSES:
+        pause_trading = True
+        # Send notification only on first trigger (False -> True transition)
+        if not was_paused:
+            from config import PAUSE_RESUME_MINUTES
+            resume_minutes = PAUSE_RESUME_MINUTES if PAUSE_RESUME_MINUTES > 0 else 0
+            if resume_minutes > 0:
+                pause_until = time.time() + (resume_minutes * 60)
+                resume_note = f"\n\n⏱ Auto-resume in {resume_minutes} min"
+            else:
+                pause_until = 0
+                resume_note = "\n\nManual resume required (/resume)"
+            send_telegram(
+                f"🛑 LOSS STREAK DETECTED\n\n"
+                f"Consecutive Losses: {current_loss_streak}"
+                f"{resume_note}"
+            )
+    else:
+        pause_trading = False
+
+    # Fetch current balance for debug visibility
+    try:
+        debug_balance = exchange.fetch_balance()
+        current_balance = float(debug_balance['total'].get('USDT', 0.0))
+    except Exception:
+        current_balance = 0.0
+
+    # Send debug message with loss streak status
+    send_telegram(
+        f"📊 LOSS STREAK DEBUG\n\n"
+        f"Current Wins: {current_wins}\n"
+        f"Current Losses: {current_losses}\n"
+        f"Current Loss Streak: {current_loss_streak}\n"
+        f"💰 Balance: {current_balance:.2f} USDT"
+    )
+# =========================
+# TELEGRAM COMMANDS HANDLERS
+# =========================
+# All handlers are registered in telegram_commands.py module
+# Import after bot is created below
+
+
+# =========================
+# HELPER FUNCTIONS
+# =========================
+
+def calculate_trade_levels(
+    entry,
+    atr,
+    side,
+    regime="TRENDING",
+    ai_override=None
+):
+    # Dynamic RR based on config
+    import config as main_config
+    strat_config = STRATEGY_CONFIG.get(regime, STRATEGY_CONFIG['TRENDING'])
+    sl_mult = strat_config.get('SL_ATR_MULT', 2.0)
+    tp_rr = strat_config.get('TP_RR', 1.5)
+
+    if ai_override and ai_override.get("approved") and ai_override.get("confidence", 0) >= getattr(main_config, 'AI_FILTER_MIN_CONFIDENCE', 75):
+        if ai_override.get("sl_atr_mult"):
+            sl_mult = ai_override.get("sl_atr_mult")
+        if ai_override.get("tp_rr_ratio"):
+            tp_rr = ai_override.get("tp_rr_ratio")
+
+    sl_dist = atr * sl_mult
+
+    if side == "LONG":
+        sl = round(
+            entry - sl_dist,
+            4
+        )
+        risk = entry - sl
+        tp1 = round(
+            entry + risk,
+            4
+        )
+        tp2 = round(
+            entry + (risk * tp_rr),
+            4
+        )
+        rr = round(
+            (tp2 - entry) / risk,
+            2
+        ) if risk > 0 else 0
+        return sl, tp1, tp2, rr
+
+    sl = round(
+        entry + sl_dist,
+        4
+    )
+    risk = sl - entry
+    tp1 = round(
+        entry - risk,
+        4
+    )
+    tp2 = round(
+        entry - (risk * tp_rr),
+        4
+    )
+    rr = round(
+        (entry - tp2) / risk,
+        2
+    ) if risk > 0 else 0
+    return sl, tp1, tp2, rr
+
+# =========================
+
+def build_signal_message(
+    symbol,
+    side,
+    grade,
+    score,
+    entry,
+    sl,
+    tp1,
+    tp2,
+    rr,
+    rsi,
+    adx,
+    atr_percent,
+    volume_high,
+    btc_trend,
+    local_regime="",
+    btc_regime=""
+):
+    icon = "🚀" if side == "LONG" else "🔻"
+    return f"""
+{icon} {side} SIGNAL
+
+{symbol}
+
+Coin Regime:
+{local_regime}
+
+Active Strategy:
+TREND
+
+Grade:
+{grade}
+
+Score:
+{score}/100
+
+Pullback Entry:
+{entry}
+
+SL:
+{sl}
+
+TP2:
+{tp2}
+
+RR:
+1:{rr}
+
+RSI:
+{round(rsi,2)}
+
+ADX:
+{round(adx,2)}
+
+ATR %:
+{round(atr_percent,2)}
+
+Volume:
+{"HIGH" if volume_high else "NORMAL"}
+
+BTC Trend:
+{btc_trend}
+
+Plan:
+- Full TP2 target
+- Fixed SL
+- No partial close
+"""
+
+# =========================
+
+def get_side_config(side):
+    if side == "LONG":
+        return {
+            "stop_side": "sell",
+            "position_side": "LONG"
+        }
+
+    return {
+        "stop_side": "buy",
+        "position_side": "SHORT"
+    }
+
+# =========================
+
+# place_protection_orders moved to bingx_client.py
+
+# =========================
+# AUTO TRADE HELPERS
+# =========================
+
+def passes_grade_filter(grade, min_grade):
+    """Check if grade meets minimum auto trade grade."""
+    if grade not in GRADE_PRIORITY or min_grade not in GRADE_PRIORITY:
+        return False
+    return GRADE_PRIORITY[grade] >= GRADE_PRIORITY[min_grade]
+
+def can_open_trade(side):
+    """Check if new trade can be opened based on position limits."""
+    with state_lock:
+        trade_items = list(active_trades.values())
+    
+    # Count active trades (PENDING or OPEN) regardless of side
+    active_longs = sum(
+        1 for t in trade_items
+        if t.get("status") in ["PENDING", "OPEN"]
+        and t.get("side") == "LONG"
+    )
+    
+    active_shorts = sum(
+        1 for t in trade_items
+        if t.get("status") in ["PENDING", "OPEN"]
+        and t.get("side") == "SHORT"
+    )
+    
+    total_active_positions = active_longs + active_shorts
+    
+    # Debug logging
+    print(f"[POSITION_LIMIT] Active positions: {total_active_positions}/{MAX_ACTIVE_TRADES} (LONG: {active_longs}, SHORT: {active_shorts})", flush=True)
+    
+    # Check global limit first
+    if total_active_positions >= MAX_ACTIVE_TRADES:
+        print(f"[POSITION_LIMIT] Global limit reached: {total_active_positions} >= {MAX_ACTIVE_TRADES}", flush=True)
+        return False
+    
+    # If global limit not reached, check side-specific limits
+    if side.upper() == "LONG":
+        return active_longs < MAX_LONG_TRADES
+    else:
+        return active_shorts < MAX_SHORT_TRADES
+
+def check_trend_filters(atr_percent, adx, volume_high):
+    """Check if trade meets TREND strategy filter requirements.
+    
+    Returns:
+        (passes, reason) tuple
+        passes: True if all filters pass, False otherwise
+        reason: Skip reason string if fails, None if passes
+    """
+    
+    if atr_percent < STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ATR_PCT']:
+        return False, "ATR too low"
+    
+    if adx < STRATEGY_CONFIG['TRENDING']['FILTERS']['MIN_ADX']:
+        return False, "ADX too low"
+    
+    if TREND_HIGH_VOLUME_ONLY and not volume_high:
+        return False, "Volume not high"
+    
+    return True, None
+
+def check_sideways_filters(atr_percent, adx, volume_high):
+    """Check if trade meets SIDEWAYS strategy filter requirements.
+    
+    Returns:
+        (passes, reason) tuple
+        passes: True if all filters pass, False otherwise
+        reason: Skip reason string if fails, None if passes
+    """
+    
+    if atr_percent < STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MIN_ATR_PCT']:
+        return False, "ATR too low"
+    
+    if adx > STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX']:
+        return False, "ADX too high"
+    
+    if SIDEWAYS_HIGH_VOLUME_ONLY and not volume_high:
+        return False, "Volume not high"
+    
+    return True, None
+
+# =========================
+# TRADING FUNCTIONS
+# =========================
+
+def get_latest_signal(symbol, side=None):
+    """Get the latest signal for a symbol.
+    
+    Bug Fix: เพิ่ม side parameter เพื่อหา signal ที่ตรงกับ side ที่ขอ
+    ป้องกันกรณีที่มีทั้ง LONG และ SHORT signal อยู่พร้อมกัน
+    แล้วบอทเลือก signal ผิด side ทำให้ execute_trade fail
+    
+    Args:
+        symbol: Trading symbol
+        side: 'LONG' or 'SHORT' (optional) — ถ้าระบุจะหาเฉพาะ side นี้
+    """
+    with state_lock:
+        trade_items = list(active_trades.values())
+
+    # เรียงตาม created_at ล่าสุดก่อน
+    trade_items.sort(key=lambda t: t.get('created_at', 0), reverse=True)
+
+    for trade in trade_items:
+
+        if (
+            trade['symbol'] == symbol
+            and trade['status'] == "SIGNAL"
+        ):
+            # ถ้าระบุ side ให้ตรวจว่าตรงกัน
+            if side and trade.get('side', '').upper() != side.upper():
+                continue
+
+            return {
+                "signal": trade['side'],
+                "entry": trade['entry'],
+                "sl": trade['sl'],
+                "tp": trade['tp2'],
+                "atr": trade.get('atr', abs(trade['entry'] - trade['sl']) / 1.5),
+                "sl_atr_mult": trade.get('sl_atr_mult', 1.5),
+                "signal_regime": trade.get("signal_regime", "UNKNOWN"),
+                "strategy": trade.get("strategy", "UNKNOWN"),
+                "grade": trade.get("grade", "C"),
+                "score": trade.get("score", 0)
+            }
+
+    return None
+
+
+# execute_trade moved to bingx_client.py
+
+# =========================
+# MARKET REGIME DETECTION
+# =========================
+
+def detect_market_regime():
+    """Detect current BTC market regime: MOMENTUM, TRENDING, SCALPING, PAUSE, SIDEWAYS, or VOLATILE.
+
+    Priority: MOMENTUM > VOLATILE > TRENDING > SCALPING > PAUSE > SIDEWAYS
+
+    SCALPING regime = moderate activity zone:
+    - ADX between SCALPING_DETECT_ADX_MIN and SCALPING_DETECT_ADX_MAX
+    - ATR% between SCALPING_DETECT_ATR_MIN and SCALPING_DETECT_ATR_MAX
+    - Not too trending, not too dead — price oscillating enough for scalps
+
+    Returns:
+        (regime, btc_adx, btc_atr_percent) tuple
+    """
+    try:
+        df_1h = get_dataframe('BTC/USDT', '1h')
+        btc = df_1h.iloc[-2]
+
+        btc_adx = round(btc['adx'], 2)
+        btc_atr_percent = round((btc['atr'] / btc['close']) * 100, 2)
+        
+        # EMA alignment for trend confirmation
+        is_uptrend = btc['ema7'] > btc['ema25'] > btc['ema99']
+        is_downtrend = btc['ema7'] < btc['ema25'] < btc['ema99']
+        has_trend_alignment = is_uptrend or is_downtrend
+
+        # MOMENTUM: strongest trend, price far from EMA7, consecutive candles
+        momentum_info = detect_momentum('BTC/USDT')
+        if momentum_info['is_momentum']:
+            return "MOMENTUM", btc_adx, btc_atr_percent
+
+        # VOLATILE has next priority
+        if btc_atr_percent >= MARKET_REGIME_ATR_VOLATILE:
+            return "VOLATILE", btc_adx, btc_atr_percent
+
+        if btc_adx >= MARKET_REGIME_ADX_TRENDING:
+            if has_trend_alignment:
+                return "TRENDING", btc_adx, btc_atr_percent
+            elif btc_atr_percent >= SCALPING_DETECT_ATR_MIN:
+                # Fallback to scalping if ADX is high but EMAs aren't perfectly aligned
+                return "SCALPING", btc_adx, btc_atr_percent
+
+        # SCALPING: moderate activity zone (between TRENDING and SIDEWAYS)
+        if (SCALPING_DETECT_ADX_MIN <= btc_adx < SCALPING_DETECT_ADX_MAX
+            and SCALPING_DETECT_ATR_MIN <= btc_atr_percent <= SCALPING_DETECT_ATR_MAX):
+            return "SCALPING", btc_adx, btc_atr_percent
+
+        # PAUSE: Dead market zone (Too tight for scalping or anything)
+        if btc_adx < PAUSE_MAX_ADX and btc_atr_percent < PAUSE_MAX_ATR:
+            return "PAUSE", btc_adx, btc_atr_percent
+
+        if btc_adx < MARKET_REGIME_ADX_SIDEWAYS:
+            return "SIDEWAYS", btc_adx, btc_atr_percent
+
+        # Default to SIDEWAYS if between thresholds (safer than TRENDING)
+        return "SIDEWAYS", btc_adx, btc_atr_percent
+
+    except Exception:
+        print("Market regime detection error", flush=True)
+        print(traceback.format_exc(), flush=True)
+        # Bug fix: เปลี่ยน fallback จาก TRENDING → SIDEWAYS
+        # TRENDING fallback อันตราย เพราะทำให้บอทส่ง signal สวนตลาดได้
+        # SIDEWAYS ปลอดภัยกว่า รอสัญญาณชัดก่อนเข้า
+        return "SIDEWAYS", 0, 0
+
+
+# =========================
+# ANALYZE - Strategy Dispatcher
+# =========================
+
+def analyze(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False):
+    """Route to the correct analysis strategy based on MARKET_MODE and per-coin regime.
+    
+    Feature 8: Respect CONTROL_MODE override.
+    - If FORCE_TREND: always use trend analysis
+    - If FORCE_SIDEWAY: always use sideways analysis
+    - If AUTO: use per-coin regime (local_regime) instead of BTC regime
+    """
+    try:
+        df_15m = get_dataframe(symbol, '15m')
+        df_1h = get_dataframe(symbol, '1h')
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch data for {symbol}: {e}")
+        set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time(), "mode": "UNKNOWN"})
+        return {"symbol": symbol, "result": "error"}
+
+    local_regime = detect_symbol_regime(df_1h)
+    
+    # Determine effective mode
+    effective_mode = local_regime if local_regime != "PAUSE" else MARKET_MODE
+    if CONTROL_MODE == "FORCE_TREND":
+        effective_mode = "TRENDING"
+    elif CONTROL_MODE == "FORCE_SIDEWAY":
+        effective_mode = "SIDEWAYS"
+    elif CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]:
+        effective_mode = "SCALPING"
+    elif CONTROL_MODE == "SCALP_SIDEWAYS":
+        btc_trend_val = get_btc_trend()
+        if local_regime in ["SIDEWAYS", "PAUSE"] or btc_trend_val == "neutral":
+            effective_mode = "SIDEWAYS"
+        else:
+            effective_mode = "SCALPING"
+    elif CONTROL_MODE == "FORCE_PAUSE":
+        effective_mode = "PAUSE"
+    elif CONTROL_MODE == "AUTO":
+        effective_mode = local_regime
+
+    if effective_mode == "PAUSE":
+        set_scan_result(symbol, {"status": "Market Paused", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        return {"symbol": symbol, "result": "paused"}
+
+    btc_regime = MARKET_MODE
+
+    kwargs = {
+        'bypass_cooldown': bypass_cooldown,
+        'silent_mode': silent_mode,
+        'signal_only': signal_only,
+        'df_15m': df_15m,
+        'df_1h': df_1h,
+        'local_regime': local_regime,
+        'btc_regime': btc_regime
+    }
+
+    if effective_mode == "SIDEWAYS":
+        res = analyze_sideways(symbol, **kwargs)
+    elif effective_mode == "MOMENTUM":
+        # res = analyze_momentum(symbol, **kwargs)
+        # MOMENTUM mode disabled (per A/B test results), fallback to TREND which performs much better in high ADX
+        res = analyze_trend(symbol, **kwargs)
+    elif effective_mode == "SCALPING":
+        res = analyze_scalping(symbol, **kwargs)
+    else:
+        res = analyze_trend(symbol, **kwargs)
+        
+    if symbol in scan_results and isinstance(scan_results[symbol], dict):
+        scan_results[symbol]['mode'] = effective_mode
+        
+    return res
+
+
+
+# =========================
+# ANALYZE SCALPING
+# =========================
+
+def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, df_1h=None, local_regime="", btc_regime=""):
+    """Scalping regime analysis — 15m primary timeframe with rule-based optimizations:
+    1. 1H BB Width (vs 40-bar median) for Dead/Hyper Volatility gating.
+    2. ADX-scaled Dynamic 1H StochRSI & 15m Structure.
+    3. EMA25 Slope-adjusted Anti-Chase threshold.
+    """
+    global pause_trading
+
+    if pause_trading:
+        set_scan_result(symbol, {"status": "Market Paused", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        return {"symbol": symbol, "result": "paused"}
+
+    if symbol not in SCALPING_SYMBOLS:
+        set_scan_result(symbol, {"status": "Not in SCALPING_SYMBOLS", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        return {"symbol": symbol, "result": "skipped"}
+
+    try:
+        now = time.time()
+
+        # Cooldown check
+        if not bypass_cooldown and not ignore_cooldown_once:
+            with state_lock:
+                last_time = last_alert.get((symbol, "SCALPING"))
+            if last_time and now - last_time < STRATEGY_CONFIG['SCALPING']['COOLDOWN']:
+                set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                return {"symbol": symbol, "result": "skipped"}
+
+        # Post-Exit cooldown
+        WIN_COOLDOWN = STRATEGY_CONFIG['SCALPING'].get('WIN_COOLDOWN', 600)
+        LOSS_COOLDOWN = STRATEGY_CONFIG['SCALPING'].get('LOSS_COOLDOWN', 1800)
+        if not bypass_cooldown and not ignore_cooldown_once:
+            with state_lock:
+                last_closed = trade_manager.last_closed_trade.get((symbol, "SCALPING"))
+            if last_closed:
+                closed_time = last_closed.get("time", 0)
+                closed_result = last_closed.get("result")
+                elapsed = now - closed_time
+
+                if closed_result in ("WIN", "TRAILED") and elapsed < WIN_COOLDOWN:
+                    remaining = int((WIN_COOLDOWN - elapsed) / 60) + 1
+                    status_msg = f"Win Cooldown ({remaining}m left)"
+                    set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                    return {"symbol": symbol, "result": "skipped"}
+
+                if closed_result == "LOSS" and elapsed < LOSS_COOLDOWN:
+                    remaining = int((LOSS_COOLDOWN - elapsed) / 60) + 1
+                    status_msg = f"Loss Cooldown ({remaining}m left)"
+                    set_scan_result(symbol, {"status": status_msg, "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                    return {"symbol": symbol, "result": "skipped"}
+
+        # Data Fetching
+        base_tf = STRATEGY_CONFIG['SCALPING'].get('BASE_TF', '15m')
+        df_3m = get_dataframe(symbol, base_tf)  # 15m trigger timeframe
+        if df_1h is None:
+            df_1h = get_dataframe(symbol, '1h')
+        df_5m = get_dataframe(symbol, '5m')
+
+        if len(df_3m) < 45 or len(df_1h) < 45:
+            set_scan_result(symbol, {"status": "Insufficient Data", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+            return {"symbol": symbol, "result": "skipped"}
+
+        m3  = df_3m.iloc[-2]  # Trigger candle (15m)
+        h1  = df_1h.iloc[-2]  # Macro candle (1H)
+        m5  = df_5m.iloc[-2]  # Micro candle (5m)
+
+        now_ts = now
+        signal_id = str(uuid.uuid4())[:8]
+
+        atr_percent = (m3['atr'] / m3['close']) * 100
+        adx_val     = round(m3['adx'], 2)
+        atr_val     = round(atr_percent, 2)
+        rsi_val     = round(m3['rsi'], 2)
+        volume_high = m3['volume'] > (m3['vol_avg'] * 1.5)
+        vol_status  = "HIGH" if volume_high else "NORMAL"
+        scalp_filters = STRATEGY_CONFIG['SCALPING']['FILTERS']
+
+        # Context Data & Indicator Calculations (คำนวณไว้ด้านบนสุดเพื่อให้ทุกด่านส่งค่าลง Debug Log ได้ครบ)
+        btc_trend = get_btc_trend()
+        vwap_val = m3['vwap']
+        is_above_vwap = m3['close'] > vwap_val
+        prev1_vwap = df_3m.iloc[-3]
+        vwap_confirmed_above = is_above_vwap and (prev1_vwap['close'] > prev1_vwap['vwap'])
+        vwap_confirmed_below = (not is_above_vwap) and (prev1_vwap['close'] < prev1_vwap['vwap'])
+
+        is_green = m3['close'] > m3['open']
+        is_red   = m3['close'] < m3['open']
+        stoch_rsi = m3.get('stoch_rsi', 50)
+        stretch_pct = abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100
+        ema7_dist_pct = (m3['close'] - m3['ema7']) / m3['ema7'] * 100
+
+        # =====================================================================
+        # จุดที่ 1: EMA25 SLOPE CALCULATION (15m)
+        # =====================================================================
+        # วัดความชันย้อนหลัง 2 แท่งบนแท่งปิด: (EMA25[-2] - EMA25[-4]) / EMA25[-4] * 100
+        ema25_cur = df_3m.iloc[-2]['ema25']
+        ema25_prev2 = df_3m.iloc[-4]['ema25']
+        ema25_slope = ((ema25_cur - ema25_prev2) / ema25_prev2) * 100 if ema25_prev2 > 0 else 0.0
+
+        # ถ้าไม่ใช่แท่งเขียว ให้ข้ามไปเงียบๆ (อัปเดตสถานะใน /scanreport แต่ไม่เขียนลงชีต Debug เพื่อไม่ให้รก)
+        if not is_green:
+            set_scan_result(symbol, {"status": "Red Candle (Wait Green)", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            return {"symbol": symbol, "result": "skipped"}
+
+        def _reject(reason):
+            set_scan_result(symbol, {"status": reason, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(
+                symbol, reason, strategy="SCALPING", score=100, adx=adx_val, atr=atr_val,
+                vwap_position="ABOVE" if is_above_vwap else "BELOW",
+                stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2),
+                candle_color="GREEN" if is_green else "RED"
+            )
+            return reason
+
+        # Re-entry near loss entry guard (บันทึกลง Debug ด้วยถ้าเป็นแท่งเขียว)
+        RE_ENTRY_GUARD_WINDOW = 7200
+        if not bypass_cooldown and not ignore_cooldown_once:
+            with state_lock:
+                last_closed_reentry = trade_manager.last_closed_trade.get((symbol, "SCALPING"))
+            if last_closed_reentry and last_closed_reentry.get("result") == "LOSS":
+                loss_elapsed = now - last_closed_reentry.get("time", 0)
+                if loss_elapsed < RE_ENTRY_GUARD_WINDOW:
+                    last_loss_entry = last_closed_reentry.get("entry")
+                    if last_loss_entry and abs(m3['close'] - last_loss_entry) < (m3['atr'] * 0.3):
+                        _reject("Blocked: Re-entry Guard (near prior loss entry)")
+                        return {"symbol": symbol, "result": "skipped"}
+
+        # =====================================================================
+        # จุดที่ 2: DIRECTIONAL STRONG TREND & UPTREND STOCH BYPASS
+        # =====================================================================
+        # ต้องมี ema25_slope > 0 กำกับเสมอ เพื่อไม่ให้ช่วงตลาดทุบแรง (ADX สูงจากขาลง) ได้สิทธิ์ข้ามด่าน
+        strong_trend = (
+            adx_val >= scalp_filters.get('STRONG_TREND_ADX_BYPASS', 25)
+            and ema25_slope > 0
+        )
+
+        micro_5m_ok = (m5['ema7'] >= m5['ema25']) and (m5['close'] >= m5['ema7'])
+
+        # อนุโลมเพดาน StochRSI เมื่อเป็นขาขึ้นแบบค่อยๆ ไต่ (Grinding Uptrend) ที่โครงสร้างผ่านครบ
+        # แก้ปัญหา Catch-22: พอ 15m EMA7 ตัดขึ้นเหนือ EMA25 สำเร็จแต่ ADX ย่อลงมาอยู่โซน 18-25 แล้วติด StochRSI ยาว
+        uptrend_stoch_bypass = (
+            scalp_filters.get('ENABLE_UPTREND_STOCH_BYPASS', True)
+            and (m3['ema7'] > m3['ema25'])
+            and (ema25_slope >= scalp_filters.get('UPTREND_SLOPE_BYPASS_MIN', 0.03))
+            and vwap_confirmed_above
+            and micro_5m_ok
+        )
+
+        # =====================================================================
+        # จุดที่ 3: 1H BOLLINGER BANDS WIDTH (BBW) VS 40-CANDLE MEDIAN GATING
+        # =====================================================================
+        # คำนวณ BB Width = (BB_Upper - BB_Lower) / BB_Mid * 100
+        h1_bbw = ((h1['bb_upper'] - h1['bb_lower']) / h1['bb_mid']) * 100 if h1['bb_mid'] > 0 else 0
+        h1_window_40 = df_1h.iloc[-42:-2]
+        h1_bbw_series = ((h1_window_40['bb_upper'] - h1_window_40['bb_lower']) / h1_window_40['bb_mid']) * 100
+        median_bbw_40 = float(h1_bbw_series.median()) if len(h1_bbw_series) > 0 else 1.0
+
+        dead_market_ratio = 0.60
+        hyper_vol_ratio = 2.50
+
+        if not (strong_trend or uptrend_stoch_bypass) and h1_bbw < (median_bbw_40 * dead_market_ratio):
+            _reject(f"Blocked: 1H BBW Squeeze / Dead Market ({round(h1_bbw, 2)}% < {round(median_bbw_40 * dead_market_ratio, 2)}%)")
+            return {"symbol": symbol, "result": "skipped"}
+
+        if not (strong_trend or uptrend_stoch_bypass) and h1_bbw > (median_bbw_40 * hyper_vol_ratio):
+            _reject(f"Blocked: 1H BBW Hyper Volatility ({round(h1_bbw, 2)}% > {round(median_bbw_40 * hyper_vol_ratio, 2)}%)")
+            return {"symbol": symbol, "result": "skipped"}
+
+        # ADX Limits (บันทึกลง Debug ทุกครั้งที่แท่งเขียวโดนบล็อก)
+        scalp_min_adx = scalp_filters.get('MIN_ADX', 18)
+        scalp_max_adx = scalp_filters.get('MAX_ADX', 50)
+        if adx_val < scalp_min_adx:
+            _reject(f"Blocked: ADX Too Low ({adx_val} < {scalp_min_adx})")
+            return {"symbol": symbol, "result": "skipped"}
+        if adx_val > scalp_max_adx:
+            _reject(f"Blocked: ADX Too High ({adx_val} > {scalp_max_adx})")
+            return {"symbol": symbol, "result": "skipped"}
+
+        # FOMO Filter (บันทึกลง Debug ทุกครั้งที่แท่งเขียวโดนบล็อก)
+        candle_size = abs(m3['close'] - m3['open'])
+        if candle_size > m3['atr'] * 1.5:
+            _reject("Blocked: Candle Too Big (> 1.5x ATR)")
+            return {"symbol": symbol, "result": "skipped"}
+
+        def check_side(side):
+            # 1. VWAP Confirmation (ยืนเหนือต้นทุนเฉลี่ยวัน)
+            if not strong_trend and not vwap_confirmed_above:
+                return "Blocked: Below VWAP (LONG forbidden)"
+
+            # 2. EMA Alignment (EMA7 > EMA25 ยืนยันแนวโน้มขาขึ้น)
+            if not (m3['ema7'] > m3['ema25']):
+                return "Blocked: 15m EMA7 not above EMA25"
+
+            # 3. 5m Micro-Trend Alignment
+            if scalp_filters.get('ENABLE_5M_MICRO_TREND', True):
+                if not micro_5m_ok:
+                    return "Blocked: 5m Micro-Trend Bearish"
+
+            # 4. 15m Lower Highs (ยอดเตี้ยลง 3 แท่งติด)
+            if scalp_filters.get('ENABLE_15M_LOWER_HIGHS', True):
+                _h2, _h3, _h4 = df_3m.iloc[-2]['high'], df_3m.iloc[-3]['high'], df_3m.iloc[-4]['high']
+                if _h2 < _h3 < _h4:
+                    return "Blocked: 15m Lower Highs Forming"
+
+            # 5. 1H Rejection Wick Guard (ตรวจไส้บนแท่ง 1H)
+            body_h1 = abs(h1['close'] - h1['open'])
+            range_h1 = h1['high'] - h1['low']
+            if range_h1 > 0:
+                upper_wick_h1 = h1['high'] - max(h1['close'], h1['open'])
+                if upper_wick_h1 > body_h1 * 1.0 and upper_wick_h1 > range_h1 * 0.35:
+                    return "Blocked: 1H Upper Wick Rejection"
+
+            # 6. 15m Rejection Wick Filter (กันโดนเทขายแท่ง 15m)
+            body_m3 = abs(m3['close'] - m3['open'])
+            range_m3 = m3['high'] - m3['low']
+            prev1 = df_3m.iloc[-3]
+            body_prev1 = abs(prev1['close'] - prev1['open'])
+            range_prev1 = prev1['high'] - prev1['low']
+
+            upper_wick_m3 = m3['high'] - max(m3['close'], m3['open'])
+            upper_wick_prev1 = prev1['high'] - max(prev1['close'], prev1['open'])
+            if (upper_wick_m3 > body_m3 * 1.2 and upper_wick_m3 > range_m3 * 0.35) or \
+               (upper_wick_prev1 > body_prev1 * 1.2 and upper_wick_prev1 > range_prev1 * 0.35):
+                return "Blocked: Upper Wick Rejection"
+
+            # 7. Swing High Clearance (ซื้อจ่อใต้ยอด 12 แท่งล่าสุดไม่ได้)
+            if scalp_filters.get('ENABLE_SWING_HIGH_CLEARANCE', True):
+                swing_high_12 = df_3m.iloc[-14:-2]['high'].max()
+                clr_mult = scalp_filters.get('SWING_HIGH_CLEARANCE_ATR', 1.3)
+                if m3['close'] < swing_high_12 and (swing_high_12 - m3['close']) < (m3['atr'] * clr_mult):
+                    return f"Blocked: Clearance to Swing High < {clr_mult}x ATR"
+
+            # 8. Room to 15m EMA99 (ใต้ EMA99 ต้องมีพื้นที่ว่างก่อนชนแนวต้าน)
+            if scalp_filters.get('ENABLE_EMA99_ROOM', True):
+                ema99_15m = m3.get('ema99')
+                if ema99_15m is not None and ema99_15m == ema99_15m and m3['close'] < ema99_15m:
+                    room_mult = scalp_filters.get('EMA99_ROOM_ATR', 1.2)
+                    if (ema99_15m - m3['close']) < (m3['atr'] * room_mult):
+                        return f"Blocked: Too Close Under 15m EMA99 (< {room_mult}x ATR)"
+
+            # 9. Anti-Chase Guard (EMA25 Slope-adjusted)
+            base_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT', 0.8)
+            if ema25_slope >= 0.08:
+                slope_scale = min(1.3, base_mult + (ema25_slope * 4.0))
+            elif ema25_slope <= 0.02:
+                slope_scale = max(0.40, base_mult * 0.6)
+            else:
+                slope_scale = base_mult
+
+            anti_chase_floor_pct = scalp_filters.get('ANTI_CHASE_MIN_PCT', 0.30)
+            anti_chase_threshold = max(anti_chase_floor_pct, atr_val * slope_scale)
+
+            if ema7_dist_pct > anti_chase_threshold:
+                return f"Blocked: Anti-Chase LONG (Stretch {round(ema7_dist_pct, 2)}% > Limit {round(anti_chase_threshold, 2)}% | Slope {round(ema25_slope, 3)}%)"
+
+            # 10. 15m StochRSI Ceiling (เช็กหลังโครงสร้างและ Anti-Chase ผ่านหมดแล้ว พร้อมอนุโลมเมื่อเป็น Grinding Uptrend)
+            stoch_max = scalp_filters.get('STOCH_OVERBOUGHT_MAX', 85)
+            if not (strong_trend or uptrend_stoch_bypass) and stoch_rsi > stoch_max:
+                return f"Blocked: StochRSI Overbought Ceiling ({round(stoch_rsi, 1)} > {stoch_max} | Slope {round(ema25_slope, 3)}%)"
+
+            # 11. Dynamic 1H StochRSI Guard (Scaled with ADX)
+            stoch_rsi_1h = h1.get('stoch_rsi', 50)
+            adx_factor = max(0.0, (adx_val - 25.0) * 0.8)
+            dynamic_long_stoch_min = max(15.0, 30.0 - adx_factor)
+
+            if scalp_filters.get('ENABLE_1H_STOCH_OVERSOLD_BLOCK', False) and \
+               not strong_trend and stoch_rsi_1h < dynamic_long_stoch_min:
+                return f"Blocked: 1H StochRSI Oversold ({round(stoch_rsi_1h, 1)} < Dynamic {round(dynamic_long_stoch_min, 1)})"
+
+            # 12. RSI Momentum Bound (เพดาน 68)
+            if m3['rsi'] > scalp_filters.get('RSI_SAFE_LONG_MAX', 68):
+                return f"Blocked: RSI Overbought ({rsi_val} > {scalp_filters.get('RSI_SAFE_LONG_MAX', 68)})"
+
+            return None
+
+        # =========================================================
+        # EXECUTE PIPELINE (LONG ONLY FOR SPOT DCA)
+        # =========================================================
+        long_reject_reason = check_side("LONG")
+        if long_reject_reason is not None:
+            _reject(long_reject_reason)
+            return {"symbol": symbol, "result": "skipped"}
+
+        side = "LONG"
+        entry = round(m3['close'], 4)
+        grade = "PASS"
+        score = 100
+
+        # SL / TP Dynamic Calculations
+        atr = m3['atr']
+        adx_3_ago = df_3m.iloc[-5]['adx'] if len(df_3m) >= 5 else adx_val
+        adx_fading = adx_val < adx_3_ago
+
+        _dyn_sl_cfg = STRATEGY_CONFIG['SCALPING']
+        _dyn_threshold = _dyn_sl_cfg.get('DYNAMIC_SL_ATR_THRESHOLD', 1.00)
+        if _dyn_sl_cfg.get('DYNAMIC_SL_ENABLED', False) and (atr_val >= _dyn_threshold or adx_fading):
+            sl_atr_mult = _dyn_sl_cfg.get('DYNAMIC_SL_MULT_HIGH_NOISE', 1.8)
+            dynamic_sl_mode = "HIGH_NOISE"
+        else:
+            sl_atr_mult = _dyn_sl_cfg.get('DYNAMIC_SL_MULT_NORMAL', 1.5)
+            dynamic_sl_mode = "NORMAL"
+
+        if side == "LONG":
+            sl   = round(entry - (atr * sl_atr_mult), 4)
+            risk = entry - sl
+            tp2  = round(entry + (risk * STRATEGY_CONFIG['SCALPING']['TP_RR']), 4)
+            tp1  = round(entry + risk, 4)
+            rr   = round((tp2 - entry) / (entry - sl), 2)
+        else:
+            sl   = round(entry + (atr * sl_atr_mult), 4)
+            risk = sl - entry
+            tp2  = round(entry - (risk * STRATEGY_CONFIG['SCALPING']['TP_RR']), 4)
+            tp1  = round(entry - risk, 4)
+            rr   = round((entry - tp2) / (sl - entry), 2)
+
+        # Message & Dispatch
+        side_icon = "🟩" if side == "LONG" else "🟥"
+        dynamic_sl_line = f"🛡️ Dynamic SL: {'🔥 HIGH NOISE' if dynamic_sl_mode == 'HIGH_NOISE' else '🟢 NORMAL'} ({sl_atr_mult}x ATR)"
+
+        # ---------- Spot signal message (เฉพาะส่วนสำคัญ ก๊อปไปให้คนอื่นได้) ----------
+        _act_pct = config.INFINITY_ACTIVATION_PCT
+        _lock_pct = config.INFINITY_MIN_LOCK_PCT
+
+        message = f"""⚡ BUY SIGNAL — {symbol} ({side_icon} {side})
+
+ราคาเข้า: {entry}
+เริ่ม Trailing: ≥ {entry * (1 + _act_pct):.4f} (+{_act_pct * 100:.1f}%)
+ล็อกกำไรขั้นต่ำ: {entry * (1 + _lock_pct):.4f} (+{_lock_pct * 100:.1f}%)
+Trail: {config.TRAILING_PCT_TIER1 * 100:.1f}% / {config.TRAILING_PCT_TIER2 * 100:.1f}% / {config.TRAILING_PCT_TIER3 * 100:.1f}% (ตามกำไร)
+ไม่มี Stop Loss
+"""
+        print(message, flush=True)
+
+        if not silent_mode:
+            send_telegram(message)
+
+        if not signal_only:
+            save_signal(signal_id, symbol, side, grade, score, entry, sl, tp1, tp2)
+            with state_lock:
+                last_alert[(symbol, "SCALPING")] = now_ts
+
+            # Logging (เฉพาะโหมดปกติ — Startup/Regime Rescan แบบ read-only ต้องไม่เขียน Sheets/Backtest)
+            try:
+                google_sheet.log_signal(
+                    signal_id=signal_id, symbol=symbol, side=side, grade=grade, score=score,
+                    entry=entry, sl=sl, tp=tp2, atr=atr_val, adx=adx_val, volume=vol_status,
+                    btc_trend=btc_trend, status="SIGNAL", strategy="SCALPING", allocation_decision="ALLOCATED",
+                    skip_reason="", vwap_position="ABOVE" if is_above_vwap else "BELOW",
+                    stoch_rsi=m3['stoch_rsi'], stretch_pct=round(stretch_pct, 2),
+                    candle_color="GREEN" if is_green else "RED", local_regime=local_regime, btc_regime=btc_regime
+                )
+            except Exception as e:
+                print(f"[SCALPING] Google Sheets log error: {e}", flush=True)
+
+            google_sheet.log_fill_analysis(
+                symbol=symbol, side=side, current_price=m3['close'], entry_price=entry,
+                grade=grade, score=score, atr=atr_val, adx=adx_val, btc_trend=btc_trend,
+                fill_status="OPEN", local_regime=local_regime, btc_regime=btc_regime
+            )
+
+            backtest.record_signal(
+                signal_id=signal_id, symbol=symbol, side=side, entry=entry, sl=sl, tp=tp2,
+                grade=grade, score=score, rr=rr, strategy="SCALPING", local_regime=local_regime,
+                btc_regime=btc_regime, adx=adx_val, atr_pct=atr_val, vol_status=vol_status,
+                btc_trend=btc_trend, vwap_pos="ABOVE" if is_above_vwap else "BELOW",
+                stoch_rsi=round(m3['stoch_rsi'], 2), stretch_pct=round(stretch_pct, 2),
+                candle_color="GREEN" if is_green else "RED"
+            )
+
+        set_scan_result(symbol, {
+            "status": "Signal Generated",
+            "score": score,
+            "adx": adx_val,
+            "atr": atr_val,
+            "volume": vol_status,
+            "timestamp": now_ts,
+            "strategy": "SCALPING",
+        })
+
+        candidate_signals[symbol] = {
+            "side": side,
+            "grade": grade,
+            "score": score,
+            "symbol": symbol,
+            "strategy": "SCALPING",
+            "entry": entry,
+        }
+
+        # Auto-Trade: ย้ายไปที่ run_priority_dca_engine() ใน main loop
+        # (อนุญาตซื้อซ้ำเหรียญเดิมหลายไม้ ไม่จำกัด MAX_TRADES ต่อเหรียญ)
+
+        return {"symbol": symbol, "result": "signal", "side": side, "score": score}
+
+    except Exception:
+        print(f"[SCALPING ERROR] {symbol}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        return {"symbol": symbol, "result": "error"}
+
+
+# =========================
+# ANALYZE MOMENTUM
+# =========================
+
+def analyze_momentum(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, df_1h=None, local_regime="", btc_regime=""):
+    """Momentum regime analysis — entry near current price, no pullback wait."""
+
+    global pause_trading
+
+    if pause_trading:
+        return {"symbol": symbol, "result": "paused"}
+
+    try:
+        now = time.time()
+
+        # =========================
+        # STRATEGY_CONFIG.get(local_regime, STRATEGY_CONFIG['TRENDING'])['COOLDOWN']
+        # =========================
+
+        if not bypass_cooldown and not ignore_cooldown_once:
+            with state_lock:
+                last_time = last_alert.get((symbol, "MOMENTUM"))
+            if last_time and now - last_time < STRATEGY_CONFIG.get(local_regime, STRATEGY_CONFIG['TRENDING'])['COOLDOWN']:
+                set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                google_sheet.log_debug(symbol, "Cooldown", strategy="MOMENTUM", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # GET DATA
+        # =========================
+
+        df_4h = get_dataframe(symbol, '4h')
+        if df_1h is None:
+            df_1h = get_dataframe(symbol, '1h')
+        if df_15m is None:
+            df_15m = get_dataframe(symbol, '15m')
+        df_3m = get_dataframe(symbol, '3m')
+
+        h4  = df_4h.iloc[-2]
+        h1  = df_1h.iloc[-2]
+        m15 = df_15m.iloc[-2]
+        m3  = df_3m.iloc[-2]
+
+        now_ts = time.time()
+        signal_id = str(uuid.uuid4())[:8]
+
+        atr_percent = (m3['atr'] / m3['close']) * 100
+        volume_high = m3['volume'] > m3['vol_avg'] * 1.3
+        vol_status  = "HIGH" if volume_high else "NORMAL"
+        adx_val     = round(m3['adx'], 2)
+        atr_val     = round(atr_percent, 2)
+
+        # =========================
+        # TIMEFRAME CONFLUENCE
+        # =========================
+        if m3['adx'] < 20:
+            set_scan_result(symbol, {"status": "3m ADX Too Weak", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, "3m ADX Too Weak for Momentum", strategy="MOMENTUM", score=0, adx=adx_val, atr=atr_val, vwap_position="", stoch_rsi=0, stretch_pct=0, candle_color="")
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # SCORE
+        # =========================
+
+        long_score  = 0
+        short_score = 0
+        btc_trend   = get_btc_trend()
+
+        # =========================
+        # MOMENTUM LOGIC (Aligned with Backtest 3m)
+        # =========================
+
+        # LONG SCORE
+        if m3['ema7'] > m3['ema25']: long_score += 50
+        if m3['ema25'] > m3['ema99']: long_score += 35
+        if m3['adx'] > 25: long_score += 10
+        if m3['rsi'] <= 45: long_score += 25
+
+        # SHORT SCORE
+        if m3['ema7'] < m3['ema25']: short_score += 50
+        if m3['ema25'] < m3['ema99']: short_score += 35
+        if m3['adx'] > 25: short_score += 10
+        if m3['rsi'] >= 55: short_score += 25
+
+        # --- Exhaustion Penalty ---
+        stoch_rsi = m3.get('stoch_rsi', 50)
+        stretch_pct = abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100
+
+        # LONG Penalty
+        if stoch_rsi > 80: long_score -= 30
+        if m3['close'] > m3['ema25'] and stretch_pct > 1.0: long_score -= 20
+        
+        # SHORT Penalty
+        if stoch_rsi < 20: short_score -= 30
+        if m3['close'] < m3['ema25'] and stretch_pct > 1.0: short_score -= 20
+
+        # Volume confirmation (10pts)
+        if volume_high:
+            long_score  += 10
+            short_score += 10
+
+        # =========================
+        # BTC FILTER (Strict Macro Alignment)
+        # =========================
+        if symbol != 'BTC/USDT':
+            if btc_trend == "bullish":
+                short_score = 0  # Forbid SHORT in Bull Market
+            elif btc_trend == "bearish":
+                long_score = 0   # Forbid LONG in Bear Market
+            elif btc_trend == "neutral":
+                long_score -= 20
+                short_score -= 20
+
+        long_score  = min(long_score, 100)
+        short_score = min(short_score, 100)
+
+        # =========================
+        # GRADE
+        # =========================
+
+        score = max(long_score, short_score)
+        grade = "C"
+        min_score = STRATEGY_CONFIG['MOMENTUM']['MIN_SCORE']
+        
+        if score >= min_score + 10 and adx_val > 35 and volume_high:
+            grade = "A+"
+        elif score >= min_score and adx_val > 25:
+            grade = "A"
+        elif score >= min_score - 10:
+            grade = "B"
+
+        # =========================
+        # SCORE FILTER
+        # =========================
+
+        if score < STRATEGY_CONFIG['MOMENTUM']['MIN_SCORE']:
+            set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            google_sheet.log_debug(symbol, "Score Below MIN_SCORE", strategy="MOMENTUM", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # DETERMINE SIDE
+        # =========================
+
+        rsi_val = m3['rsi']
+        if long_score >= short_score and long_score >= STRATEGY_CONFIG['MOMENTUM']['MIN_SCORE'] and btc_trend == "bullish":
+            if rsi_val < STRATEGY_CONFIG['MOMENTUM']['FILTERS']['RSI_MIN_LONG']:
+                set_scan_result(symbol, {"status": "RSI Too Low for Momentum", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"RSI Too Low ({round(rsi_val, 2)} < {STRATEGY_CONFIG['MOMENTUM']['FILTERS']['RSI_MIN_LONG']})", strategy="MOMENTUM", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                return {"symbol": symbol, "result": "skipped"}
+            side  = "LONG"
+            entry = round(m3['ema7'], 4)
+        elif short_score > long_score and short_score >= STRATEGY_CONFIG['MOMENTUM']['MIN_SCORE']:
+            if rsi_val > STRATEGY_CONFIG['MOMENTUM']['FILTERS']['RSI_MAX_SHORT']:
+                set_scan_result(symbol, {"status": "RSI Too High for Momentum", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+                google_sheet.log_debug(symbol, f"RSI Too High ({round(rsi_val, 2)} > {STRATEGY_CONFIG['MOMENTUM']['FILTERS']['RSI_MAX_SHORT']})", strategy="MOMENTUM", score=score, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                return {"symbol": symbol, "result": "skipped"}
+            side  = "SHORT"
+            entry = round(m3['ema7'], 4)
+        else:
+            set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": score, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # SL / TP
+        # =========================
+
+        atr = m3['atr']
+        if side == "LONG":
+            sl   = round(entry - atr * STRATEGY_CONFIG['MOMENTUM']['SL_ATR_MULT'], 4)
+            risk = entry - sl
+            tp2  = round(entry + risk * STRATEGY_CONFIG['MOMENTUM']['TP_RR'], 4)
+            tp1  = round(entry + risk, 4)
+            rr   = round((tp2 - entry) / (entry - sl), 2)
+        else:
+            sl   = round(entry + atr * STRATEGY_CONFIG['MOMENTUM']['SL_ATR_MULT'], 4)
+            risk = sl - entry
+            tp2  = round(entry - risk * STRATEGY_CONFIG['MOMENTUM']['TP_RR'], 4)
+            tp1  = round(entry - risk, 4)
+            rr   = round((entry - tp2) / (sl - entry), 2)
+
+        # =========================
+        # DISTANCE LOG
+        # =========================
+
+        current_price = m3['close']
+        distance_pct  = abs(current_price - entry) / current_price * 100
+
+        print(
+            f"[MOMENTUM_FILTER] {symbol} | side={side} | current={current_price} "
+            f"| entry={entry} | distance={round(distance_pct, 3)}%",
+            flush=True
+        )
+
+        # =========================
+        # BUILD MESSAGE
+        # =========================
+
+        icon = "🚀" if side == "LONG" else "🔻"
+        momentum_info = detect_momentum(symbol)
+        strength = "STRONG" if momentum_info['adx'] >= 35 else "MODERATE"
+
+        message = f"""
+{icon} {side} SIGNAL
+
+{symbol}
+
+Strategy:
+MOMENTUM
+
+Grade:
+{grade}
+
+Score:
+{score}/100
+
+Entry:
+{entry}
+
+SL:
+{sl}
+
+TP2:
+{tp2}
+
+RR:
+1:{rr}
+
+ADX:
+{round(m3['adx'], 2)}
+
+ATR %:
+{round(atr_percent, 2)}
+
+Volume:
+{vol_status}
+
+BTC Trend:
+{btc_trend}
+
+Coin Regime:
+{local_regime}
+
+Active Strategy:
+MOMENTUM
+
+Momentum Strength:
+{strength} ({momentum_info['consecutive_candles']} candles)
+
+Distance from price:
+{round(distance_pct, 3)}%
+
+Plan:
+- Full TP2 target
+- Fixed SL
+- No partial close
+"""
+
+        print(message, flush=True)
+
+        if not silent_mode:
+            send_telegram(message)
+
+        if not signal_only:
+            save_signal(signal_id, symbol, side, grade, score, entry, sl, tp1, tp2)
+
+            signal_regime = CURRENT_REGIME
+
+            with state_lock:
+                active_trades[signal_id] = {
+                    "symbol": symbol,
+                    "status": "SIGNAL",
+                    "side": side,
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "signal_regime": signal_regime,
+                    "created_at": time.time(),
+                    "grade": grade,
+                    "score": score,
+                    "strategy": "MOMENTUM"
+                }
+                last_alert[(symbol, "MOMENTUM")] = now_ts
+
+        set_scan_result(symbol, {
+            "status": "Signal Generated",
+            "score": score,
+            "adx": adx_val,
+            "atr": atr_val,
+            "volume": vol_status,
+            "timestamp": now_ts
+        })
+
+        # Google Sheets logging
+        try:
+            google_sheet.log_signal(
+                signal_id=signal_id,
+                symbol=symbol,
+                side=side,
+                grade=grade,
+                score=score,
+                entry=entry,
+                sl=sl,
+                tp=tp2,
+                atr=atr_val,
+                adx=adx_val,
+                volume=vol_status,
+                btc_trend=btc_trend,
+                status="SIGNAL",
+                strategy="MOMENTUM",
+                allocation_decision="ALLOCATED",
+                skip_reason="",
+                vwap_position="ABOVE" if m3.get('vwap') and m3['close'] > m3['vwap'] else "BELOW" if m3.get('vwap') else "",
+                stoch_rsi=round(m3.get('stoch_rsi', 0), 2) if 'stoch_rsi' in m3 else 0,
+                stretch_pct=round(distance_pct, 2) if 'distance_pct' in locals() else 0,
+                candle_color="GREEN" if m3['close'] > m3['open'] else "RED",
+                local_regime=local_regime,
+                btc_regime=btc_regime
+            )
+            google_sheet.log_fill_analysis(
+                symbol=symbol,
+                side=side,
+                current_price=m3['close'],
+                entry_price=entry,
+                grade=grade,
+                score=score,
+                atr=atr_val,
+                adx=adx_val,
+                btc_trend=btc_trend,
+                fill_status="OPEN",
+                local_regime=local_regime,
+                btc_regime=btc_regime
+            )
+            if signal_id:
+                backtest.record_signal(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    side=side,
+                    entry=entry,
+                    sl=sl,
+                    tp=tp2,
+                    grade=grade,
+                    score=score,
+                    rr=rr,
+                    strategy="MOMENTUM",
+                    local_regime=local_regime,
+                    btc_regime=btc_regime,
+                    adx=adx_val,
+                    atr_pct=atr_val,
+                    vol_status=vol_status,
+                    btc_trend=btc_trend,
+                    vwap_pos="ABOVE" if m3.get('vwap') and m3['close'] > m3['vwap'] else "BELOW" if m3.get('vwap') else "",
+                    stoch_rsi=round(m3.get('stoch_rsi', 0), 2) if 'stoch_rsi' in m3 else 0,
+                    stretch_pct=round(distance_pct, 2) if 'distance_pct' in locals() else 0,
+                    candle_color="GREEN" if m3['close'] > m3['open'] else "RED"
+                )
+        except Exception as e:
+            print(f"[MOMENTUM] Google Sheets log error: {e}", flush=True)
+
+        # =========================
+        # AUTO TRADE
+        # =========================
+
+        if AUTO_TRADE and not signal_only:
+
+            skip_reason = None
+
+            # Grade must be A+
+            if grade != STRATEGY_CONFIG['MOMENTUM']['MIN_GRADE']:
+                skip_reason = f"Momentum Grade: {grade} < {STRATEGY_CONFIG['MOMENTUM']['MIN_GRADE']}"
+
+            # Max 1 active position for momentum
+            if not skip_reason:
+                with state_lock:
+                    active_count = sum(
+                        1 for t in active_trades.values()
+                        if t.get("status") in ["PENDING", "OPEN"]
+                    )
+                if active_count >= STRATEGY_CONFIG['MOMENTUM']['MAX_TRADES']:
+                    skip_reason = f"Momentum max {STRATEGY_CONFIG['MOMENTUM']['MAX_TRADES']} position reached"
+
+            # Regime still valid
+            if not skip_reason and CURRENT_REGIME != signal_regime:
+                skip_reason = "MARKET_REGIME_CHANGED"
+
+            if not skip_reason:
+                print(f"[MOMENTUM_AUTO_TRADE] {symbol} {side} — executing", flush=True)
+                try:
+                    if symbol not in scan_results or not isinstance(scan_results[symbol], dict):
+                        scan_results[symbol] = {}
+                    scan_results[symbol]["strategy"] = "MOMENTUM"
+                    bingx_client.execute_trade(symbol, side, skip_pullback_check=True)
+                except Exception:
+                    print(f"[MOMENTUM_AUTO_TRADE] execute_trade error", flush=True)
+                    print(traceback.format_exc(), flush=True)
+            else:
+                print(f"[MOMENTUM_AUTO_TRADE] {symbol} skipped — {skip_reason}", flush=True)
+
+        return {"symbol": symbol, "result": "signal", "side": side, "score": score}
+
+    except Exception:
+        print(f"[MOMENTUM ERROR] {symbol}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        google_sheet.log_debug(symbol, "Error", strategy="MOMENTUM", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m3', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm3' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+        return {"symbol": symbol, "result": "error"}
+
+
+# =========================
+# ANALYZE TREND
+# =========================
+
+def analyze_trend(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, df_1h=None, local_regime="", btc_regime=""):
+
+    # =========================
+    # PAUSE TRADING CHECK
+    # =========================
+    
+    global pause_trading
+
+    if pause_trading:
+        return {"symbol": symbol, "result": "paused"}
+
+    try:
+
+        now = time.time()
+
+        # =========================
+        # STRATEGY_CONFIG.get(local_regime, STRATEGY_CONFIG['TRENDING'])['COOLDOWN'] (Feature 4: Bypass if ignore_cooldown_once is set)
+        # =========================
+
+        if not bypass_cooldown and not ignore_cooldown_once:
+            with state_lock:
+                last_time = last_alert.get((symbol, "TREND"))
+
+            if last_time and now - last_time < STRATEGY_CONFIG.get(local_regime, STRATEGY_CONFIG['TRENDING'])['COOLDOWN']:
+                set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                # Google Sheets debug logging
+                google_sheet.log_debug(symbol, "Cooldown", score=0, adx=0, atr=0, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+                return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # GET DATA
+        # =========================
+
+        df_1d = get_dataframe(
+            symbol,
+            '1d'
+        )
+
+        df_4h = get_dataframe(
+            symbol,
+            '4h'
+        )
+
+        if df_1h is None:
+            df_1h = get_dataframe(
+                symbol,
+                '1h'
+            )
+
+        if df_15m is None:
+            df_15m = get_dataframe(
+                symbol,
+                '15m'
+            )
+
+        # =========================
+        # CLOSED CANDLES
+        # =========================
+
+        d1 = df_1d.iloc[-2]
+
+        h4 = df_4h.iloc[-2]
+
+        h1 = df_1h.iloc[-2]
+
+        m15 = df_15m.iloc[-2]
+
+        # =========================
+        # PRE-FILTER (Early rejection for ADX/ATR)
+        # =========================
+        adx_val = round(m15['adx'], 2)
+        atr_pct = (m15['atr'] / m15['close']) * 100
+        atr_percent = atr_pct
+        vol_high = m15['volume'] > m15['vol_avg'] * 1.3
+        volume_high = vol_high
+        
+        passes_exec, exec_reason = check_trend_filters(atr_pct, adx_val, vol_high)
+        if not passes_exec:
+            set_scan_result(symbol, {"status": exec_reason, "score": 0, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": now})
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # FOMO FILTER
+        # =========================
+
+        candle_size = abs(
+            m15['close'] - m15['open']
+        )
+        is_green = m15['close'] > m15['open']
+
+        if candle_size > m15['atr'] * 1.5:
+            print(
+                f"{symbol} skipped - candle too big",
+                flush=True
+            )
+
+            adx_val = round(m15['adx'], 2)
+            atr_val = round((m15['atr'] / m15['close']) * 100, 2)
+            vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
+            set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
+            # Track rejected signal (Feature 3)
+            rejected_signals.add(symbol)
+            # Google Sheets debug logging
+            google_sheet.log_debug(symbol, "Candle Too Big", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # NO TRADE ZONE
+        # =========================
+
+        if (
+            45 < m15['rsi'] < 55
+            and m15['adx'] < 18
+        ):
+            print(
+                f"{symbol} skipped - sideways market",
+                flush=True
+            )
+
+            adx_val = round(m15['adx'], 2)
+            atr_val = round((m15['atr'] / m15['close']) * 100, 2)
+            vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
+            set_scan_result(symbol, {"status": "Sideways Market", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
+            # Track rejected signal (Feature 3)
+            rejected_signals.add(symbol)
+            # Google Sheets debug logging
+            google_sheet.log_debug(symbol, "Sideways Market", score=0, adx=adx_val, atr=atr_val, vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # ADX CEILING & STRETCH LIMIT FILTERS
+        # Prevent chasing overextended trends and buying at absolute top
+        # =========================
+
+        adx_val = round(m15['adx'], 2)
+        h1_adx_val = round(h1['adx'], 2)
+        current_price = m15['close']
+        entry_ema = m15['ema25']  # Entry EMA reference
+
+        # ADX Ceiling Check - apply penalty if ADX is overextended
+        adx_ceiling_penalty = False
+        if h1_adx_val > ADX_CEILING_LIMIT:
+            print(
+                f"[SKIP] 1H ADX is overextended ({h1_adx_val:.2f} > {ADX_CEILING_LIMIT}). Applying -50 penalty.",
+                flush=True
+            )
+            adx_ceiling_penalty = True
+
+        # Stretch Limit Check - calculate distance from entry EMA
+        # LONG: price too far ABOVE EMA (overextended upside)
+        # SHORT: price too far BELOW EMA (overextended downside)
+        long_stretch_penalty = False
+        short_stretch_penalty = False
+        distance_pct = abs(current_price - entry_ema) / entry_ema * 100
+        if distance_pct > STRETCH_MAX_DISTANCE_PCT:
+            print(
+                f"[SKIP] Price is too stretched from EMA ({distance_pct:.2f}% > {STRETCH_MAX_DISTANCE_PCT}%). Applying -25 penalty.",
+                flush=True
+            )
+            if current_price > entry_ema:
+                long_stretch_penalty = True  # Price above EMA - penalize LONG
+            else:
+                short_stretch_penalty = True  # Price below EMA - penalize SHORT
+
+        # =========================
+        # VWAP ULTIMATE FILTER
+        # =========================
+        vwap_val = m15['vwap']
+        is_above_vwap = current_price > vwap_val
+
+        # =========================
+        # SCORE
+        # =========================
+
+        long_score = 0
+        short_score = 0
+
+        # ห้ามสวน VWAP เด็ดขาด
+        if not is_above_vwap:
+            long_score -= 1000
+        if is_above_vwap:
+            short_score -= 1000
+
+        btc_trend = get_btc_trend()
+        signal_id = str(uuid.uuid4())[:8]
+
+        # Apply ADX ceiling and stretch penalties
+        if adx_ceiling_penalty:
+            long_score -= 50
+            short_score -= 50
+        if long_stretch_penalty:
+            long_score -= 25
+        if short_stretch_penalty:
+            short_score -= 25
+
+        # =========================
+        # TREND LOGIC (Aligned with Backtest 15m)
+        # =========================
+
+        # Dynamic EMA Gap calculation
+        ema_gap_pct = abs(m15['ema7'] - m15['ema25']) / m15['ema25'] * 100
+        required_gap_pct = max(0.05, min(0.2, atr_percent * 0.4))
+        has_long_gap = (m15['ema7'] > m15['ema25']) and (ema_gap_pct >= required_gap_pct)
+        has_short_gap = (m15['ema7'] < m15['ema25']) and (ema_gap_pct >= required_gap_pct)
+
+        # Early Crossover Check (5 candles lookback)
+        prev = df_15m.iloc[-7:-2]
+        early_long_cross  = any(prev.iloc[i]['ema7'] < prev.iloc[i]['ema25'] and
+                                prev.iloc[i+1]['ema7'] >= prev.iloc[i+1]['ema25']
+                                for i in range(len(prev)-1))
+        early_short_cross = any(prev.iloc[i]['ema7'] > prev.iloc[i]['ema25'] and
+                                prev.iloc[i+1]['ema7'] <= prev.iloc[i+1]['ema25']
+                                for i in range(len(prev)-1))
+
+        # LONG SCORE
+        if early_long_cross and has_long_gap: long_score += 60
+        elif has_long_gap:                    long_score += 25
+        if m15['ema25'] > m15['ema99']: long_score += 20
+        if m15['close'] > m15['ema7']:  long_score += 10
+        if vol_high:                   long_score += 15
+        if 20 <= adx_val <= 35:        long_score += 15
+        elif adx_val > 45:             long_score -= 20
+
+        # SHORT SCORE
+        if early_short_cross and has_short_gap:  short_score += 60
+        elif has_short_gap:                      short_score += 25
+        if m15['ema25'] < m15['ema99']:  short_score += 20
+        if m15['close'] < m15['ema7']:   short_score += 10
+        if vol_high:                     short_score += 15
+        if 20 <= adx_val <= 35:          short_score += 15
+        elif adx_val > 45:               short_score -= 20
+
+        # =========================
+        # BTC FILTER (Strict Macro Alignment)
+        # =========================
+        if symbol != 'BTC/USDT':
+            if btc_trend == "bullish":
+                short_score = 0  # Forbid SHORT in Bull Market
+            elif btc_trend == "bearish":
+                long_score = 0   # Forbid LONG in Bear Market
+            elif btc_trend == "neutral":
+                long_score -= 20
+                short_score -= 20
+
+        # =========================
+        # LIMIT SCORE
+        # =========================
+        long_score = min(long_score, 100)
+        short_score = min(short_score, 100)
+
+        # =========================
+        # GRADE
+        # =========================
+        score = max(long_score, short_score)
+        grade = "C"
+        min_score = STRATEGY_CONFIG['TRENDING']['MIN_SCORE']
+        
+        if score >= min_score + 20 and (early_long_cross or early_short_cross):
+            grade = "A+"
+        elif score >= min_score:
+            grade = "A"
+        elif score >= min_score - 10:
+            grade = "B"
+
+        # =========================
+        # MARKET ENTRY
+        # ENTRY_TYPE = MARKET, entry = current close price
+        # =========================
+
+        current_price = df_15m.iloc[-1]['close']
+        
+        long_pullback = round(current_price, 4)
+        short_pullback = round(current_price, 4)
+
+        # =========================
+        # FAIL REASON LOGGING
+        # =========================
+        fail_reason = None
+        long_micro_aligned = (m15['close'] > m15['ema7'] and has_long_gap)
+        short_micro_aligned = (m15['close'] < m15['ema7'] and has_short_gap)
+        
+        if long_score < STRATEGY_CONFIG['TRENDING']['MIN_SCORE'] and short_score < STRATEGY_CONFIG['TRENDING']['MIN_SCORE']:
+            fail_reason = f"Score Below MIN_SCORE ({max(long_score, short_score)})"
+        elif long_score >= STRATEGY_CONFIG['TRENDING']['MIN_SCORE']:
+            if btc_trend != "bullish":
+                fail_reason = "BTC Trend Mismatch (Needs Bullish)"
+            elif m15['rsi'] > STRATEGY_CONFIG['TRENDING']['FILTERS']['RSI_SAFE_LONG_MAX']:
+                fail_reason = "RSI Too High for LONG"
+            elif not long_micro_aligned:
+                fail_reason = "Micro-Alignment Failed (Price > EMA7 > EMA25)"
+        elif short_score >= STRATEGY_CONFIG['TRENDING']['MIN_SCORE']:
+            if btc_trend != "bearish":
+                fail_reason = "BTC Trend Mismatch (Needs Bearish)"
+            elif m15['rsi'] < STRATEGY_CONFIG['TRENDING']['FILTERS']['RSI_SAFE_SHORT_MIN']:
+                fail_reason = "RSI Too Low for SHORT"
+            elif not short_micro_aligned:
+                fail_reason = "Micro-Alignment Failed (Price < EMA7 < EMA25)"
+
+        # =========================
+        # LONG SIGNAL
+        # =========================
+
+        if (
+            long_score >= STRATEGY_CONFIG['TRENDING']['MIN_SCORE']
+            and btc_trend == "bullish"
+            and m15['rsi'] <= STRATEGY_CONFIG['TRENDING']['FILTERS']['RSI_SAFE_LONG_MAX']
+            and long_micro_aligned
+        ):
+            
+            current_price = df_15m.iloc[-1]['close']
+            if current_price < long_pullback:
+                print(f"{symbol} LONG skipped - price already below support (Reversal Risk)", flush=True)
+                set_scan_result(symbol, {"status": "Reversal Risk (Broke Support)", "score": long_score, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": time.time()})
+                return {"symbol": symbol, "result": "skipped"}
+
+            entry = round(
+                long_pullback,
+                4
+            )
+
+            atr = m15['atr']
+            
+            # =========================
+            # AI FILTER (Pre-Execution)
+            # =========================
+            ai_override = None
+            import ai_filter
+            ai_instance = ai_filter.get_ai_filter()
+            if ai_instance:
+                indicators = {
+                    "ema7": float(m15['ema7']), "ema25": float(m15['ema25']), "ema99": float(m15['ema99']),
+                    "rsi": float(m15['rsi']), "adx": float(adx_val), "atr": float(atr_pct),
+                    "stoch_rsi": float(m15.get('stoch_rsi', 0)), "volume_ratio": float(m15['volume'] / m15['vol_avg']) if m15.get('vol_avg', 0) > 0 else 0
+                }
+                ohlcv = df_15m[['open', 'high', 'low', 'close', 'volume']].tail(5).to_dict('records')
+                ai_override = ai_instance.analyze_signal(symbol, "LONG", indicators, ohlcv)
+                
+                if not ai_instance.shadow_mode and not ai_override.get('approved', True):
+                    set_scan_result(symbol, {"status": f"AI Rejected: {ai_override.get('reason')}", "score": long_score, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": time.time()})
+                    return {"symbol": symbol, "result": "skipped"}
+
+            sl, tp1, tp2, rr = calculate_trade_levels(
+                entry,
+                atr,
+                "LONG",
+                regime=local_regime,
+                ai_override=ai_override
+            )
+
+            message = build_signal_message(
+                symbol=symbol,
+                side="LONG",
+                grade=grade,
+                score=long_score,
+                entry=entry,
+                sl=sl,
+                tp1=tp1,
+                tp2=tp2,
+                rr=rr,
+                rsi=m15['rsi'],
+                adx=m15['adx'],
+                atr_percent=atr_percent,
+                volume_high=volume_high,
+                btc_trend=btc_trend,
+                local_regime=local_regime,
+                btc_regime=btc_regime
+            )
+
+            print(
+                message,
+                flush=True
+            )
+
+            # Store signal for manual trading (or if auto trade skipped)
+            if not silent_mode:
+                send_telegram(message)
+            
+            if not signal_only:
+                save_signal(
+                    signal_id,
+                    symbol,
+                    "LONG",
+                    grade,
+                    long_score,
+                    entry,
+                    sl,
+                    tp1,
+                    tp2
+                )
+
+                signal_regime = CURRENT_REGIME
+
+                with state_lock:
+                    active_trades[signal_id] = {
+                    "symbol": symbol,
+                    "status": "SIGNAL",
+                    "side": "LONG",
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "signal_regime": signal_regime,
+                    "created_at": time.time(),
+                    "grade": grade,
+                    "score": long_score,
+                    "strategy": "TREND"
+                }
+                # Update last_alert after storing the signal
+                last_alert[(symbol, "TREND")] = now
+
+            # =========================
+            # AUTO TRADE LOGIC
+            # =========================
+
+            if AUTO_TRADE and not signal_only:
+                
+                skip_reason = None
+                
+                # Check grade filter
+                min_req_grade = STRATEGY_CONFIG['TRENDING']['MIN_GRADE']
+                if not passes_grade_filter(grade, min_req_grade):
+                    skip_reason = f"Grade: {grade} < {min_req_grade}"
+                
+                # Check execution filters (only if grade passed)
+                elif not skip_reason:
+                    passes_exec, exec_reason = check_trend_filters(
+                        atr_percent,
+                        m15['adx'],
+                        volume_high
+                    )
+                    if not passes_exec:
+                        skip_reason = exec_reason
+                
+                # Check position limit (only if all other filters passed)
+                if not skip_reason:
+                    if not can_open_trade("LONG"):
+                        # =========================
+                        # GRADE OVERRIDE LOGIC (A+ and A)
+                        # Runs BEFORE final rejection so high-grade signals
+                        # can replace lower-grade / lower-score PENDING orders.
+                        # =========================
+                        override_executed = False
+                        is_high_grade = grade in ("A+", "A") and config.ALLOW_PENDING_OVERRIDE
+
+                        if is_high_grade:
+                            with state_lock:
+                                pending_trades = [
+                                    (tid, t) for tid, t in active_trades.items()
+                                    if t.get("status") == "PENDING"
+                                ]
+                            target_tid = None
+                            target_trade = None
+
+                            # Priority 1 (A+ incoming): kick any Grade B or lower pending
+                            if grade == "A+":
+                                for tid, t in pending_trades:
+                                    if config.GRADE_PRIORITY.get(t.get("grade", "C"), 0) < config.GRADE_PRIORITY["A"]:
+                                        target_tid, target_trade = tid, t
+                                        break
+
+                            # Priority 2 (A+ incoming): kick a Grade A pending
+                            if not target_tid and grade == "A+":
+                                for tid, t in pending_trades:
+                                    if t.get("grade") == "A":
+                                        target_tid, target_trade = tid, t
+                                        break
+
+                            # Priority 3 (A incoming): kick any Grade B or lower pending
+                            if not target_tid and grade == "A":
+                                for tid, t in pending_trades:
+                                    if config.GRADE_PRIORITY.get(t.get("grade", "C"), 0) < config.GRADE_PRIORITY["A"]:
+                                        target_tid, target_trade = tid, t
+                                        break
+
+                            # Priority 4: kick a same-grade A+ pending only if score gap is wide enough
+                            if not target_tid and grade == "A+":
+                                for tid, t in pending_trades:
+                                    if t.get("grade") == "A+":
+                                        if long_score - t.get("score", 0) >= config.MIN_SCORE_GAP_TO_OVERRIDE:
+                                            target_tid, target_trade = tid, t
+                                            break
+
+                            if target_tid and target_trade:
+                                try:
+                                    bingx_client.cancel_order(target_trade["order_id"], target_trade["symbol"])
+                                    with state_lock:
+                                        active_trades.pop(target_tid, None)
+                                    send_telegram(
+                                        f"🔄 GRADE OVERRIDE ({grade})\n\n"
+                                        f"❌ ยกเลิก: {target_trade['symbol']} "
+                                        f"[{target_trade.get('grade','?')} score={target_trade.get('score',0)}]\n"
+                                        f"✅ แทนที่: {symbol} [{grade} score={long_score}]\n\n"
+                                        f"Side: LONG | Strategy: TREND"
+                                    )
+                                    # Log Grade Override event to Debug sheet
+                                    google_sheet.log_aplus_override(
+                                        symbol=symbol,
+                                        strategy="TREND",
+                                        grade=grade,
+                                        score=long_score,
+                                        cancelled_symbol=target_trade["symbol"],
+                                        cancelled_grade=target_trade.get("grade", "?"),
+                                        cancelled_score=target_trade.get("score", 0),
+                                        adx=round(m15['adx'], 2),
+                                        atr=round(atr_percent, 2),
+                                    )
+                                    override_executed = True
+                                except Exception as ov_err:
+                                    send_telegram(f"⚠️ Override cancel failed: {ov_err}")
+
+                        if not override_executed:
+                            skip_reason = f"Max {MAX_ACTIVE_TRADES} positions reached"
+
+                # Check market regime (only if all other filters passed)
+                if not skip_reason:
+                    if CURRENT_REGIME != signal_regime:
+                        skip_reason = "MARKET_REGIME_CHANGED"
+
+                # Execute if no skip reason
+                if not skip_reason:
+                    vol_status = "HIGH" if volume_high else "NORMAL"
+                    active_longs = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])
+                    active_shorts = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])
+                    total_active = active_longs + active_shorts
+                    pos_status = f"{total_active}/{MAX_ACTIVE_TRADES} (L:{active_longs}, S:{active_shorts})"
+                    
+                    send_telegram(
+                        f"🤖 AUTO TRADE DECISION\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Side: LONG\n"
+                        f"Result: EXECUTED\n"
+                        f"Grade: {grade}\n"
+                        f"ATR: {round(atr_percent, 2)}%\n"
+                        f"ADX: {round(m15['adx'], 2)}\n"
+                        f"Volume: {vol_status}\n"
+                        f"Positions: {pos_status}"
+                    )
+                    
+                    if symbol not in scan_results or not isinstance(scan_results[symbol], dict):
+                        scan_results[symbol] = {}
+                    scan_results[symbol]["strategy"] = "TREND"
+                    threading.Thread(
+                        target=lambda: bingx_client.execute_trade(symbol, "long"),
+                        daemon=True
+                    ).start()
+                elif skip_reason == "MARKET_REGIME_CHANGED":
+                    send_telegram(
+                        f"⚠️ Auto Trade Cancelled\n\n"
+                        f"Reason: Market Regime Changed\n\n"
+                        f"Signal Regime:\n{signal_regime}\n\n"
+                        f"Current Regime:\n{CURRENT_REGIME}"
+                    )
+                else:
+                    vol_status = "HIGH" if volume_high else "NORMAL"
+                    active_longs = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])
+                    active_shorts = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])
+                    total_active = active_longs + active_shorts
+                    pos_status = f"{total_active}/{MAX_ACTIVE_TRADES} (L:{active_longs}, S:{active_shorts})"
+                    
+                    send_telegram(
+                        f"🤖 AUTO TRADE DECISION\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Side: LONG\n"
+                        f"Result: SKIPPED\n"
+                        f"Reason: {skip_reason}\n"
+                        f"Grade: {grade}\n"
+                        f"ATR: {round(atr_percent, 2)}%\n"
+                        f"ADX: {round(m15['adx'], 2)}\n"
+                        f"Volume: {vol_status}\n"
+                        f"Longs: {pos_status}"
+                    )
+
+            vol_status = "HIGH" if volume_high else "NORMAL"
+            set_scan_result(symbol, {"status": "Signal Generated", "score": long_score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "strategy": "TREND"})
+            # Track candidate signal for top candidates (Feature 6)
+            candidate_signals[symbol] = {
+                "side": "LONG",
+                "grade": grade,
+                "score": long_score,
+                "symbol": symbol,
+                "strategy": "TREND",
+            }
+            
+            # Google Sheets logging
+            signal_id = google_sheet.log_signal(
+                symbol=symbol,
+                side="LONG",
+                grade=grade,
+                score=long_score,
+                entry=entry,
+                sl=sl,
+                tp=tp2,
+                atr=round(atr_percent, 2),
+                adx=round(m15['adx'], 2),
+                volume=vol_status,
+                btc_trend=btc_trend,
+                status="SIGNAL",
+                strategy="TREND",
+                allocation_decision="ALLOCATED",
+                skip_reason="",
+                vwap_position="ABOVE" if is_above_vwap else "BELOW",
+                stoch_rsi=round(m15['stoch_rsi'], 2),
+                stretch_pct=round(distance_pct, 2),
+                candle_color="GREEN" if is_green else "RED",
+                ai_approved=ai_override.get('approved') if ai_override else "",
+                ai_confidence=ai_override.get('confidence') if ai_override else "",
+                ai_reason=ai_override.get('reason') if ai_override else "",
+                ai_sl_mult=ai_override.get('sl_atr_mult') if ai_override else "",
+                ai_tp_rr=ai_override.get('tp_rr_ratio') if ai_override else ""
+            )
+            google_sheet.log_fill_analysis(
+                symbol=symbol,
+                side="LONG",
+                current_price=m15['close'],
+                entry_price=entry,
+                grade=grade,
+                score=long_score,
+                atr=round(atr_percent, 2),
+                adx=round(m15['adx'], 2),
+                btc_trend=btc_trend,
+                fill_status="OPEN"
+            )
+
+            # BACKTEST: บันทึก signal สำหรับ evaluate ผล 4h ทีหลัง
+            if signal_id:
+                backtest.record_signal(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    side="LONG",
+                    entry=entry,
+                    sl=sl,
+                    tp=tp2,
+                    grade=grade,
+                    score=long_score,
+                    rr=rr,
+                    strategy="TREND",
+                    local_regime=local_regime,
+                    btc_regime=btc_regime,
+                    adx=round(m15['adx'], 2),
+                    atr_pct=round(atr_percent, 2),
+                    vol_status=vol_status,
+                    btc_trend=btc_trend,
+                    vwap_pos="ABOVE" if is_above_vwap else "BELOW",
+                    stoch_rsi=round(m15['stoch_rsi'], 2),
+                    stretch_pct=round(distance_pct, 2),
+                    candle_color="GREEN" if is_green else "RED"
+                )
+
+            return {"symbol": symbol, "result": "signal"}
+        
+        # =========================
+        # SHORT SIGNAL
+        # =========================
+
+        elif (
+            short_score >= STRATEGY_CONFIG['TRENDING']['MIN_SCORE']
+            and btc_trend == "bearish"
+            and m15['rsi'] >= STRATEGY_CONFIG['TRENDING']['FILTERS']['RSI_SAFE_SHORT_MIN']
+            and short_micro_aligned
+        ):
+
+            current_price = df_15m.iloc[-1]['close']
+            if current_price > short_pullback:
+                print(f"{symbol} SHORT skipped - price already above resistance (Reversal Risk)", flush=True)
+                set_scan_result(symbol, {"status": "Reversal Risk (Broke Resistance)", "score": short_score, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": time.time()})
+                return {"symbol": symbol, "result": "skipped"}
+
+            entry = round(
+                short_pullback,
+                4
+            )
+
+            atr = m15['atr']
+            
+            # =========================
+            # AI FILTER (Pre-Execution)
+            # =========================
+            ai_override = None
+            import ai_filter
+            ai_instance = ai_filter.get_ai_filter()
+            if ai_instance:
+                indicators = {
+                    "ema7": float(m15['ema7']), "ema25": float(m15['ema25']), "ema99": float(m15['ema99']),
+                    "rsi": float(m15['rsi']), "adx": float(adx_val), "atr": float(atr_pct),
+                    "stoch_rsi": float(m15.get('stoch_rsi', 0)), "volume_ratio": float(m15['volume'] / m15['vol_avg']) if m15.get('vol_avg', 0) > 0 else 0
+                }
+                ohlcv = df_15m[['open', 'high', 'low', 'close', 'volume']].tail(5).to_dict('records')
+                ai_override = ai_instance.analyze_signal(symbol, "SHORT", indicators, ohlcv)
+                
+                if not ai_instance.shadow_mode and not ai_override.get('approved', True):
+                    set_scan_result(symbol, {"status": f"AI Rejected: {ai_override.get('reason')}", "score": short_score, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": time.time()})
+                    return {"symbol": symbol, "result": "skipped"}
+
+            sl, tp1, tp2, rr = calculate_trade_levels(
+                entry,
+                atr,
+                "SHORT",
+                regime=local_regime,
+                ai_override=ai_override
+            )
+
+            message = build_signal_message(
+                symbol=symbol,
+                side="SHORT",
+                grade=grade,
+                score=short_score,
+                entry=entry,
+                sl=sl,
+                tp1=tp1,
+                tp2=tp2,
+                rr=rr,
+                rsi=m15['rsi'],
+                adx=m15['adx'],
+                atr_percent=atr_percent,
+                volume_high=volume_high,
+                btc_trend=btc_trend,
+                local_regime=local_regime,
+                btc_regime=btc_regime
+            )
+
+            print(
+                message,
+                flush=True
+            )
+
+            # Store signal for manual trading (or if auto trade skipped)
+            if not silent_mode:
+                send_telegram(message)
+            
+            if not signal_only:
+                save_signal(
+                    signal_id,
+                    symbol,
+                    "SHORT",
+                    grade,
+                    short_score,
+                    entry,
+                    sl,
+                    tp1,
+                    tp2
+                )
+
+                signal_regime = CURRENT_REGIME
+
+                with state_lock:
+                    active_trades[signal_id] = {
+                    "symbol": symbol,
+                    "status": "SIGNAL",
+                    "side": "SHORT",
+                    "entry": entry,
+                    "sl": sl,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "signal_regime": signal_regime,
+                    "created_at": time.time(),
+                    "grade": grade,
+                    "score": short_score,
+                    "strategy": "TREND"
+                }
+                # Update last_alert after storing the signal
+                last_alert[(symbol, "TREND")] = now
+
+            # =========================
+            # AUTO TRADE LOGIC
+            # =========================
+
+            if AUTO_TRADE and not signal_only:
+                
+                skip_reason = None
+                
+                # Check grade filter
+                min_req_grade = STRATEGY_CONFIG['TRENDING']['MIN_GRADE']
+                if not passes_grade_filter(grade, min_req_grade):
+                    skip_reason = f"Grade: {grade} < {min_req_grade}"
+                
+                # Check execution filters (only if grade passed)
+                elif not skip_reason:
+                    passes_exec, exec_reason = check_trend_filters(
+                        atr_percent,
+                        m15['adx'],
+                        volume_high
+                    )
+                    if not passes_exec:
+                        skip_reason = exec_reason
+                
+                # Check position limit (only if all other filters passed)
+                if not skip_reason:
+                    if not can_open_trade("SHORT"):
+                        # =========================
+                        # GRADE OVERRIDE LOGIC (A+ and A)
+                        # Runs BEFORE final rejection so high-grade signals
+                        # can replace lower-grade / lower-score PENDING orders.
+                        # =========================
+                        override_executed = False
+                        is_high_grade = grade in ("A+", "A") and config.ALLOW_PENDING_OVERRIDE
+
+                        if is_high_grade:
+                            with state_lock:
+                                pending_trades = [
+                                    (tid, t) for tid, t in active_trades.items()
+                                    if t.get("status") == "PENDING"
+                                ]
+                            target_tid = None
+                            target_trade = None
+
+                            # Priority 1 (A+ incoming): kick any Grade B or lower pending
+                            if grade == "A+":
+                                for tid, t in pending_trades:
+                                    if config.GRADE_PRIORITY.get(t.get("grade", "C"), 0) < config.GRADE_PRIORITY["A"]:
+                                        target_tid, target_trade = tid, t
+                                        break
+
+                            # Priority 2 (A+ incoming): kick a Grade A pending
+                            if not target_tid and grade == "A+":
+                                for tid, t in pending_trades:
+                                    if t.get("grade") == "A":
+                                        target_tid, target_trade = tid, t
+                                        break
+
+                            # Priority 3 (A incoming): kick any Grade B or lower pending
+                            if not target_tid and grade == "A":
+                                for tid, t in pending_trades:
+                                    if config.GRADE_PRIORITY.get(t.get("grade", "C"), 0) < config.GRADE_PRIORITY["A"]:
+                                        target_tid, target_trade = tid, t
+                                        break
+
+                            # Priority 4: kick a same-grade A+ pending only if score gap is wide enough
+                            if not target_tid and grade == "A+":
+                                for tid, t in pending_trades:
+                                    if t.get("grade") == "A+":
+                                        if short_score - t.get("score", 0) >= config.MIN_SCORE_GAP_TO_OVERRIDE:
+                                            target_tid, target_trade = tid, t
+                                            break
+
+                            if target_tid and target_trade:
+                                try:
+                                    bingx_client.cancel_order(target_trade["order_id"], target_trade["symbol"])
+                                    with state_lock:
+                                        active_trades.pop(target_tid, None)
+                                    send_telegram(
+                                        f"🔄 GRADE OVERRIDE ({grade})\n\n"
+                                        f"❌ ยกเลิก: {target_trade['symbol']} "
+                                        f"[{target_trade.get('grade','?')} score={target_trade.get('score',0)}]\n"
+                                        f"✅ แทนที่: {symbol} [{grade} score={short_score}]\n\n"
+                                        f"Side: SHORT | Strategy: TREND"
+                                    )
+                                    # Log Grade Override event to Debug sheet
+                                    google_sheet.log_aplus_override(
+                                        symbol=symbol,
+                                        strategy="TREND",
+                                        grade=grade,
+                                        score=short_score,
+                                        cancelled_symbol=target_trade["symbol"],
+                                        cancelled_grade=target_trade.get("grade", "?"),
+                                        cancelled_score=target_trade.get("score", 0),
+                                        adx=round(m15['adx'], 2),
+                                        atr=round(atr_percent, 2),
+                                    )
+                                    override_executed = True
+                                except Exception as ov_err:
+                                    send_telegram(f"⚠️ Override cancel failed: {ov_err}")
+
+                        if not override_executed:
+                            skip_reason = f"Max {MAX_ACTIVE_TRADES} positions reached"
+
+                # Check market regime (only if all other filters passed)
+                if not skip_reason:
+                    if CURRENT_REGIME != signal_regime:
+                        skip_reason = "MARKET_REGIME_CHANGED"
+
+                # Execute if no skip reason
+                if not skip_reason:
+                    vol_status = "HIGH" if volume_high else "NORMAL"
+                    active_longs = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])
+                    active_shorts = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])
+                    total_active = active_longs + active_shorts
+                    pos_status = f"{total_active}/{MAX_ACTIVE_TRADES} (L:{active_longs}, S:{active_shorts})"
+                    
+                    send_telegram(
+                        f"🤖 AUTO TRADE DECISION\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Side: SHORT\n"
+                        f"Result: EXECUTED\n"
+                        f"Grade: {grade}\n"
+                        f"ATR: {round(atr_percent, 2)}%\n"
+                        f"ADX: {round(m15['adx'], 2)}\n"
+                        f"Volume: {vol_status}\n"
+                        f"Positions: {pos_status}"
+                    )
+                    
+                    if symbol not in scan_results or not isinstance(scan_results[symbol], dict):
+                        scan_results[symbol] = {}
+                    scan_results[symbol]["strategy"] = "TREND"
+                    threading.Thread(
+                        target=lambda: bingx_client.execute_trade(symbol, "short"),
+                        daemon=True
+                    ).start()
+                elif skip_reason == "MARKET_REGIME_CHANGED":
+                    send_telegram(
+                        f"⚠️ Auto Trade Cancelled\n\n"
+                        f"Reason: Market Regime Changed\n\n"
+                        f"Signal Regime:\n{signal_regime}\n\n"
+                        f"Current Regime:\n{CURRENT_REGIME}"
+                    )
+                else:
+                    vol_status = "HIGH" if volume_high else "NORMAL"
+                    active_longs = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'LONG'])
+                    active_shorts = len([t for t in list(active_trades.values()) if t.get('status') in ['PENDING', 'OPEN'] and t.get('side') == 'SHORT'])
+                    total_active = active_longs + active_shorts
+                    pos_status = f"{total_active}/{MAX_ACTIVE_TRADES} (L:{active_longs}, S:{active_shorts})"
+                    
+                    send_telegram(
+                        f"🤖 AUTO TRADE DECISION\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Side: SHORT\n"
+                        f"Result: SKIPPED\n"
+                        f"Reason: {skip_reason}\n"
+                        f"Grade: {grade}\n"
+                        f"ATR: {round(atr_percent, 2)}%\n"
+                        f"ADX: {round(m15['adx'], 2)}\n"
+                        f"Volume: {vol_status}\n"
+                        f"Positions: {pos_status}"
+                    )
+
+            vol_status = "HIGH" if volume_high else "NORMAL"
+            set_scan_result(symbol, {"status": "Signal Generated", "score": short_score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "strategy": "TREND"})
+            # Track candidate signal for top candidates (Feature 6)
+            candidate_signals[symbol] = {
+                "side": "SHORT",
+                "grade": grade,
+                "score": short_score,
+                "symbol": symbol,
+                "strategy": "TREND",
+            }
+            
+            # Google Sheets logging
+            signal_id = google_sheet.log_signal(
+                symbol=symbol,
+                side="SHORT",
+                grade=grade,
+                score=short_score,
+                entry=entry,
+                sl=sl,
+                tp=tp2,
+                atr=round(atr_percent, 2),
+                adx=round(m15['adx'], 2),
+                volume=vol_status,
+                btc_trend=btc_trend,
+                status="SIGNAL",
+                strategy="TREND",
+                allocation_decision="ALLOCATED",
+                skip_reason="",
+                vwap_position="ABOVE" if is_above_vwap else "BELOW",
+                stoch_rsi=round(m15['stoch_rsi'], 2),
+                stretch_pct=round(distance_pct, 2),
+                candle_color="GREEN" if is_green else "RED",
+                ai_approved=ai_override.get('approved') if ai_override else "",
+                ai_confidence=ai_override.get('confidence') if ai_override else "",
+                ai_reason=ai_override.get('reason') if ai_override else "",
+                ai_sl_mult=ai_override.get('sl_atr_mult') if ai_override else "",
+                ai_tp_rr=ai_override.get('tp_rr_ratio') if ai_override else ""
+            )
+            google_sheet.log_fill_analysis(
+                symbol=symbol,
+                side="SHORT",
+                current_price=m15['close'],
+                entry_price=entry,
+                grade=grade,
+                score=short_score,
+                atr=round(atr_percent, 2),
+                adx=round(m15['adx'], 2),
+                btc_trend=btc_trend,
+                fill_status="OPEN"
+            )
+
+            # BACKTEST: บันทึก signal สำหรับ evaluate ผล 4h ทีหลัง
+            if signal_id:
+                backtest.record_signal(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    side="SHORT",
+                    entry=entry,
+                    sl=sl,
+                    tp=tp2,
+                    grade=grade,
+                    score=short_score,
+                    rr=rr,
+                    strategy="TREND",
+                    local_regime=local_regime,
+                    btc_regime=btc_regime,
+                    adx=round(m15['adx'], 2),
+                    atr_pct=round(atr_percent, 2),
+                    vol_status=vol_status,
+                    btc_trend=btc_trend,
+                    vwap_pos="ABOVE" if is_above_vwap else "BELOW",
+                    stoch_rsi=round(m15['stoch_rsi'], 2),
+                    stretch_pct=round(distance_pct, 2),
+                    candle_color="GREEN" if is_green else "RED"
+                )
+
+            return {"symbol": symbol, "result": "signal"}
+    
+    except Exception:
+        print(
+            f"{symbol} ERROR",
+            flush=True
+        )
+
+        print(
+            traceback.format_exc(),
+            flush=True
+        )
+
+        set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        return {"symbol": symbol, "result": "error"}
+
+    # No LONG or SHORT signal generated — fall through from try
+    vol_status = "HIGH" if volume_high else "NORMAL"
+    score = max(long_score, short_score)
+    missing_points = max(STRATEGY_CONFIG['TRENDING']['MIN_SCORE'] - score, 0)
+    
+    if 'fail_reason' not in locals() or not fail_reason:
+        fail_reason = f"Score Below MIN_SCORE ({missing_points} needed)" if missing_points > 0 else "Other Criteria Failed"
+        
+    set_scan_result(symbol, {"status": fail_reason, "score": score, "adx": round(m15['adx'], 2), "atr": round(atr_percent, 2), "volume": vol_status, "timestamp": now, "long_score": long_score, "short_score": short_score, "missing_points": missing_points})
+    # Track rejected signal (Feature 3)
+    if score > 0:
+        rejected_signals.add(symbol)
+    # Google Sheets debug logging
+    google_sheet.log_debug(symbol, fail_reason, score=score, adx=round(m15['adx'], 2), atr=round(atr_percent, 2), vwap_position="ABOVE" if locals().get('is_above_vwap') else "BELOW" if 'is_above_vwap' in locals() else "", stoch_rsi=round(locals().get('m3', locals().get('m15', {})).get('stoch_rsi', 0), 2) if 'm3' in locals() or 'm15' in locals() else "", stretch_pct=round(locals().get('distance_pct', 0), 2) if 'distance_pct' in locals() else "", candle_color="GREEN" if locals().get('is_green') else "RED" if 'is_green' in locals() else "")
+    return {"symbol": symbol, "result": "skipped"}
+
+
+# =========================
+# ANALYZE SIDEWAYS
+# =========================
+
+def build_sideways_message(symbol, grade, score, side, entry, sl, tp, rr, rsi, adx, atr_percent, volume_high, local_regime="", btc_regime=""):
+    icon = "🚀" if side == "LONG" else "🔻"
+    return f"""
+{icon} {side} SIGNAL
+{symbol}
+
+Coin Regime:
+{local_regime}
+
+Active Strategy:
+SIDEWAYS
+
+Grade:
+{grade}
+
+Score:
+{score}/100
+
+Mean Reversion Entry:
+{entry}
+
+SL:
+{sl}
+
+TP:
+{tp}
+
+RR:
+1:{rr}
+
+RSI:
+{round(rsi, 2)}
+
+ADX:
+{round(adx, 2)}
+
+ATR %:
+{round(atr_percent, 2)}
+
+Volume:
+{"HIGH" if volume_high else "NORMAL"}
+
+Plan:
+- Mean reversion to BB middle
+- Fixed SL
+"""
+
+
+def analyze_sideways(symbol, bypass_cooldown=False, silent_mode=False, signal_only=False, df_15m=None, df_1h=None, local_regime="", btc_regime=""):
+
+    # =========================
+    # PAUSE TRADING CHECK
+    # =========================
+    
+    global pause_trading
+
+    if pause_trading:
+        return {"symbol": symbol, "result": "paused"}
+
+    try:
+
+        now = time.time()
+
+        # =========================
+        # STRATEGY_CONFIG.get(local_regime, STRATEGY_CONFIG['TRENDING'])['COOLDOWN'] (Feature 4: Bypass if ignore_cooldown_once is set)
+        # =========================
+
+        if not bypass_cooldown and not ignore_cooldown_once:
+            with state_lock:
+                last_time = last_alert.get((symbol, "SIDEWAYS"))
+
+                if last_time and now - last_time < STRATEGY_CONFIG.get(local_regime, STRATEGY_CONFIG['TRENDING'])['COOLDOWN']:
+                    set_scan_result(symbol, {"status": "Cooldown", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": now})
+                    return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # GET DATA
+        # =========================
+
+        if df_15m is None:
+            df_15m = get_dataframe(symbol, '15m')
+            
+        if df_1h is None:
+            df_1h = get_dataframe(symbol, '1h')
+            
+        df_3m = get_dataframe(symbol, '3m')
+
+        m15 = df_15m.iloc[-2]
+        h1  = df_1h.iloc[-2]
+        m3  = df_3m.iloc[-2]
+
+        # =========================
+        # PRE-FILTER (Early rejection for ADX/ATR)
+        # =========================
+        adx_val = round(m15['adx'], 2)
+        atr_pct = (m15['atr'] / m15['close']) * 100
+        vol_high = m15['volume'] > m15['vol_avg'] * 1.3
+        
+        passes_exec, exec_reason = check_sideways_filters(atr_pct, adx_val, vol_high)
+        if not passes_exec:
+            set_scan_result(symbol, {"status": exec_reason, "score": 0, "adx": adx_val, "atr": atr_pct, "volume": "HIGH" if vol_high else "NORMAL", "timestamp": now})
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # FOMO FILTER
+        # =========================
+
+        candle_size = abs(
+            m15['close'] - m15['open']
+        )
+
+        if candle_size > m15['atr'] * 1.5:
+            print(
+                f"{symbol} skipped - candle too big",
+                flush=True
+            )
+
+            adx_val = round(m15['adx'], 2)
+            atr_val = round((m15['atr'] / m15['close']) * 100, 2)
+            vol_status = "HIGH" if m15['volume'] > m15['vol_avg'] * 1.3 else "NORMAL"
+            set_scan_result(symbol, {"status": "Candle Too Big", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now})
+            # Track rejected signal (Feature 3)
+            rejected_signals.add(symbol)
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # INDICATORS
+        # =========================
+
+        rsi = h1['rsi']
+        bb_lower = h1['bb_lower']
+        bb_upper = h1['bb_upper']
+        bb_mid = h1['bb_mid']
+        stoch_rsi = h1.get('stoch_rsi', 50)
+        atr = h1['atr']
+        
+        # We keep adx, and close from m15 for risk calculation and message
+        close = m15['close']
+        adx = m15['adx']
+
+        atr_percent = round((atr / close) * 100, 2)
+        volume_high = m15['volume'] > m15['vol_avg'] * 1.3
+        signal_id = str(uuid.uuid4())[:8]
+
+        # =========================
+        # SIDEWAYS CONDITION CHECK
+        # =========================
+
+        # =========================
+        # TREND FILTER (Bug Fix: ป้องกัน LONG ในตลาดที่ downtrend ชัดเจน)
+        # =========================
+        ema7 = h1['ema7']
+        ema25 = h1['ema25']
+
+        # LONG: RSI < 45, Low <= BB Lower, ADX < 28
+        # + ต้องไม่ downtrend/uptrend ชัด โดยใช้ Dynamic ATR Buffer
+        dynamic_buffer = max(0.005, min(0.02, (atr_percent * 0.2) / 100))
+        
+        long_trend_ok = ema7 >= ema25 * (1.0 - dynamic_buffer)  # ยอมให้ต่ำกว่าได้ตาม volatility
+        long_condition = (
+            rsi < 45
+            and h1['low'] <= bb_lower
+            and adx <= STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX']
+            and long_trend_ok
+        )
+
+        # SHORT: RSI > 55, High >= BB Upper, ADX < 25
+        short_trend_ok = ema7 <= ema25 * (1.0 + dynamic_buffer)
+        short_condition = (
+            rsi > 55
+            and h1['high'] >= bb_upper
+            and adx <= STRATEGY_CONFIG['SIDEWAYS']['FILTERS']['MAX_ADX']
+            and short_trend_ok
+        )
+
+        if not long_condition and not short_condition:
+            set_scan_result(symbol, {"status": "Sideways Market", "score": 0, "adx": round(adx, 2), "atr": atr_percent, "volume": "HIGH" if volume_high else "NORMAL", "timestamp": now})
+            # Track rejected signal (Feature 3)
+            rejected_signals.add(symbol)
+            return {"symbol": symbol, "result": "skipped"}
+
+        # =========================
+        # PICK SIDE
+        # =========================
+
+        if long_condition and short_condition:
+            # Both conditions met — pick the more extreme RSI
+            side = "LONG" if abs(40 - rsi) > abs(60 - rsi) else "SHORT"
+        elif long_condition:
+            side = "LONG"
+        else:
+            side = "SHORT"
+
+        # =========================
+        # CALCULATE LEVELS
+        # =========================
+
+        if side == "LONG":
+            entry = round(close, 4)
+        else:
+            entry = round(close, 4)
+
+        sl, tp, rr = calculate_sideways_levels(
+            entry, atr, bb_mid, side
+        )
+
+        # =========================
+        # SCORE (คำนวณก่อน grade เพราะ grade ต้องใช้ score)
+        # RSI rescale สำหรับ sideways range จริงๆ
+        # SHORT: RSI 60=0pts, 75=60pts(max)
+        # LONG:  RSI 40=0pts, 25=60pts(max)
+        # =========================
+        
+        base_score = 0
+        if (side == "LONG" and h1['low'] <= bb_lower) or (side == "SHORT" and h1['high'] >= bb_upper):
+            base_score = 20
+            
+        # === RSI DIVERGENCE DETECTION ===
+        # ตรวจว่าราคา New High แต่ RSI ไม่ New High (Bearish Divergence)
+        # ใช้ 5 candles ย้อนหลัง
+        recent_h1 = df_1h.iloc[-7:-2]
+        price_made_high = h1['high'] > recent_h1['high'].max()
+        rsi_made_high   = h1['rsi'] > recent_h1['rsi'].max()
+
+        bearish_divergence = price_made_high and not rsi_made_high  # Short signal
+        bullish_divergence = (h1['low'] < recent_h1['low'].min()) and (h1['rsi'] > recent_h1['rsi'].min())  # Long signal
+
+        # เพิ่ม Bonus score เข้าใน scoring section ของ sideways
+        if side == 'SHORT' and bearish_divergence:
+            base_score += 25  # Divergence confirmation
+        if side == 'LONG' and bullish_divergence:
+            base_score += 25
+
+        if side == "LONG":
+            rsi_score = max(0, min(60, int((40 - rsi) * 4)))  # RSI 40→0pts, 25→60pts
+        else:
+            rsi_score = max(0, min(60, int((rsi - 60) * 4)))  # RSI 60→0pts, 75→60pts
+
+        # RR component: max 40 pts
+        rr_score = max(0, min(40, int((rr - 1.0) * 20)))
+
+        sideways_score = base_score + rsi_score + rr_score
+        
+        # StochRSI Filter
+        if side == "LONG" and stoch_rsi > 20:
+            sideways_score -= 50
+        elif side == "SHORT" and stoch_rsi < 80:
+            sideways_score -= 50
+
+        # =========================
+        # BTC FILTER (Strict Macro Alignment)
+        # =========================
+        btc_trend = get_btc_trend()
+        if symbol != 'BTC/USDT':
+            if btc_trend == "bullish" and side == "SHORT":
+                sideways_score = 0  # Forbid SHORT in Bull Market
+            elif btc_trend == "bearish" and side == "LONG":
+                sideways_score = 0   # Forbid LONG in Bear Market
+            elif btc_trend == "neutral":
+                sideways_score += 10
+
+        # =========================
+        # GRADE (ขึ้นกับ score รวม)
+        # A+ = RSI extreme มาก + RR ดี (score 70+)
+        # A  = RSI overbought/oversold ชัด + RR ดี (score 50+)
+        # B  = RSI พอใช้ หรือ RR ดีมาก (score 35+)
+        # C  = RSI แค่แตะ threshold
+        # =========================
+        min_score = STRATEGY_CONFIG['SIDEWAYS']['MIN_SCORE']
+        if sideways_score < min_score:
+            set_scan_result(symbol, {"status": "Score Below MIN_SCORE", "score": sideways_score, "adx": round(adx, 2), "atr": atr_percent, "volume": "HIGH" if volume_high else "NORMAL", "timestamp": now})
+            return {"symbol": symbol, "result": "skipped"}
+
+        if sideways_score >= min_score + 10 and adx_val < 20:
+            grade = "A+"
+        elif sideways_score >= min_score:
+            grade = "A"
+        elif sideways_score >= min_score - 15:
+            grade = "B"
+        else:
+            grade = "C"
+
+        # =========================
+        # AI FILTER (Pre-Execution)
+        # =========================
+        ai_override = None
+        import ai_filter
+        ai_instance = ai_filter.get_ai_filter()
+        if ai_instance:
+            indicators = {
+                "ema7": float(m15['ema7']), "ema25": float(m15['ema25']), "ema99": float(m15['ema99']),
+                "rsi": float(rsi), "adx": float(adx), "atr": float(atr_percent),
+                "stoch_rsi": float(stoch_rsi), "volume_ratio": float(m15['volume'] / m15['vol_avg']) if m15.get('vol_avg', 0) > 0 else 0
+            }
+            ohlcv = df_15m[['open', 'high', 'low', 'close', 'volume']].tail(5).to_dict('records')
+            ai_override = ai_instance.analyze_signal(symbol, side, indicators, ohlcv)
+            
+            if not ai_instance.shadow_mode and not ai_override.get('approved', True):
+                set_scan_result(symbol, {"status": f"AI Rejected: {ai_override.get('reason')}", "score": sideways_score, "adx": adx, "atr": atr_percent, "volume": "HIGH" if volume_high else "NORMAL", "timestamp": time.time()})
+                return {"symbol": symbol, "result": "skipped"}
+
+        # Recalculate if AI suggested new multipliers
+        if ai_override and ai_override.get("sl_atr_mult"):
+            sl, tp, rr = calculate_sideways_levels(
+                entry, atr, bb_mid, side, ai_override=ai_override
+            )
+
+        # =========================
+        # SIGNAL MESSAGE
+        # =========================
+
+        message = build_sideways_message(
+            symbol=symbol,
+            grade=grade,
+            score=sideways_score,
+            side=side,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            rr=rr,
+            rsi=rsi,
+            adx=adx,
+            atr_percent=atr_percent,
+            volume_high=volume_high,
+            local_regime=local_regime,
+            btc_regime=btc_regime
+        )
+
+        print(
+            message,
+            flush=True
+        )
+
+        # Store signal for manual trading (or if auto trade skipped)
+        if not silent_mode:
+            send_telegram(message)
+
+        if not signal_only:
+            save_signal(
+                signal_id,
+                symbol,
+                side,
+                grade,
+                sideways_score,
+                entry,
+                sl,
+                tp,
+                tp
+            )
+
+            signal_regime = CURRENT_REGIME
+
+            with state_lock:
+                active_trades[signal_id] = {
+                "symbol": symbol,
+                "status": "SIGNAL",
+                "side": side,
+                "entry": entry,
+                "sl": sl,
+                "tp1": tp,
+                "tp2": tp,
+                "signal_regime": signal_regime,
+                "created_at": time.time(),
+                "grade": grade,
+                "score": sideways_score,
+                "strategy": "SIDEWAYS"
+            }
+            # Update last_alert after storing the signal
+            last_alert[(symbol, "SIDEWAYS")] = now
+
+        # =========================
+        # AUTO TRADE LOGIC
+        # =========================
+
+        if AUTO_TRADE and not signal_only:
+
+            skip_reason = None
+
+            # Check grade filter FIRST (Bug Fix: sideways ไม่เคย check grade filter)
+            min_req_grade = STRATEGY_CONFIG['SIDEWAYS']['MIN_GRADE']
+            if not passes_grade_filter(grade, min_req_grade):
+                skip_reason = f"Grade: {grade} < {min_req_grade}"
+
+            # Check execution filters (only if grade passed)
+            if not skip_reason:
+                passes_exec, exec_reason = check_sideways_filters(
+                    atr_percent,
+                    adx,
+                    volume_high
+                )
+                if not passes_exec:
+                    skip_reason = exec_reason
+
+            # Check position limit (only if all other filters passed)
+            if not skip_reason:
+                if not can_open_trade(side):
+                    # =========================
+                    # GRADE OVERRIDE LOGIC (A+ and A)
+                    # Runs BEFORE final rejection so high-grade signals
+                    # can replace lower-grade / lower-score PENDING orders.
+                    # =========================
+                    override_executed = False
+                    is_high_grade = grade in ("A+", "A") and config.ALLOW_PENDING_OVERRIDE
+
+                    if is_high_grade:
+                        with state_lock:
+                            pending_trades = [
+                                (tid, t) for tid, t in active_trades.items()
+                                if t.get("status") == "PENDING"
+                            ]
+                        target_tid = None
+                        target_trade = None
+
+                        # Priority 1 (A+ incoming): kick any Grade B or lower pending
+                        if grade == "A+":
+                            for tid, t in pending_trades:
+                                if config.GRADE_PRIORITY.get(t.get("grade", "C"), 0) < config.GRADE_PRIORITY["A"]:
+                                    target_tid, target_trade = tid, t
+                                    break
+
+                        # Priority 2 (A+ incoming): kick a Grade A pending
+                        if not target_tid and grade == "A+":
+                            for tid, t in pending_trades:
+                                if t.get("grade") == "A":
+                                    target_tid, target_trade = tid, t
+                                    break
+
+                        # Priority 3 (A incoming): kick any Grade B or lower pending
+                        if not target_tid and grade == "A":
+                            for tid, t in pending_trades:
+                                if config.GRADE_PRIORITY.get(t.get("grade", "C"), 0) < config.GRADE_PRIORITY["A"]:
+                                    target_tid, target_trade = tid, t
+                                    break
+
+                        # Priority 4 (A+ only): kick same-grade A+ pending (no score gap required for SIDEWAYS)
+                        if not target_tid and grade == "A+":
+                            for tid, t in pending_trades:
+                                if t.get("grade") == "A+":
+                                    target_tid, target_trade = tid, t
+                                    break
+
+                        if target_tid and target_trade:
+                            try:
+                                bingx_client.cancel_order(target_trade["order_id"], target_trade["symbol"])
+                                with state_lock:
+                                    active_trades.pop(target_tid, None)
+                                send_telegram(
+                                    f"🔄 GRADE OVERRIDE ({grade})\n\n"
+                                    f"❌ ยกเลิก: {target_trade['symbol']} "
+                                    f"[{target_trade.get('grade','?')} score={target_trade.get('score',0)}]\n"
+                                    f"✅ แทนที่: {symbol} [{grade}]\n\n"
+                                    f"Side: {side} | Strategy: SIDEWAYS"
+                                )
+                                # Log Grade Override event to Debug sheet
+                                google_sheet.log_aplus_override(
+                                    symbol=symbol,
+                                    strategy="SIDEWAYS",
+                                    grade=grade,
+                                    cancelled_symbol=target_trade["symbol"],
+                                    cancelled_grade=target_trade.get("grade", "?"),
+                                    cancelled_score=target_trade.get("score", 0),
+                                )
+                                override_executed = True
+                            except Exception as ov_err:
+                                send_telegram(f"⚠️ Override cancel failed: {ov_err}")
+
+                    if not override_executed:
+                        skip_reason = f"Max {MAX_ACTIVE_TRADES} positions reached"
+
+            # Check market regime (only if all other filters passed)
+            if not skip_reason:
+                if CURRENT_REGIME != signal_regime:
+                    skip_reason = "MARKET_REGIME_CHANGED"
+
+            # Execute if no skip reason
+            if not skip_reason:
+                vol_status = "HIGH" if volume_high else "NORMAL"
+
+                send_telegram(
+                    f"🤖 AUTO TRADE DECISION\n\n"
+                    f"Symbol: {symbol}\n"
+                    f"Side: {side}\n"
+                    f"Strategy: SIDEWAYS\n"
+                    f"Result: EXECUTED\n"
+                    f"Grade: {grade}\n"
+                    f"ATR: {atr_percent}%\n"
+                    f"ADX: {round(adx, 2)}\n"
+                    f"Volume: {vol_status}"
+                )
+
+                threading.Thread(
+                    target=lambda: bingx_client.execute_trade(symbol, side.lower()),
+                    daemon=True
+                ).start()
+            elif skip_reason == "MARKET_REGIME_CHANGED":
+                send_telegram(
+                    f"⚠️ Auto Trade Cancelled\n\n"
+                    f"Reason: Market Regime Changed\n\n"
+                    f"Signal Regime:\n{signal_regime}\n\n"
+                    f"Current Regime:\n{CURRENT_REGIME}"
+                )
+            else:
+                vol_status = "HIGH" if volume_high else "NORMAL"
+
+                send_telegram(
+                    f"🤖 AUTO TRADE DECISION\n\n"
+                    f"Symbol: {symbol}\n"
+                    f"Side: {side}\n"
+                    f"Strategy: SIDEWAYS\n"
+                    f"Result: SKIPPED\n"
+                    f"Reason: {skip_reason}\n"
+                    f"Grade: {grade}\n"
+                    f"ATR: {atr_percent}%\n"
+                    f"ADX: {round(adx, 2)}\n"
+                    f"Volume: {vol_status}"
+                )
+
+        vol_status = "HIGH" if volume_high else "NORMAL"
+        set_scan_result(symbol, {"status": "Signal Generated", "score": sideways_score, "adx": round(adx, 2), "atr": atr_percent, "volume": vol_status, "timestamp": now, "strategy": "SIDEWAYS"})
+        # Track candidate signal for top candidates (Feature 6)
+        candidate_signals[symbol] = {
+            "side": side,
+            "grade": grade,
+            "score": sideways_score,
+            "symbol": symbol,
+            "strategy": "SIDEWAYS",
+        }
+
+        # BACKTEST: บันทึก signal เพื่อให้ evaluate หลัง 4h จบแท่ง
+        try:
+            google_sheet.log_signal(
+                signal_id=signal_id,
+                symbol=symbol,
+                side=side,
+                grade=grade,
+                score=sideways_score,
+                entry=entry,
+                sl=sl,
+                tp=tp,
+                atr=atr_percent,
+                adx=round(adx, 2),
+                volume=vol_status,
+                btc_trend=get_btc_trend(),
+                status="SIGNAL",
+                strategy="SIDEWAYS",
+                allocation_decision="ALLOCATED",
+                skip_reason="",
+                vwap_position="",
+                stoch_rsi=round(m3.get('stoch_rsi', 0), 2) if 'stoch_rsi' in m3 else 0,
+                stretch_pct=round(abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100, 2),
+                candle_color="GREEN" if m3['close'] > m3['open'] else "RED",
+                local_regime=local_regime,
+                btc_regime=btc_regime,
+                ai_approved=ai_override.get('approved') if ai_override else "",
+                ai_confidence=ai_override.get('confidence') if ai_override else "",
+                ai_reason=ai_override.get('reason') if ai_override else "",
+                ai_sl_mult=ai_override.get('sl_atr_mult') if ai_override else "",
+                ai_tp_rr=ai_override.get('tp_rr_ratio') if ai_override else ""
+            )
+        except Exception as e:
+            print(f"[SIDEWAYS] Google Sheets log error: {e}", flush=True)
+
+        backtest.record_signal(
+            signal_id=signal_id,
+            symbol=symbol,
+            side=side,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            grade=grade,
+            score=sideways_score,
+            rr=rr,
+            strategy="SIDEWAYS",
+            local_regime=local_regime,
+            btc_regime=btc_regime
+        )
+
+        return {"symbol": symbol, "result": "signal"}
+
+    except Exception:
+        print(
+            f"{symbol} ERROR",
+            flush=True
+        )
+
+        print(
+            traceback.format_exc(),
+            flush=True
+        )
+
+        set_scan_result(symbol, {"status": "Error", "score": 0, "adx": 0, "atr": 0, "volume": "N/A", "timestamp": time.time()})
+        return {"symbol": symbol, "result": "error"}
+
+
+# =========================
+# TELEGRAM POLLING
+# =========================
+
+def telegram_polling():
+
+    while True:
+
+        try:
+
+            bot.infinity_polling(
+                timeout=60,
+                long_polling_timeout=60
+            )
+
+        except Exception:
+
+            print(
+                "Telegram polling error",
+                flush=True
+            )
+
+            print(
+                traceback.format_exc(),
+                flush=True
+            )
+
+            time.sleep(10)
+
+
+# =========================
+# TRADE MANAGER WATCHDOG
+# =========================
+
+trade_thread = None
+WATCHDOG_STALE_SECONDS = 90
+
+
+def start_trade_thread():
+    global trade_thread
+    trade_thread = threading.Thread(target=trade_manager.check_trades, daemon=True)
+    trade_thread.start()
+    trade_manager.last_loop_ts = time.time()
+
+
+def trade_watchdog():
+    """เฝ้าลูป Infinity Run: ถ้า thread ตาย ➔ สตาร์ตใหม่ + แจ้งเตือน, ถ้าค้างเกิน 90 วิ ➔ แจ้งเตือน (ทุก 10 นาที)"""
+    last_stale_alert = 0
+    while True:
+        time.sleep(30)
+        try:
+            age = time.time() - trade_manager.last_loop_ts
+            if trade_thread is None or not trade_thread.is_alive():
+                send_telegram("🚨 [WATCHDOG] ระบบเฝ้าราคา (Infinity Run) หยุดทำงาน — กำลังสตาร์ตใหม่อัตโนมัติ")
+                start_trade_thread()
+            elif age > WATCHDOG_STALE_SECONDS and time.time() - last_stale_alert > 600:
+                last_stale_alert = time.time()
+                send_telegram(f"⚠️ [WATCHDOG] ระบบเฝ้าราคาไม่ตอบสนองมา {int(age)} วินาที (อาจค้างที่การเรียก BingX)")
+        except Exception:
+            print(traceback.format_exc(), flush=True)
+
+
+# =========================
+# HEARTBEAT THREAD
+# =========================
+
+def heartbeat_thread():
+    """💓 [HEARTBEAT - SPOT DCA] รายงานสถานะพอร์ตรายชั่วโมง"""
+    while True:
+        try:
+            time.sleep(HEARTBEAT_INTERVAL)
+
+            uptime_hours = int(time.time() - BOT_START_TIME) // 3600
+            cash = bingx_client.get_spot_free_balance('USDT')
+
+            with state_lock:
+                trades_snapshot = {k: dict(v) for k, v in active_trades.items()}
+
+            lines = [
+                "💓 [HEARTBEAT - SPOT DCA]",
+                "",
+                f"สถานะ: ออนไลน์ปกติ (Uptime: {uptime_hours}h)",
+                f"ยอดเงินสดคงเหลือ: {cash:.2f} USDT",
+                (f"🛡️ ระบบเฝ้าราคา: ปกติ (อัปเดตล่าสุด {int(time.time() - trade_manager.last_loop_ts)} วินาทีที่แล้ว)"
+                 if time.time() - trade_manager.last_loop_ts <= WATCHDOG_STALE_SECONDS
+                 else f"⚠️ ระบบเฝ้าราคาไม่ตอบสนองมา {int(time.time() - trade_manager.last_loop_ts)} วินาที"),
+                "",
+                "📦 สถานะพอร์ตเหรียญทั้งหมด:",
+            ]
+
+            for sym in symbols:
+                pos = trades_snapshot.get(sym)
+                if not pos or float(pos.get("total_qty", 0.0)) <= 0:
+                    lines.append(f"• {sym}: ⚪ ยังไม่มีออเดอร์ (รอสัญญาณไม้ 1)")
+                    lines.append("")
+                    continue
+
+                avg = float(pos.get("weighted_avg_price", 0.0))
+                try:
+                    price = float(exchange.fetch_ticker(sym)["last"])
+                    price_line = f"{price:.4f} ({(price - avg) / avg * 100:+.2f}%)"
+                except Exception:
+                    price_line = "N/A"
+
+                if pos.get("infinity_active"):
+                    _sp = float(pos.get("stop_price") or 0.0)
+                    _sl_state = f"SL กระดาน ✅ {_sp:.4f}" if pos.get("stop_order_id") else "SL กระดาน ⚠️ ยังไม่ได้ตั้ง"
+                    target_line = f"🚀 Infinity Run ทำงานอยู่ (Floor: {pos.get('sl', 'N/A')} | {_sl_state})"
+                else:
+                    _act, _ = config.get_activation_params(pos.get("entry_count", 1))
+                    target_line = f"🚀 {avg * (1.0 + _act):.4f} (+{_act*100:.1f}%)"
+
+                lines += [
+                    f"• {sym} ({int(pos.get('entry_count', 1))} ไม้):",
+                    f"   - ทุนเฉลี่ย: {avg:.4f}",
+                    f"   - ราคาปัจจุบัน: {price_line}",
+                    f"   - เป้า Infinity Run: {target_line}",
+                    "",
+                ]
+
+            send_telegram("\n".join(lines).rstrip())
+
+        except Exception:
+            print("Heartbeat error", flush=True)
+            print(traceback.format_exc(), flush=True)
+
+
+# =========================
+# HOURLY STATS UPDATE
+# =========================
+
+def hourly_stats_update():
+    """Update stats to Google Sheets every 60 minutes."""
+    while True:
+        try:
+            time.sleep(3600)  # 60 minutes
+            
+            # Calculate stats
+            with state_lock:
+                active_count = len([
+                    t for t in active_trades.values()
+                    if t.get("status") in ["PENDING", "OPEN"]
+                ])
+            
+            # Calculate win rate
+            total_trades = scan_counters.get("Wins", 0) + scan_counters.get("Losses", 0)
+            win_rate = (scan_counters.get("Wins", 0) / total_trades * 100) if total_trades > 0 else 0
+            
+            # Get balance (placeholder - would need exchange API call)
+            balance = 0
+            try:
+                balance = exchange.get_balance() if 'exchange' in dir() else 0
+            except:
+                balance = 0
+            
+            # Update Google Sheets
+            google_sheet.update_stats(
+                balance=balance,
+                open_positions=active_count,
+                wins=scan_counters.get("Wins", 0),
+                losses=scan_counters.get("Losses", 0),
+                win_rate=round(win_rate, 2),
+                profit_usdt=0,  # Would need to calculate from trades
+                current_loss_streak=current_loss_streak
+            )
+            
+            print("[HOURLY_STATS] Updated Google Sheets", flush=True)
+            
+        except Exception as e:
+            print(f"[HOURLY_STATS] Error: {e}", flush=True)
+            traceback.print_exc()
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+    global CURRENT_REGIME, LAST_REGIME, LAST_REGIME_CHECK
+    global MARKET_MODE, CONTROL_MODE
+    global ignore_cooldown_once
+    global pause_trading, pause_until, current_loss_streak  # FIX: needed for auto-resume timer in main loop
+
+    # =========================
+    # LOAD CONFIG
+    # =========================
+    load_config()
+
+    # Feature 7: Load regime storage before anything else
+    load_regime_storage()
+
+    # Apply control mode from loaded storage
+    CONTROL_MODE = CONTROL_MODE  # Already set by load_regime_storage
+
+    threading.Thread(
+        target=telegram_polling,
+        daemon=True
+    ).start()
+
+    # =========================
+    # STARTUP
+    # =========================
+
+    # Load persistent state to avoid Amnesia
+    load_active_trades()
+
+    threading.Thread(
+        target=save_state_loop,
+        daemon=True
+    ).start()
+
+    # snapshot trades before restore เพื่อ reconcile ที่ปิดระหว่าง downtime
+    with state_lock:
+        pre_restart_snapshot = dict(active_trades)
+
+    trade_manager.restore_open_positions()
+
+    # Reconcile trades ที่ปิดระหว่าง bot downtime (Bug Fix: restart bug)
+    trade_manager.reconcile_closed_trades_on_restart(pre_restart_snapshot)
+
+    # Perform startup cleanup: cancel stale pending limit orders and report open positions
+    startup_cleanup()
+
+    start_trade_thread()
+    threading.Thread(target=trade_watchdog, daemon=True).start()
+
+    # =========================
+    # HEARTBEAT
+    # =========================
+
+    threading.Thread(
+        target=heartbeat_thread,
+        daemon=True
+    ).start()
+
+    # =========================
+    # HOURLY STATS UPDATE
+    # =========================
+
+    threading.Thread(
+        target=hourly_stats_update,
+        daemon=True
+    ).start()
+
+    # =========================
+    # FEATURE 1: STARTUP MARKET SCAN
+    # =========================
+    # Flow: load_regime_storage() → startup_market_scan() → immediate_full_rescan() → send_top_candidates() → bot_ready()
+    # startup_market_scan() handles: detect regime, set mode, save storage, rescan, top candidates, bot ready
+    
+    startup_market_scan()
+
+    with state_lock:
+        restored_trades = len(active_trades)
+
+    auto_status = "ON" if AUTO_TRADE else "OFF"
+    startup_time = time.strftime(
+        "%Y-%m-%d %H:%M:%S UTC",
+        time.gmtime()
+    )
+
+    market_mode_text = MARKET_MODE
+
+    # =========================
+    # STARTUP REPORT (กระชับ เฉพาะข้อมูลสำคัญ)
+    # =========================
+    try:
+        btc_trend_su = get_btc_trend()
+    except Exception:
+        btc_trend_su = "neutral"
+    if btc_trend_su == "bullish":
+        btc_trend_line = "📈 ขาขึ้น (BULLISH)"
+    elif btc_trend_su == "bearish":
+        btc_trend_line = "📉 ขาลง (BEARISH)"
+    else:
+        btc_trend_line = "⚖️ ไซด์เวย์ (NEUTRAL)"
+
+    cash_su = bingx_client.get_spot_free_balance('USDT')
+
+    price_lines = ""
+    for _sym in symbols:
+        try:
+            _p = float(exchange.fetch_ticker(_sym)["last"])
+            price_lines += f"• {_sym.split('/')[0]}: {_p:,.4f}\n"
+        except Exception:
+            price_lines += f"• {_sym.split('/')[0]}: N/A\n"
+
+    send_telegram(
+        f"🚀 [BOT STARTED]\n\n"
+        f"เวลา: {startup_time}\n"
+        f"BTC เทรนด์: {btc_trend_line}\n"
+        f"Market Regime: {CURRENT_REGIME}\n"
+        f"โหมด: {market_mode_text} | Auto Trade: {auto_status}\n\n"
+        f"💲 ราคาตอนนี้:\n{price_lines}\n"
+        f"💰 เงินสดคงเหลือ: {cash_su:.2f} USDT\n"
+        f"📦 เหรียญที่ถืออยู่: {restored_trades}/{len(symbols)}"
+    )
+
+    # =========================
+    # MAIN LOOP
+    # =========================
+    
+    # Register graceful shutdown handler
+    import atexit
+    atexit.register(google_sheet.shutdown_all)
+    
+    while True:
+
+        try:
+
+            # =========================
+            # AUTO-RESUME AFTER PAUSE
+            # =========================
+            if pause_trading and pause_until > 0 and time.time() >= pause_until:
+                pause_trading = False
+                pause_until = 0
+                current_loss_streak = 0
+                send_telegram(
+                    f"✅ TRADING RESUMED\n\n"
+                    f"Auto-resume timer expired.\n"
+                    f"Loss streak reset. Bot is scanning again."
+                )
+                print("[PAUSE] Auto-resume triggered.", flush=True)
+
+            print(
+                "Bot alive - scanning market...",
+                flush=True
+            )
+
+            # =========================
+            # MARKET REGIME CHECK (Feature 2: Auto Switch)
+            # =========================
+
+            now = time.time()
+            if now - LAST_REGIME_CHECK >= REGIME_CHECK_INTERVAL:
+                LAST_REGIME_CHECK = now
+                new_regime, btc_adx, btc_atr_pct = detect_market_regime()
+                
+                if CURRENT_REGIME == "UNKNOWN":
+                    # First check — silent initialisation
+                    CURRENT_REGIME = new_regime
+                    # Set mode based on regime
+                    MARKET_MODE = determine_mode_from_regime(new_regime)
+                    save_regime_storage()
+                    
+                elif new_regime != CURRENT_REGIME:
+                    print("[REGIME_CHANGE] Market regime changed", flush=True)
+                    print(f"[REGIME_CHANGE] {CURRENT_REGIME} → {new_regime}", flush=True)
+                    
+                    # Feature 2: Auto regime switching
+                    # auto_switch_regime() handles: mode switch, cache reset, cooldown bypass,
+                    # immediate_full_rescan(), cooldown bypass reset, send_top_candidates(), notification
+                    auto_switch_regime(CURRENT_REGIME, new_regime, btc_adx, btc_atr_pct)
+
+            # =========================
+            # NORMAL SCAN CYCLE
+            # =========================
+            
+            try:
+                check_deposit_injection()
+            except Exception as dep_err:
+                print(f"[DEPOSIT CHECK ERROR] {dep_err}", flush=True)
+
+            reset_cycle_counters()
+            candidate_signals.clear()  # ให้เหลือเฉพาะสัญญาณของรอบสแกนนี้
+
+            # SCALPING mode uses dedicated symbol list; other modes use main list
+            # FIX: also check CONTROL_MODE so FORCE_SCALPING always uses SCALPING_SYMBOLS
+            scan_symbols = SCALPING_SYMBOLS if (MARKET_MODE == "SCALPING" or CONTROL_MODE in ["FORCE_SCALPING", "SCALPING"]) else symbols
+
+            for symbol in scan_symbols:
+
+                analyze(symbol)
+
+                time.sleep(2)
+
+            # Worst-Performer Priority Engine: ยิง Spot DCA หลังสแกนครบทุกเหรียญ
+            run_priority_dca_engine()
+
+            # BACKTEST: ตรวจสอบ signals ที่ครบ 4h แล้ว
+            backtest.check_pending()
+
+            # Reset candidate_signals at the end of each normal scan cycle
+            # (not after regime-change rescans, which keep them for top candidates)
+            candidate_signals.clear()
+
+            # Adaptive scan interval: scalping scans every 60s, others every 300s
+            current_scan_interval = STRATEGY_CONFIG.get(MARKET_MODE, {}).get('SCAN_INTERVAL', 300)
+
+            print(
+                f"Sleep {current_scan_interval}s ({MARKET_MODE} mode)...",
+                flush=True
+            )
+
+            time.sleep(
+                current_scan_interval
+            )
+
+        except Exception:
+
+            print(
+                "MAIN LOOP ERROR",
+                flush=True
+            )
+
+            print(
+                traceback.format_exc(),
+                flush=True
+            )
+
+            time.sleep(30)
+
+
+if __name__ == "__main__":
+    main()
