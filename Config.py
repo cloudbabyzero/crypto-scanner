@@ -89,7 +89,25 @@ STRATEGY_CONFIG = {
             "ENABLE_SWING_HIGH_CLEARANCE": True,      # ห้ามซื้อใต้ Swing High 12 แท่ง ถ้าห่างไม่ถึง X ATR
             "SWING_HIGH_CLEARANCE_ATR": 1.3,
             "ENABLE_5M_MICRO_TREND": True,            # 5m ต้อง EMA7>=EMA25 และ close>=EMA7
-            "ENABLE_15M_LOWER_HIGHS": True            # ห้ามซื้อถ้า 15m ทำยอดเตี้ยลง 3 แท่งติด
+            "ENABLE_15M_LOWER_HIGHS": True,           # ห้ามซื้อถ้า 15m ทำยอดเตี้ยลง 3 แท่งติด
+
+            # --- Scout & Sniper (2-Stage Architecture: หน่วยเฝ้าระวัง + มือสไนเปอร์คุม Gate) ---
+            "ENABLE_SCOUT_SNIPER": True,              # เปิดระบบแยก 2 ฝั่ง: Scout (เฝ้าระวัง) + Sniper (คุม Gate ลั่นไก)
+            "SCOUT_TTL_SECONDS": 3600,                # อายุการเฝ้าระวังใน Hot Watchlist (60 นาที = 4 แท่ง 15m)
+            "SCOUT_MIN_ADX_REVERSAL": 14,             # ผ่อนปรน ADX ขั้นต่ำเหลือ 14 เฉพาะเหรียญใน Watchlist ที่กำลังกลับตัวจากฐาน
+            "SCOUT_OVERSOLD_RSI": 45,                 # เกณฑ์ 15m RSI โซนสะสมพลัง/ขายมากเกินไปสำหรับ Scout
+            "SCOUT_OVERSOLD_STOCH": 35,               # เกณฑ์ 15m StochRSI โซนฐานราคาสำหรับ Scout
+            "SCOUT_VOL_SPIKE_MULT": 1.35,             # เกณฑ์ Volume สูงกว่าค่าเฉลี่ยสำหรับตรวจจับแรงรับของ (Absorption)
+            "SNIPER_SINGLE_CANDLE_VWAP": True,        # ถ้า 5m Micro-Trend แข็งแรง อนุญาตให้ยืนเหนือ VWAP แท่งเดียวผ่านได้เลย ไม่ต้องรอดีเลย์ 2 แท่ง
+
+            # --- Dynamic ATR-Scaled ADX & StochRSI (ปรับเกณฑ์อัตโนมัติตามความผันผวน ATR%) ---
+            "ENABLE_DYNAMIC_ATR_ADX_STOCH": True,     # เปิดใช้การปรับ MIN_ADX และเพดาน StochRSI ตามค่า ATR%
+            "DYNAMIC_ATR_LOW_PCT": 0.60,              # ATR% <= 0.60% (ตลาดนิ่ง/แคบ) ➔ เข้มงวด: MIN_ADX = 20.0, STOCH_MAX = 80.0
+            "DYNAMIC_ATR_HIGH_PCT": 1.50,             # ATR% >= 1.50% (ผันผวนสูง/กลับตัวแรง) ➔ ไวขึ้น: MIN_ADX = 14.0, STOCH_MAX = 92.0
+            "DYNAMIC_ADX_QUIET_MAX": 20.0,            # เพดานขั้นต่ำ ADX ตอนตลาดนิ่ง
+            "DYNAMIC_ADX_VOLATILE_MIN": 14.0,         # เพดานขั้นต่ำ ADX ตอนตลาดผันผวนสูง
+            "DYNAMIC_STOCH_QUIET_MAX": 80.0,          # เพดาน StochRSI ตอนตลาดนิ่ง (กันซื้อยอดกรอบไซด์เวย์)
+            "DYNAMIC_STOCH_VOLATILE_MAX": 92.0        # เพดาน StochRSI ตอนตลาดผันผวนสูง (กันบล็อกค้างตอนแท่งเขียวพุ่งแรง)
         }
     },
     "TRENDING": {
@@ -157,3 +175,55 @@ def get_activation_params(entry_count):
     if SCALED_TP_ENABLED and int(entry_count or 1) >= 2:
         return SCALED_TP_MULTI_ENTRY_PCT, SCALED_TP_MULTI_LOCK_PCT
     return INFINITY_ACTIVATION_PCT, INFINITY_MIN_LOCK_PCT
+
+# =====================================================================
+# SCOUT & SNIPER + DYNAMIC ATR DCA STEP + STAGED EXIT (50/50) CONFIG
+# =====================================================================
+SCOUT_NOTIFY_TELEGRAM = True            # แจ้งเตือน Telegram เมื่อหน่วย Scout ล็อกเป้าเหรียญเข้า Watchlist
+SCOUT_ALERT_COOLDOWN = 7200             # Cooldown แจ้งเตือน Scout ต่อเหรียญ (2 ชั่วโมง กันสแปม)
+
+DYNAMIC_DCA_STEP_ENABLED = True         # ขยายระยะช้อนไม้ถัดไปตามความผันผวน (ATR%) อัตโนมัติ
+DYNAMIC_DCA_ATR_MULT = 1.8              # ตัวคูณ ATR: Step = max(MIN_DCA_DRAWDOWN_PCT, ATR% * 1.8)
+DYNAMIC_DCA_MAX_PCT = 8.0               # เพดานระยะย่อตัวสูงสุดไม่เกิน 8.0%
+
+STAGED_EXIT_ENABLED = True              # แบ่งขายดึงเงินสดทันทีเมื่อแตะเป้า Infinity Run
+STAGED_EXIT_MIN_ENTRIES = 2             # แบ่งขายเฉพาะเมื่อสะสมตั้งแต่ 2 ไม้ขึ้นไป (1 ไม้ขาย 100% ตามเดิม)
+STAGED_EXIT_RATIO = 0.50                # สัดส่วนแบ่งขายก้อนแรก (0.50 = ขาย 50% ดึงเงินสด / 50% รัน Trailing ต่อ)
+STAGED_EXIT_MIN_NOTIONAL_USDT = 5.0     # มูลค่าขั้นต่ำต่อก้อน (USDT) ป้องกันติดกฎ Minimum Notional บนกระดาน
+
+def get_dynamic_dca_step(atr_pct=0.0):
+    """คำนวณระยะย่อตัวขั้นต่ำ (%) สำหรับช้อนไม้ถัดไป ตามความผันผวน ATR ปัจจุบัน"""
+    base_step = float(MIN_DCA_DRAWDOWN_PCT)
+    if not DYNAMIC_DCA_STEP_ENABLED or not atr_pct or float(atr_pct) <= 0:
+        return base_step
+    dyn_step = round(float(atr_pct) * float(DYNAMIC_DCA_ATR_MULT), 2)
+    return min(float(DYNAMIC_DCA_MAX_PCT), max(base_step, dyn_step))
+
+def get_dynamic_adx_stoch_bounds(atr_pct=0.0, is_fast_reversal=False):
+    """คำนวณ (dynamic_min_adx, dynamic_stoch_max) ผันแปรตามความผันผวน ATR% แบบ Linear Scaling:
+    - ตลาดนิ่ง (ATR% ต่ำ <= 0.60%): เข้มงวดขึ้น (MIN_ADX = 20.0, STOCH_MAX = 80.0) กันสัญญาณหลอกในกรอบแคบ
+    - ตลาดผันผวน/เริ่มวิ่ง (ATR% สูง >= 1.50%): ไวขึ้น (MIN_ADX = 14.0, STOCH_MAX = 92.0) จับต้นคลื่นโดยไม่ติดแล็ก ADX หรือ Stoch ค้าง"""
+    filters = STRATEGY_CONFIG.get("SCALPING", {}).get("FILTERS", {})
+    if not filters.get("ENABLE_DYNAMIC_ATR_ADX_STOCH", True) or not atr_pct or float(atr_pct) <= 0:
+        base_adx = float(filters.get("SCOUT_MIN_ADX_REVERSAL", 14) if is_fast_reversal else filters.get("MIN_ADX", 18))
+        base_stoch = float(filters.get("STOCH_OVERBOUGHT_MAX", 85))
+        return base_adx, base_stoch
+
+    low_atr = float(filters.get("DYNAMIC_ATR_LOW_PCT", 0.60))
+    high_atr = float(filters.get("DYNAMIC_ATR_HIGH_PCT", 1.50))
+    adx_quiet = float(filters.get("DYNAMIC_ADX_QUIET_MAX", 20.0))
+    adx_vol = float(filters.get("DYNAMIC_ADX_VOLATILE_MIN", 14.0))
+    stoch_quiet = float(filters.get("DYNAMIC_STOCH_QUIET_MAX", 80.0))
+    stoch_vol = float(filters.get("DYNAMIC_STOCH_VOLATILE_MAX", 92.0))
+
+    span = max(0.01, high_atr - low_atr)
+    ratio = min(1.0, max(0.0, (float(atr_pct) - low_atr) / span))
+
+    # Inverse scaling สำหรับ ADX (ATR สูง -> ใช้ ADX ต่ำลงเพื่อเข้าไว)
+    dyn_min_adx = round(adx_quiet - (ratio * (adx_quiet - adx_vol)), 1)
+    if is_fast_reversal:
+        dyn_min_adx = min(dyn_min_adx, float(filters.get("SCOUT_MIN_ADX_REVERSAL", 14.0)))
+
+    # Direct scaling สำหรับเพดาน StochRSI (ATR สูง -> ขยายเพดานขึ้นเพื่อไม่ให้บล็อกค้างตอนออกตัวแรง)
+    dyn_stoch_max = round(stoch_quiet + (ratio * (stoch_vol - stoch_quiet)), 1)
+    return dyn_min_adx, dyn_stoch_max

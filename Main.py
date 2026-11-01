@@ -210,6 +210,8 @@ REGIME_CHECK_INTERVAL = 300  # 5 minutes (sync with scan cycle)
 candidate_signals = {}      # Symbols that generated signals (for top candidates)
 rejected_signals = set()    # Symbols rejected in current regime
 signal_cache = {}           # Cache of signal results by symbol
+hot_watchlist = {}          # Scout Radar Watchlist: symbol -> {"reasons": [...], "mode": "REVERSAL"|"TREND", "updated_at": ts, "expires_at": ts, "rsi": val, "stoch": val, "drawdown_pct": val}
+last_scout_alert = {}       # Cooldown tracker for Scout Telegram alerts: symbol -> ts
 ignore_cooldown_once = False  # Feature 4: Bypass cooldown for one rescan
 
 # Feature 8: Override mode
@@ -497,6 +499,7 @@ def execute_spot_dca(symbol, price):
         new_entries = prev.get("entry_count", 0) + 1
         new_avg = new_cost / new_qty
 
+        _act_p, _ = config.get_activation_params(new_entries)
         active_trades[symbol] = {
             "symbol": symbol,
             "side": "LONG",
@@ -504,12 +507,14 @@ def execute_spot_dca(symbol, price):
             "entry": fill_price,
             "weighted_avg_price": new_avg,
             "sl": "No SL (Accumulating)",
-            "tp2": f"Infinity Run (+{config.INFINITY_ACTIVATION_PCT*100:.1f}%)",
+            "tp2": f"Infinity Run (+{_act_p*100:.1f}%)",
             "total_qty": new_qty,
             "total_cost_usdt": new_cost,
             "entry_count": new_entries,
             "highest_price": fill_price,
             "infinity_active": False,
+            "staged_exit_done": False,
+            "staged_realized_pnl": 0.0,
             "updated_at": time.time(),
             "last_seen_ts": time.time()
         }
@@ -672,16 +677,24 @@ def run_priority_dca_engine():
                     f"ติดเพดาน {alloc_pct*100:.0f}% ของพอร์ต (ถืออยู่ {current_cost:.1f}/{max_cap_per_coin:.1f} USDT) รอเงินเติม"))
                 continue
 
-            # ด่าน 3: Drawdown Step
+            # ด่าน 3: Dynamic ATR Drawdown Step (ขยายระยะช้อนอัตโนมัติเมื่อตลาดผันผวนสูง)
             avg = float(pos.get("weighted_avg_price", 0.0) or 0.0)
             if avg > 0:
                 drawdown_pct = ((sig["entry"] - avg) / avg) * 100
-                if drawdown_pct > -min_dca_step:
-                    print(f"[PRIORITY DCA] {sym} ย่อตัวเพียง {drawdown_pct:+.2f}% (ยังไม่ถึงเกณฑ์ -{min_dca_step:.1f}%) ➔ ข้าม", flush=True)
+                atr_pct = float(sig.get("atr_pct") or scan_results.get(sym, {}).get("atr") or 0.0)
+                if hasattr(config, "get_dynamic_dca_step"):
+                    req_dca_step = config.get_dynamic_dca_step(atr_pct)
+                else:
+                    req_dca_step = min_dca_step
+
+                if drawdown_pct > -req_dca_step:
+                    print(f"[PRIORITY DCA] {sym} ย่อตัวเพียง {drawdown_pct:+.2f}% (ยังไม่ถึงเกณฑ์ -{req_dca_step:.2f}% | ATR {atr_pct:.2f}%) ➔ ข้าม", flush=True)
                     if drawdown_pct >= 0:
                         reason = f"ราคาสูงกว่าทุนเฉลี่ย {avg:.4f} (DCA เฉพาะตอนราคาต่ำกว่าทุน)"
+                    elif req_dca_step > min_dca_step:
+                        reason = f"ย่อตัวเพียง {drawdown_pct:+.2f}% จากทุนเฉลี่ย {avg:.4f} (ต้องลึกถึง -{req_dca_step:.2f}% ตาม Dynamic ATR {atr_pct:.2f}%)"
                     else:
-                        reason = f"ย่อตัวเพียง {drawdown_pct:+.2f}% จากทุนเฉลี่ย {avg:.4f} (ต้องลึกถึง -{min_dca_step:.1f}%)"
+                        reason = f"ย่อตัวเพียง {drawdown_pct:+.2f}% จากทุนเฉลี่ย {avg:.4f} (ต้องลึกถึง -{req_dca_step:.1f}%)"
                     skipped.append((sym, sig["entry"], reason))
                     continue
             else:
@@ -1861,40 +1874,129 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         btc_trend = get_btc_trend()
         vwap_val = m3['vwap']
         is_above_vwap = m3['close'] > vwap_val
-        prev1_vwap = df_3m.iloc[-3]
-        vwap_confirmed_above = is_above_vwap and (prev1_vwap['close'] > prev1_vwap['vwap'])
-        vwap_confirmed_below = (not is_above_vwap) and (prev1_vwap['close'] < prev1_vwap['vwap'])
+        prev1 = df_3m.iloc[-3]
+        prev2 = df_3m.iloc[-4]
+        vwap_confirmed_above = is_above_vwap and (prev1['close'] > prev1['vwap'])
+        vwap_confirmed_below = (not is_above_vwap) and (prev1['close'] < prev1['vwap'])
 
         is_green = m3['close'] > m3['open']
         is_red   = m3['close'] < m3['open']
         stoch_rsi = m3.get('stoch_rsi', 50)
+        prev_stoch_rsi = prev1.get('stoch_rsi', 50)
         stretch_pct = abs(m3['close'] - m3['ema25']) / m3['ema25'] * 100
         ema7_dist_pct = (m3['close'] - m3['ema7']) / m3['ema7'] * 100
 
         # =====================================================================
-        # จุดที่ 1: EMA25 SLOPE CALCULATION (15m)
+        # จุดที่ 1: EMA25 SLOPE & MICRO-TREND CALCULATIONS
         # =====================================================================
-        # วัดความชันย้อนหลัง 2 แท่งบนแท่งปิด: (EMA25[-2] - EMA25[-4]) / EMA25[-4] * 100
-        ema25_cur = df_3m.iloc[-2]['ema25']
-        ema25_prev2 = df_3m.iloc[-4]['ema25']
+        ema25_cur = m3['ema25']
+        ema25_prev2 = prev2['ema25']
         ema25_slope = ((ema25_cur - ema25_prev2) / ema25_prev2) * 100 if ema25_prev2 > 0 else 0.0
 
-        # ถ้าไม่ใช่แท่งเขียว ให้ข้ามไปเงียบๆ (อัปเดตสถานะใน /scanreport แต่ไม่เขียนลงชีต Debug เพื่อไม่ให้รก)
+        ema7_cur = m3['ema7']
+        ema7_prev1 = prev1['ema7']
+        ema7_rising = ema7_cur >= ema7_prev1
+
+        micro_5m_ok = (m5['ema7'] >= m5['ema25']) and (m5['close'] >= m5['ema7'])
+
+        # =====================================================================
+        # STAGE 1: หน่วยเฝ้าระวัง (SCOUT RADAR — ทำงานทุกแท่งแม้เป็นแท่งแดง)
+        # คัดกรองเหรียญที่เข้าโซนน่าสนใจเข้าสู่ hot_watchlist ล่วงหน้า
+        # =====================================================================
+        scout_enabled = scalp_filters.get('ENABLE_SCOUT_SNIPER', True)
+        scout_ttl = scalp_filters.get('SCOUT_TTL_SECONDS', 3600)
+        scout_reasons = []
+        scout_mode = None
+
+        # เช็กสถานะพอร์ตปัจจุบันของเหรียญนี้ (ว่าถืออยู่และย่อลึกเข้าโซน DCA หรือยัง)
+        with state_lock:
+            held_pos = active_trades.get(symbol)
+        held_drawdown_pct = 0.0
+        req_dca_step = config.get_dynamic_dca_step(atr_val) if hasattr(config, 'get_dynamic_dca_step') else getattr(config, 'MIN_DCA_DRAWDOWN_PCT', 3.0)
+        if held_pos and float(held_pos.get("total_qty", 0.0)) > 0:
+            avg_px = float(held_pos.get("weighted_avg_price", 0.0) or 0.0)
+            if avg_px > 0:
+                held_drawdown_pct = ((m3['close'] - avg_px) / avg_px) * 100
+                if held_drawdown_pct <= -req_dca_step:
+                    scout_reasons.append(f"โซนช้อน DCA ({held_drawdown_pct:+.2f}% <= -{req_dca_step:.2f}%)")
+                    scout_mode = "REVERSAL"
+
+        # เกณฑ์ Scout 1: โซน Oversold / พักฐานยก Low (Oversold Base)
+        oversold_rsi_lim = scalp_filters.get('SCOUT_OVERSOLD_RSI', 45)
+        oversold_stoch_lim = scalp_filters.get('SCOUT_OVERSOLD_STOCH', 35)
+        if (rsi_val <= oversold_rsi_lim or stoch_rsi <= oversold_stoch_lim or prev_stoch_rsi <= oversold_stoch_lim):
+            if m3['low'] >= prev1['low'] or m5['close'] >= m5['ema7']:
+                scout_reasons.append(f"สร้างฐานโซนล่าง (RSI {rsi_val:.1f} | Stoch {stoch_rsi:.1f})")
+                scout_mode = scout_mode or "REVERSAL"
+
+        # เกณฑ์ Scout 2: วอลุ่มรับของ / ไส้ล่างดูดซับแรงขาย (Volume Absorption / Pinbar)
+        vol_spike_mult = scalp_filters.get('SCOUT_VOL_SPIKE_MULT', 1.35)
+        range_m3_all = m3['high'] - m3['low']
+        lower_wick_m3 = min(m3['close'], m3['open']) - m3['low']
+        has_lower_pin = (range_m3_all > 0) and ((lower_wick_m3 / range_m3_all) >= 0.35)
+        if (m3['volume'] >= m3['vol_avg'] * vol_spike_mult) and (has_lower_pin or is_green):
+            scout_reasons.append("Volume รับของ/ไส้ล่างดูดซับแรงขาย")
+            scout_mode = scout_mode or "REVERSAL"
+
+        # เกณฑ์ Scout 3: โครงสร้างขาขึ้นพร้อมยิง (Trend Ignition)
+        if (m3['ema7'] > m3['ema25']) and is_above_vwap:
+            scout_reasons.append("โครงสร้าง 15m ยืนเหนือ EMA25 & VWAP")
+            scout_mode = scout_mode or "TREND"
+
+        # อัปเดตหรือดึงสถานะจาก hot_watchlist
+        if scout_enabled and scout_reasons:
+            prev_watch = hot_watchlist.get(symbol)
+            hot_watchlist[symbol] = {
+                "symbol": symbol,
+                "reasons": scout_reasons,
+                "mode": scout_mode or "REVERSAL",
+                "updated_at": now_ts,
+                "expires_at": now_ts + scout_ttl,
+                "rsi": rsi_val,
+                "stoch": round(stoch_rsi, 2),
+                "drawdown_pct": round(held_drawdown_pct, 2),
+            }
+            # แจ้งเตือน Telegram เฉพาะตอนเข้าโซน REVERSAL ใหม่ (มี Cooldown กันสแปม)
+            if (
+                not silent_mode
+                and getattr(config, "SCOUT_NOTIFY_TELEGRAM", True)
+                and scout_mode == "REVERSAL"
+                and (prev_watch is None or now_ts - last_scout_alert.get(symbol, 0) >= getattr(config, "SCOUT_ALERT_COOLDOWN", 7200))
+            ):
+                last_scout_alert[symbol] = now_ts
+                print(f"[SCOUT RADAR] {symbol} เข้าสู่ Hot Watchlist: {', '.join(scout_reasons)}", flush=True)
+        elif symbol in hot_watchlist and now_ts > hot_watchlist[symbol].get("expires_at", 0):
+            hot_watchlist.pop(symbol, None)
+
+        active_scout = hot_watchlist.get(symbol) if scout_enabled else None
+        is_watched = active_scout is not None
+
+        # ถ้าไม่ใช่แท่งเขียว ให้ข้ามการลั่นไกไปก่อน (แต่ถ้าอยู่ใน Watchlist ให้แสดงสถานะใน /scanreport)
         if not is_green:
-            set_scan_result(symbol, {"status": "Red Candle (Wait Green)", "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            watch_prefix = f"👀 [Scout: {active_scout['mode']}] " if is_watched else ""
+            set_scan_result(symbol, {
+                "status": f"{watch_prefix}Red Candle (Wait Green Trigger)",
+                "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status,
+                "timestamp": now_ts, "scout": active_scout
+            })
             return {"symbol": symbol, "result": "skipped"}
 
         def _reject(reason):
-            set_scan_result(symbol, {"status": reason, "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status, "timestamp": now_ts})
+            watch_tag = f" [Scout:{active_scout['mode']}]" if is_watched else ""
+            full_reason = f"{reason}{watch_tag}"
+            set_scan_result(symbol, {
+                "status": full_reason, "score": 0, "adx": adx_val, "atr": atr_val,
+                "volume": vol_status, "timestamp": now_ts, "scout": active_scout
+            })
             google_sheet.log_debug(
-                symbol, reason, strategy="SCALPING", score=100, adx=adx_val, atr=atr_val,
+                symbol, full_reason, strategy="SCALPING", score=100, adx=adx_val, atr=atr_val,
                 vwap_position="ABOVE" if is_above_vwap else "BELOW",
                 stoch_rsi=round(stoch_rsi, 2), stretch_pct=round(stretch_pct, 2),
                 candle_color="GREEN" if is_green else "RED"
             )
-            return reason
+            return full_reason
 
-        # Re-entry near loss entry guard (บันทึกลง Debug ด้วยถ้าเป็นแท่งเขียว)
+        # Re-entry near loss entry guard
         RE_ENTRY_GUARD_WINDOW = 7200
         if not bypass_cooldown and not ignore_cooldown_once:
             with state_lock:
@@ -1908,30 +2010,40 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                         return {"symbol": symbol, "result": "skipped"}
 
         # =====================================================================
-        # จุดที่ 2: DIRECTIONAL STRONG TREND & UPTREND STOCH BYPASS
+        # STAGE 2: ผู้คุม GATE (SNIPER GATEKEEPER — ตรวจจังหวะลั่นไก)
+        # แยกทางด่วน Fast Reversal (สำหรับเหรียญใน Watchlist ที่กลับตัวจากก้นคลื่น)
+        # ออกจากทางหลัก Trend Continuation เพื่อให้จับต้นคลื่นได้ไวขึ้นโดยไม่ลดความปลอดภัย
         # =====================================================================
-        # ต้องมี ema25_slope > 0 กำกับเสมอ เพื่อไม่ให้ช่วงตลาดทุบแรง (ADX สูงจากขาลง) ได้สิทธิ์ข้ามด่าน
         strong_trend = (
             adx_val >= scalp_filters.get('STRONG_TREND_ADX_BYPASS', 25)
             and ema25_slope > 0
         )
 
-        micro_5m_ok = (m5['ema7'] >= m5['ema25']) and (m5['close'] >= m5['ema7'])
+        # Sniper Fast-Track Reversal: เหรียญที่หน่วย Scout ล็อกเป้าไว้แล้ว + 5m พลิกเป็นขาขึ้น + แท่ง 15m ปิดเขียวเหนือ EMA7 และโมเมนตัมเชิดขึ้น
+        sniper_fast_reversal = (
+            is_watched
+            and active_scout.get("mode") == "REVERSAL"
+            and micro_5m_ok
+            and (m3['close'] >= m3['ema7'])
+            and (m3['rsi'] > prev1['rsi'])
+            and (stoch_rsi >= prev_stoch_rsi or stoch_rsi < 80)
+        )
 
-        # อนุโลมเพดาน StochRSI เมื่อเป็นขาขึ้นแบบค่อยๆ ไต่ (Grinding Uptrend) ที่โครงสร้างผ่านครบ
-        # แก้ปัญหา Catch-22: พอ 15m EMA7 ตัดขึ้นเหนือ EMA25 สำเร็จแต่ ADX ย่อลงมาอยู่โซน 18-25 แล้วติด StochRSI ยาว
+        # Single-Candle VWAP Confirmation เมื่อ 5m Micro-Trend แข็งแรง (ไม่ต้องรอดีเลย์ 2 แท่ง 30 นาทีจนตกรถ)
+        if scalp_filters.get('SNIPER_SINGLE_CANDLE_VWAP', True) and micro_5m_ok and is_green:
+            vwap_gate_ok = is_above_vwap
+        else:
+            vwap_gate_ok = vwap_confirmed_above
+
         uptrend_stoch_bypass = (
             scalp_filters.get('ENABLE_UPTREND_STOCH_BYPASS', True)
             and (m3['ema7'] > m3['ema25'])
             and (ema25_slope >= scalp_filters.get('UPTREND_SLOPE_BYPASS_MIN', 0.03))
-            and vwap_confirmed_above
+            and vwap_gate_ok
             and micro_5m_ok
         )
 
-        # =====================================================================
-        # จุดที่ 3: 1H BOLLINGER BANDS WIDTH (BBW) VS 40-CANDLE MEDIAN GATING
-        # =====================================================================
-        # คำนวณ BB Width = (BB_Upper - BB_Lower) / BB_Mid * 100
+        # 1H BOLLINGER BANDS WIDTH (BBW) GATING
         h1_bbw = ((h1['bb_upper'] - h1['bb_lower']) / h1['bb_mid']) * 100 if h1['bb_mid'] > 0 else 0
         h1_window_40 = df_1h.iloc[-42:-2]
         h1_bbw_series = ((h1_window_40['bb_upper'] - h1_window_40['bb_lower']) / h1_window_40['bb_mid']) * 100
@@ -1940,7 +2052,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         dead_market_ratio = 0.60
         hyper_vol_ratio = 2.50
 
-        if not (strong_trend or uptrend_stoch_bypass) and h1_bbw < (median_bbw_40 * dead_market_ratio):
+        if not (strong_trend or uptrend_stoch_bypass or sniper_fast_reversal) and h1_bbw < (median_bbw_40 * dead_market_ratio):
             _reject(f"Blocked: 1H BBW Squeeze / Dead Market ({round(h1_bbw, 2)}% < {round(median_bbw_40 * dead_market_ratio, 2)}%)")
             return {"symbol": symbol, "result": "skipped"}
 
@@ -1948,43 +2060,55 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             _reject(f"Blocked: 1H BBW Hyper Volatility ({round(h1_bbw, 2)}% > {round(median_bbw_40 * hyper_vol_ratio, 2)}%)")
             return {"symbol": symbol, "result": "skipped"}
 
-        # ADX Limits (บันทึกลง Debug ทุกครั้งที่แท่งเขียวโดนบล็อก)
-        scalp_min_adx = scalp_filters.get('MIN_ADX', 18)
+        # Dynamic ATR-Scaled ADX & StochRSI Bounds (ปรับเกณฑ์อัตโนมัติตามความผันผวน ATR%)
+        if hasattr(config, "get_dynamic_adx_stoch_bounds"):
+            effective_min_adx, dyn_stoch_max = config.get_dynamic_adx_stoch_bounds(atr_val, is_fast_reversal=sniper_fast_reversal)
+        else:
+            base_min_adx = scalp_filters.get('MIN_ADX', 18)
+            reversal_min_adx = scalp_filters.get('SCOUT_MIN_ADX_REVERSAL', 14)
+            effective_min_adx = reversal_min_adx if sniper_fast_reversal else base_min_adx
+            dyn_stoch_max = scalp_filters.get('STOCH_OVERBOUGHT_MAX', 85)
+
         scalp_max_adx = scalp_filters.get('MAX_ADX', 50)
-        if adx_val < scalp_min_adx:
-            _reject(f"Blocked: ADX Too Low ({adx_val} < {scalp_min_adx})")
+
+        if adx_val < effective_min_adx:
+            _reject(f"Blocked: ADX Too Low ({adx_val} < Dynamic {effective_min_adx} | ATR {atr_val}%)")
             return {"symbol": symbol, "result": "skipped"}
         if adx_val > scalp_max_adx:
             _reject(f"Blocked: ADX Too High ({adx_val} > {scalp_max_adx})")
             return {"symbol": symbol, "result": "skipped"}
 
-        # FOMO Filter (บันทึกลง Debug ทุกครั้งที่แท่งเขียวโดนบล็อก)
+        # FOMO Filter
         candle_size = abs(m3['close'] - m3['open'])
         if candle_size > m3['atr'] * 1.5:
             _reject("Blocked: Candle Too Big (> 1.5x ATR)")
             return {"symbol": symbol, "result": "skipped"}
 
         def check_side(side):
-            # 1. VWAP Confirmation (ยืนเหนือต้นทุนเฉลี่ยวัน)
-            if not strong_trend and not vwap_confirmed_above:
-                return "Blocked: Below VWAP (LONG forbidden)"
+            # 1. Structure & VWAP Check (แยกตามโหมด Sniper Reversal vs Sniper Trend)
+            if sniper_fast_reversal:
+                # ในโหมดดักต้นคลื่นจากฐาน: ขอให้ยืนเหนือ EMA7 (หรือ VWAP) และ EMA7 เริ่มเชิดขึ้น
+                if not (is_above_vwap or ema7_rising):
+                    return "Blocked: Sniper Reversal waiting VWAP or EMA7 turn"
+            else:
+                # โหมดตามเทรนด์ปกติ: ต้องยืนเหนือ VWAP และ 15m EMA7 > EMA25
+                if not strong_trend and not vwap_gate_ok:
+                    return "Blocked: Below VWAP (LONG forbidden)"
+                if not (m3['ema7'] > m3['ema25']):
+                    return "Blocked: 15m EMA7 not above EMA25"
 
-            # 2. EMA Alignment (EMA7 > EMA25 ยืนยันแนวโน้มขาขึ้น)
-            if not (m3['ema7'] > m3['ema25']):
-                return "Blocked: 15m EMA7 not above EMA25"
-
-            # 3. 5m Micro-Trend Alignment
+            # 2. 5m Micro-Trend Alignment (หัวใจหลักของ Sniper ต้องผ่านเสมอ)
             if scalp_filters.get('ENABLE_5M_MICRO_TREND', True):
                 if not micro_5m_ok:
                     return "Blocked: 5m Micro-Trend Bearish"
 
-            # 4. 15m Lower Highs (ยอดเตี้ยลง 3 แท่งติด)
+            # 3. 15m Lower Highs (ยอดเตี้ยลง 3 แท่งติด — ยกเว้นแท่งเบรกกลับตัวต้นคลื่นที่ปิดเหนือ High แท่งก่อนหน้าได้)
             if scalp_filters.get('ENABLE_15M_LOWER_HIGHS', True):
                 _h2, _h3, _h4 = df_3m.iloc[-2]['high'], df_3m.iloc[-3]['high'], df_3m.iloc[-4]['high']
-                if _h2 < _h3 < _h4:
+                if (_h2 < _h3 < _h4) and not (sniper_fast_reversal and m3['close'] > prev1['high']):
                     return "Blocked: 15m Lower Highs Forming"
 
-            # 5. 1H Rejection Wick Guard (ตรวจไส้บนแท่ง 1H)
+            # 4. 1H Rejection Wick Guard (ตรวจไส้บนแท่ง 1H)
             body_h1 = abs(h1['close'] - h1['open'])
             range_h1 = h1['high'] - h1['low']
             if range_h1 > 0:
@@ -1992,27 +2116,25 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 if upper_wick_h1 > body_h1 * 1.0 and upper_wick_h1 > range_h1 * 0.35:
                     return "Blocked: 1H Upper Wick Rejection"
 
-            # 6. 15m Rejection Wick Filter (กันโดนเทขายแท่ง 15m)
+            # 5. 15m Rejection Wick Filter (กันโดนเทขายแท่ง 15m)
             body_m3 = abs(m3['close'] - m3['open'])
             range_m3 = m3['high'] - m3['low']
-            prev1 = df_3m.iloc[-3]
             body_prev1 = abs(prev1['close'] - prev1['open'])
             range_prev1 = prev1['high'] - prev1['low']
 
             upper_wick_m3 = m3['high'] - max(m3['close'], m3['open'])
             upper_wick_prev1 = prev1['high'] - max(prev1['close'], prev1['open'])
-            if (upper_wick_m3 > body_m3 * 1.2 and upper_wick_m3 > range_m3 * 0.35) or \
-               (upper_wick_prev1 > body_prev1 * 1.2 and upper_wick_prev1 > range_prev1 * 0.35):
+            if (upper_wick_m3 > body_m3 * 1.2 and upper_wick_m3 > range_m3 * 0.35) or                (upper_wick_prev1 > body_prev1 * 1.2 and upper_wick_prev1 > range_prev1 * 0.35):
                 return "Blocked: Upper Wick Rejection"
 
-            # 7. Swing High Clearance (ซื้อจ่อใต้ยอด 12 แท่งล่าสุดไม่ได้)
+            # 6. Swing High Clearance (ซื้อจ่อใต้ยอด 12 แท่งล่าสุดไม่ได้)
             if scalp_filters.get('ENABLE_SWING_HIGH_CLEARANCE', True):
                 swing_high_12 = df_3m.iloc[-14:-2]['high'].max()
                 clr_mult = scalp_filters.get('SWING_HIGH_CLEARANCE_ATR', 1.3)
                 if m3['close'] < swing_high_12 and (swing_high_12 - m3['close']) < (m3['atr'] * clr_mult):
                     return f"Blocked: Clearance to Swing High < {clr_mult}x ATR"
 
-            # 8. Room to 15m EMA99 (ใต้ EMA99 ต้องมีพื้นที่ว่างก่อนชนแนวต้าน)
+            # 7. Room to 15m EMA99 (ใต้ EMA99 ต้องมีพื้นที่ว่างก่อนชนแนวต้าน)
             if scalp_filters.get('ENABLE_EMA99_ROOM', True):
                 ema99_15m = m3.get('ema99')
                 if ema99_15m is not None and ema99_15m == ema99_15m and m3['close'] < ema99_15m:
@@ -2020,11 +2142,11 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                     if (ema99_15m - m3['close']) < (m3['atr'] * room_mult):
                         return f"Blocked: Too Close Under 15m EMA99 (< {room_mult}x ATR)"
 
-            # 9. Anti-Chase Guard (EMA25 Slope-adjusted)
+            # 8. Anti-Chase Guard (EMA25 Slope-adjusted)
             base_mult = scalp_filters.get('ANTI_CHASE_ATR_MULT', 0.8)
             if ema25_slope >= 0.08:
                 slope_scale = min(1.3, base_mult + (ema25_slope * 4.0))
-            elif ema25_slope <= 0.02:
+            elif ema25_slope <= 0.02 and not sniper_fast_reversal:
                 slope_scale = max(0.40, base_mult * 0.6)
             else:
                 slope_scale = base_mult
@@ -2035,21 +2157,19 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             if ema7_dist_pct > anti_chase_threshold:
                 return f"Blocked: Anti-Chase LONG (Stretch {round(ema7_dist_pct, 2)}% > Limit {round(anti_chase_threshold, 2)}% | Slope {round(ema25_slope, 3)}%)"
 
-            # 10. 15m StochRSI Ceiling (เช็กหลังโครงสร้างและ Anti-Chase ผ่านหมดแล้ว พร้อมอนุโลมเมื่อเป็น Grinding Uptrend)
-            stoch_max = scalp_filters.get('STOCH_OVERBOUGHT_MAX', 85)
-            if not (strong_trend or uptrend_stoch_bypass) and stoch_rsi > stoch_max:
-                return f"Blocked: StochRSI Overbought Ceiling ({round(stoch_rsi, 1)} > {stoch_max} | Slope {round(ema25_slope, 3)}%)"
+            # 9. Dynamic 15m StochRSI Ceiling (ขยายเพดานตาม ATR% อัตโนมัติ + อนุโลมเมื่อเป็น Grinding Uptrend / Fast Reversal)
+            if not (strong_trend or uptrend_stoch_bypass or sniper_fast_reversal) and stoch_rsi > dyn_stoch_max:
+                return f"Blocked: StochRSI Overbought Ceiling ({round(stoch_rsi, 1)} > Dynamic {dyn_stoch_max} | ATR {atr_val}% | Slope {round(ema25_slope, 3)}%)"
 
-            # 11. Dynamic 1H StochRSI Guard (Scaled with ADX)
+            # 10. Dynamic 1H StochRSI Guard
             stoch_rsi_1h = h1.get('stoch_rsi', 50)
             adx_factor = max(0.0, (adx_val - 25.0) * 0.8)
             dynamic_long_stoch_min = max(15.0, 30.0 - adx_factor)
 
-            if scalp_filters.get('ENABLE_1H_STOCH_OVERSOLD_BLOCK', False) and \
-               not strong_trend and stoch_rsi_1h < dynamic_long_stoch_min:
+            if scalp_filters.get('ENABLE_1H_STOCH_OVERSOLD_BLOCK', False) and                not strong_trend and stoch_rsi_1h < dynamic_long_stoch_min:
                 return f"Blocked: 1H StochRSI Oversold ({round(stoch_rsi_1h, 1)} < Dynamic {round(dynamic_long_stoch_min, 1)})"
 
-            # 12. RSI Momentum Bound (เพดาน 68)
+            # 11. RSI Momentum Bound (เพดาน 68)
             if m3['rsi'] > scalp_filters.get('RSI_SAFE_LONG_MAX', 68):
                 return f"Blocked: RSI Overbought ({rsi_val} > {scalp_filters.get('RSI_SAFE_LONG_MAX', 68)})"
 
@@ -2067,6 +2187,12 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         entry = round(m3['close'], 4)
         grade = "PASS"
         score = 100
+        trigger_mode_label = "SNIPER REVERSAL (ดักต้นคลื่นไว)" if sniper_fast_reversal else "SNIPER TREND (ตามเทรนด์)"
+        scout_info_line = f"📡 Scout Radar: {', '.join(active_scout['reasons'])}\n" if active_scout else ""
+
+        # เมื่อยิงสัญญาณสำเร็จ ล้างออกจาก Watchlist รอบนี้เพื่อเริ่มนับรอบใหม่
+        if symbol in hot_watchlist:
+            hot_watchlist.pop(symbol, None)
 
         # SL / TP Dynamic Calculations
         atr = m3['atr']
@@ -2099,12 +2225,13 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         side_icon = "🟩" if side == "LONG" else "🟥"
         dynamic_sl_line = f"🛡️ Dynamic SL: {'🔥 HIGH NOISE' if dynamic_sl_mode == 'HIGH_NOISE' else '🟢 NORMAL'} ({sl_atr_mult}x ATR)"
 
-        # ---------- Spot signal message (เฉพาะส่วนสำคัญ ก๊อปไปให้คนอื่นได้) ----------
+        # ---------- Spot signal message ----------
         _act_pct = config.INFINITY_ACTIVATION_PCT
         _lock_pct = config.INFINITY_MIN_LOCK_PCT
 
         message = f"""⚡ BUY SIGNAL — {symbol} ({side_icon} {side})
-
+🎯 โหมดลั่นไก: {trigger_mode_label}
+{scout_info_line}
 ราคาเข้า: {entry}
 เริ่ม Trailing: ≥ {entry * (1 + _act_pct):.4f} (+{_act_pct * 100:.1f}%)
 ล็อกกำไรขั้นต่ำ: {entry * (1 + _lock_pct):.4f} (+{_lock_pct * 100:.1f}%)
@@ -2121,12 +2248,11 @@ Trail: {config.TRAILING_PCT_TIER1 * 100:.1f}% / {config.TRAILING_PCT_TIER2 * 100
             with state_lock:
                 last_alert[(symbol, "SCALPING")] = now_ts
 
-            # Logging (เฉพาะโหมดปกติ — Startup/Regime Rescan แบบ read-only ต้องไม่เขียน Sheets/Backtest)
             try:
                 google_sheet.log_signal(
                     signal_id=signal_id, symbol=symbol, side=side, grade=grade, score=score,
                     entry=entry, sl=sl, tp=tp2, atr=atr_val, adx=adx_val, volume=vol_status,
-                    btc_trend=btc_trend, status="SIGNAL", strategy="SCALPING", allocation_decision="ALLOCATED",
+                    btc_trend=btc_trend, status="SIGNAL", strategy=trigger_mode_label.split()[1], allocation_decision="ALLOCATED",
                     skip_reason="", vwap_position="ABOVE" if is_above_vwap else "BELOW",
                     stoch_rsi=m3['stoch_rsi'], stretch_pct=round(stretch_pct, 2),
                     candle_color="GREEN" if is_green else "RED", local_regime=local_regime, btc_regime=btc_regime
@@ -2157,6 +2283,7 @@ Trail: {config.TRAILING_PCT_TIER1 * 100:.1f}% / {config.TRAILING_PCT_TIER2 * 100
             "volume": vol_status,
             "timestamp": now_ts,
             "strategy": "SCALPING",
+            "trigger_mode": trigger_mode_label,
         })
 
         candidate_signals[symbol] = {
@@ -2166,6 +2293,8 @@ Trail: {config.TRAILING_PCT_TIER1 * 100:.1f}% / {config.TRAILING_PCT_TIER2 * 100
             "symbol": symbol,
             "strategy": "SCALPING",
             "entry": entry,
+            "atr_pct": atr_val,
+            "trigger_mode": trigger_mode_label,
         }
 
         # Auto-Trade: ย้ายไปที่ run_priority_dca_engine() ใน main loop
@@ -4336,8 +4465,11 @@ def heartbeat_thread():
                     _act, _ = config.get_activation_params(pos.get("entry_count", 1))
                     target_line = f"🚀 {avg * (1.0 + _act):.4f} (+{_act*100:.1f}%)"
 
+                staged_note = " [แบ่งขาย 50% แล้ว]" if pos.get("staged_exit_done") else ""
+                scout_w = hot_watchlist.get(sym)
+                scout_tag = f" 👀 [Scout: {scout_w['mode']}]" if scout_w and time.time() <= scout_w.get("expires_at", 0) else ""
                 lines += [
-                    f"• {sym} ({int(pos.get('entry_count', 1))} ไม้):",
+                    f"• {sym} ({int(pos.get('entry_count', 1))} ไม้{staged_note}){scout_tag}:",
                     f"   - ทุนเฉลี่ย: {avg:.4f}",
                     f"   - ราคาปัจจุบัน: {price_line}",
                     f"   - เป้า Infinity Run: {target_line}",
