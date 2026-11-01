@@ -346,7 +346,7 @@ def build_recovery_message(trades):
     if not trades:
         return "🔄 [SYSTEM RECOVERY]\n\nบอทรีสตาร์ตสำเร็จ! พอร์ตว่างเปล่า (เงินสด 100% พร้อมช้อนไม้ 1)"
 
-    lines = ["🔄 [SYSTEM RECOVERY]", "", "บอทรีสตาร์ตสำเร็จ! กู้คืนพอร์ตสะสมเหรียญได้ครบถ้วน:", ""]
+    lines = [f"🔄 [SYSTEM RECOVERY — v{getattr(config, 'BOT_VERSION', '2.5.0')}]", "", "บอทรีสตาร์ตสำเร็จ! กู้คืนพอร์ตสะสมเหรียญได้ครบถ้วน:", ""]
     total_cost_all = 0.0
     for sym, pos in trades.items():
         base = sym.split("/")[0]
@@ -4462,7 +4462,7 @@ def heartbeat_thread():
                 trades_snapshot = {k: dict(v) for k, v in active_trades.items()}
 
             lines = [
-                "💓 [HEARTBEAT - SPOT DCA]",
+                f"💓 [HEARTBEAT - SPOT DCA v{getattr(config, 'BOT_VERSION', '2.5.0')}]",
                 "",
                 f"สถานะ: ออนไลน์ปกติ (Uptime: {uptime_hours}h)",
                 f"ยอดเงินสดคงเหลือ: {cash:.2f} USDT",
@@ -4677,7 +4677,7 @@ def main():
     config.TRAILING_USE_ATR_TIGHTENING = True
 
     send_telegram(
-        f"🚀 [BOT STARTED]\n\n"
+        f"🚀 [BOT STARTED — v{getattr(config, 'BOT_VERSION', '2.5.0')}]\n\n"
         f"เวลา: {startup_time}\n"
         f"BTC เทรนด์: {btc_trend_line}\n"
         f"Market Regime: {CURRENT_REGIME}\n"

@@ -1392,7 +1392,7 @@ def cmd_portfolio(message):
         curr_order_size = float(getattr(m, "ORDER_AMOUNT_USDT", getattr(cfg_mod, "ORDER_AMOUNT_USDT", 6.0)))
         bullets_left = int(free_usdt // curr_order_size) if curr_order_size > 0 else 0
         lines = [
-            "📊 [ACTIVE INDEX PORTFOLIO]",
+            f"📊 [ACTIVE INDEX PORTFOLIO — v{getattr(cfg_mod, 'BOT_VERSION', '2.5.0')}]",
             f"💰 เงินสดว่าง: {free_usdt:.2f} USDT (~{bullets_left} ไม้)",
             f"💵 ขนาดซื้อต่อไม้: {curr_order_size:.1f} USDT (ปรับกด /set_margin)",
             f"📈 มูลค่าพอร์ตรวม: {total_equity:.2f} USDT",
@@ -1612,7 +1612,7 @@ def callback_trailing_mode(call):
 def help_command(message):
     curr_size = float(getattr(main_mod, "ORDER_AMOUNT_USDT", 6.0))
     trail_mode_str = "🔒 Choke Lock" if getattr(cfg_mod, "TRAILING_USE_ATR_TIGHTENING", True) else "🌊 Wide Trailing"
-    text = f"""🤖 [SPOT DCA BOT — คำสั่งใช้งานทั้งหมด]
+    text = f"""🤖 [SPOT DCA BOT v{getattr(cfg_mod, 'BOT_VERSION', '2.5.0')}] — คำสั่งใช้งานทั้งหมด
 
 💼 จัดการพอร์ต Spot Portfolio
 
