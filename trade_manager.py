@@ -153,34 +153,102 @@ def reconcile_closed_trades_on_restart(pre_restart_snapshot):
         print("[RECONCILE] ยอดเหรียญจริงตรงกับไฟล์พอร์ต", flush=True)
 
 # =====================================================================
-# 3-TIER INFINITY RUN ENGINE
+# 3-TIER INFINITY RUN ENGINE (ATR TIGHTENING: 1.2x ➔ 0.8x ➔ 0.5x ATR)
 # =====================================================================
-def calculate_tier_trailing_floor(gain, highest_price, weighted_avg, entry_count=1):
-    """คำนวณ Trailing Floor โดยลดเป้าอัตโนมัติเมื่อสะสมหลายไม้ (Scaled-Down TP)"""
-    act_pct, lock_pct = config.get_activation_params(entry_count)
-    if act_pct != INFINITY_ACTIVATION_PCT:
-        tier1_prefix = f"Fast Recycle (+{act_pct*100:.1f}% ถึง +5%)"
-    else:
-        tier1_prefix = f"Tier 1 (+{act_pct*100:.1f}% ถึง +5%)"
+_atr_cache = {}  # symbol -> (atr_pct, ts)
 
+def _get_symbol_atr_pct(symbol, pos=None):
+    """ดึงค่า 15m ATR% ล่าสุดของเหรียญจากผลการสแกน หรือคำนวณใหม่พร้อม Cache 5 นาที"""
+    now = time.time()
+    try:
+        if hasattr(main_mod, "scan_results") and isinstance(main_mod.scan_results.get(symbol), dict):
+            scan_atr = float(main_mod.scan_results[symbol].get("atr") or 0.0)
+            if scan_atr > 0:
+                _atr_cache[symbol] = (scan_atr, now)
+                if isinstance(pos, dict):
+                    pos["last_atr_pct"] = scan_atr
+                return scan_atr
+    except Exception:
+        pass
+
+    if symbol in _atr_cache and (now - _atr_cache[symbol][1]) < 300:
+        return _atr_cache[symbol][0]
+
+    if isinstance(pos, dict) and float(pos.get("last_atr_pct") or 0.0) > 0:
+        return float(pos["last_atr_pct"])
+
+    try:
+        from indicators import get_dataframe
+        df_15m = get_dataframe(symbol, "15m")
+        if df_15m is not None and len(df_15m) >= 2:
+            m15 = df_15m.iloc[-2]
+            calc_atr = round((float(m15["atr"]) / float(m15["close"])) * 100.0, 2)
+            if calc_atr > 0:
+                _atr_cache[symbol] = (calc_atr, now)
+                if isinstance(pos, dict):
+                    pos["last_atr_pct"] = calc_atr
+                return calc_atr
+    except Exception:
+        pass
+
+    return 0.80
+
+
+def calculate_tier_trailing_floor(gain, highest_price, weighted_avg, entry_count=1, atr_pct=0.80):
+    """คำนวณ Trailing Floor แบบบีบระยะแคบลงตาม ATR เมื่อกำไรสูงขึ้น (Choke Lock: 1.2x ➔ 0.8x ➔ 0.5x ATR)"""
+    entries = int(entry_count or 1)
+    act_pct, lock_pct = config.get_activation_params(entries)
     if gain < act_pct:
         return 0.0, "None", 0.0
 
     min_lock_price = weighted_avg * (1.0 + lock_pct)
+    use_atr = getattr(config, "TRAILING_USE_ATR_TIGHTENING", True)
 
-    if gain < 0.05:
-        floor = highest_price * (1.0 - TRAILING_PCT_TIER1)
-        tier_name = f"{tier1_prefix} | Trail {TRAILING_PCT_TIER1*100:.1f}%"
-        trail_pct = TRAILING_PCT_TIER1
-    elif gain < 0.15:
-        floor = highest_price * (1.0 - TRAILING_PCT_TIER2)
-        tier_name = "Tier 2 (+5% ถึง +15% | Trail 2.5%)"
-        trail_pct = TRAILING_PCT_TIER2
+    if use_atr:
+        # โหมด Choke Lock (Default): ยิ่งกำไรสูง ยิ่งบีบระยะตาม ATR (1.2x ➔ 0.8x ➔ 0.5x ATR)
+        if entries >= 2:
+            t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_MULTI", 0.030))
+            t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_MULTI", 0.045))
+        else:
+            t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_SINGLE", 0.040))
+            t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_SINGLE", 0.055))
+
+        atr_dec = max(0.002, float(atr_pct or 0.80) / 100.0)
+        min_dist = float(getattr(config, "TRAILING_MIN_DISTANCE_PCT", 0.0035))
+
+        if gain < t2_thresh:
+            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER1", 1.2))
+            cap = float(getattr(config, "TRAILING_MAX_CAP_TIER1", 0.018))
+            trail_pct = min(cap, max(min_dist, atr_dec * mult))
+            tier_name = f"Tier 1 [Choke Lock] (Normal | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+        elif gain < t3_thresh:
+            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER2", 0.8))
+            cap = float(getattr(config, "TRAILING_MAX_CAP_TIER2", 0.014))
+            trail_pct = min(cap, max(min_dist, atr_dec * mult))
+            tier_name = f"Tier 2 [Choke Lock] (Tight | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+        else:
+            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER3", 0.5))
+            cap = float(getattr(config, "TRAILING_MAX_CAP_TIER3", 0.010))
+            trail_pct = min(cap, max(min_dist, atr_dec * mult))
+            tier_name = f"Tier 3 [Choke Lock] (Locked Tight | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
     else:
-        floor = highest_price * (1.0 - TRAILING_PCT_TIER3)
-        tier_name = "Tier 3 (> +15% | Trail 4.0%)"
-        trail_pct = TRAILING_PCT_TIER3
+        # โหมด Wide Trailing: ถอยระยะห่างเพื่อลุ้นรันเทรนด์ใหญ่ (+10% ถึง +15%)
+        if act_pct != INFINITY_ACTIVATION_PCT:
+            tier1_prefix = f"Fast Recycle (+{act_pct*100:.1f}% ถึง +5%)"
+        else:
+            tier1_prefix = f"Tier 1 [Wide] (+{act_pct*100:.1f}% ถึง +5%)"
 
+        if gain < 0.05:
+            trail_pct = TRAILING_PCT_TIER1
+            tier_name = f"{tier1_prefix} | Trail {TRAILING_PCT_TIER1*100:.1f}%"
+        elif gain < 0.15:
+            trail_pct = TRAILING_PCT_TIER2
+            tier_name = f"Tier 2 [Wide] (+5% ถึง +15% | Trail {TRAILING_PCT_TIER2*100:.1f}%)"
+        else:
+            trail_pct = TRAILING_PCT_TIER3
+            tier_name = f"Tier 3 [Wide] (> +15% | Trail {TRAILING_PCT_TIER3*100:.1f}%)"
+
+    floor = highest_price * (1.0 - trail_pct)
     final_floor = max(floor, min_lock_price)
     return final_floor, tier_name, trail_pct
 
@@ -212,12 +280,21 @@ def _report_harvest(symbol, pos, exit_price, revenue, tier_name, via_exchange=Fa
     if via_exchange:
         note = "\n🛡️ ขายโดย Stop Loss บนกระดาน BingX" + (" ระหว่างที่บอทออฟไลน์" if downtime else "")
 
+    staged_summary = ""
+    if pos.get("staged_exit_done"):
+        staged_pnl = float(pos.get("staged_realized_pnl", 0.0) or 0.0)
+        total_cycle_pnl = round(staged_pnl + pnl_usdt, 4)
+        staged_summary = (
+            f"\n💰 กำไรก้อนแรก (Staged 50%): {staged_pnl:+.4f} USDT"
+            f"\n🔥 กำไรสุทธิรวมทั้งรอบ (100%): {total_cycle_pnl:+.4f} USDT"
+        )
+
     exit_msg = f"""🏆 [PROFIT HARVEST — ปิดรอบสำเร็จ]
 
 เหรียญ: {symbol}
-กำไรสุทธิ (หักค่าคอมฯ): {pnl_usdt:+.4f} USDT ({gain_pct:+.2f}%)
+กำไรสุทธิก้อนสุดท้าย (หักค่าคอมฯ): {pnl_usdt:+.4f} USDT ({gain_pct:+.2f}%){staged_summary}
 ค่าคอมมิชชันโดยประมาณ: {est_fees:.4f} USDT
-สะสมมาทั้งหมด: {entries} ไม้ (รวมทุน {total_cost:.2f} USDT)
+สะสมมาทั้งหมด: {entries} ไม้ (ทุนก้อนนี้ {total_cost:.2f} USDT)
 ราคาขายเฉลี่ย: {exit_price:.4f}
 ระดับเทรนด์: {tier_name}{note}
 
@@ -247,7 +324,9 @@ def _tier_name_for(pos):
     highest = float(pos.get("highest_price", 0.0) or 0.0)
     if avg <= 0:
         return "N/A"
-    return calculate_tier_trailing_floor((highest - avg) / avg, highest, avg, int(pos.get('entry_count', 1)))[1]
+    sym = pos.get("symbol", "")
+    atr_p = _get_symbol_atr_pct(sym, pos) if sym else float(pos.get("last_atr_pct") or 0.80)
+    return calculate_tier_trailing_floor((highest - avg) / avg, highest, avg, int(pos.get('entry_count', 1)), atr_pct=atr_p)[1]
 
 def _finalize_exchange_sell(symbol, pos, order, downtime=False):
     """ออเดอร์ SL บนกระดานถูก fill แล้ว ➔ ปิดรอบ"""
@@ -345,6 +424,14 @@ def _ensure_exchange_stop(exchange, symbol, pos, floor, current_price):
                 f"ตั้ง Stop Loss บน BingX แล้วที่ {res['stop_price']:.4f} ({pct:+.2f}% จากทุนเฉลี่ย)\n"
                 f"ถ้าบอท/เซิร์ฟเวอร์ล่ม ออเดอร์นี้ยังทำงานเอง และบอทจะขยับตามราคาที่ขึ้นอัตโนมัติ"
             )
+        elif abs(res["stop_price"] - placed) >= (placed * 0.003):  # ขยับขึ้นอย่างน้อย 0.3% แจ้งเตือนสั้นๆ
+            avg = float(pos.get("weighted_avg_price", 0.0))
+            pct = (res["stop_price"] - avg) / avg * 100 if avg > 0 else 0.0
+            main_mod.send_telegram(
+                f"🛡️ [SL ขยับตามราคา] {symbol}\n\n"
+                f"ขยับ Stop Loss บน BingX ขึ้นเป็น {res['stop_price']:.4f} ({pct:+.2f}% จากทุนเฉลี่ย)\n"
+                f"เพื่อล็อกกำไรเพิ่มขึ้นตาม Trailing Floor"
+            )
     else:
         if now - _stop_fail_alert_ts.get(symbol, 0) > 3600:
             _stop_fail_alert_ts[symbol] = now
@@ -419,28 +506,115 @@ def check_trades():
                     continue
 
                 if not pos.get("infinity_active", False):
-                    with main_mod.state_lock:
-                        pos["infinity_active"] = True
-                        pos["highest_price"] = current_price
-                    msg = (f"🚀 [INFINITY RUN ACTIVATED]\n\nเหรียญ: {symbol}\nทุนเฉลี่ยรวม: {weighted_avg:.4f}\n"
-                           f"ราคาปัจจุบัน: {current_price:.4f} (+{gain_pct:.2f}%)\n"
-                           f"🟢 กำไรแตะเป้า! เริ่มลาก Trailing SL ล็อกกำไรอัตโนมัติ (ขั้นต่ำ +{lock_pct*100:.1f}%)")
-                    main_mod.send_telegram(msg)
-                    print(msg, flush=True)
+                    staged_done = False
+                    if (
+                        getattr(config, "STAGED_EXIT_ENABLED", True)
+                        and entries_count >= getattr(config, "STAGED_EXIT_MIN_ENTRIES", 2)
+                        and not pos.get("staged_exit_done", False)
+                    ):
+                        if pos.get("stop_order_id"):
+                            _cancel_stop(exchange, symbol, pos)
+                        ratio = float(getattr(config, "STAGED_EXIT_RATIO", 0.50))
+                        min_notional = float(getattr(config, "STAGED_EXIT_MIN_NOTIONAL_USDT", 5.0))
+                        partial_res = bingx_client.spot_sell_partial(symbol, ratio=ratio, min_notional=min_notional)
+                        if partial_res:
+                            sold_qty = float(partial_res["sold_qty"])
+                            exit_px = float(partial_res["avg_price"])
+                            revenue = float(partial_res["revenue"])
+                            old_qty = float(pos.get("total_qty", 0.0))
+                            old_cost = float(pos.get("total_cost_usdt", 0.0))
+                            sold_fraction = min(1.0, sold_qty / old_qty) if old_qty > 0 else ratio
+                            cost_sold = old_cost * sold_fraction
+                            remain_qty = max(0.0, old_qty - sold_qty)
+                            remain_cost = max(0.0, old_cost - cost_sold)
+
+                            fee_pct = getattr(config, "SPOT_ROUNDTRIP_FEE_PCT", 0.002)
+                            est_fees = (cost_sold + revenue) * (fee_pct / 2.0)
+                            pnl_part = round((revenue - cost_sold) - est_fees, 4)
+
+                            with main_mod.state_lock:
+                                pos["total_qty"] = remain_qty
+                                pos["total_cost_usdt"] = remain_cost
+                                pos["staged_exit_done"] = True
+                                pos["staged_realized_pnl"] = pnl_part
+                                pos["staged_revenue_usdt"] = round(revenue, 4)
+                                pos["staged_cost_usdt"] = round(cost_sold, 4)
+                                pos["infinity_active"] = True
+                                pos["highest_price"] = max(current_price, exit_px)
+
+                            try:
+                                main_mod.last_recorded_usdt_balance = None
+                            except Exception:
+                                pass
+
+                            base_coin = symbol.split("/")[0]
+                            msg = (
+                                f"💰 [STAGED EXIT {ratio*100:.0f}% + INFINITY RUN]\n\n"
+                                f"เหรียญ: {symbol} (สะสม {entries_count} ไม้)\n"
+                                f"ทุนเฉลี่ย: {weighted_avg:.4f} | ราคาขายก้อนแรก: {exit_px:.4f} (+{gain_pct:.2f}%)\n\n"
+                                f"✅ แบ่งขายล็อกกำไรก้อนแรก ({ratio*100:.0f}%): {sold_qty:.6f} {base_coin}\n"
+                                f"💵 ดึงเงินสดกลับพอร์ตทันที: {revenue:.2f} USDT (กำไรสุทธิ {pnl_part:+.4f} USDT)\n\n"
+                                f"🚀 เหรียญที่เหลืออีก {100 - ratio*100:.0f}% ({remain_qty:.6f} {base_coin} | ทุน {remain_cost:.2f} USDT):\n"
+                                f"🟢 เปิดโหมด Free-Roll Infinity Run ลาก Trailing SL ล็อกกำไรขั้นต่ำ +{lock_pct*100:.1f}% ทันที!"
+                            )
+                            main_mod.send_telegram(msg)
+                            print(msg, flush=True)
+                            staged_done = True
+
+                            try:
+                                import google_sheet
+                                free_usdt = bingx_client.get_spot_free_balance("USDT")
+                                google_sheet.log_trade(
+                                    symbol=symbol, side="LONG", entry=weighted_avg, exit_price=exit_px, pnl=pnl_part,
+                                    result="WIN" if pnl_part >= 0 else "LOSS", grade="PASS", score=100, rr=round(gain_pct, 2),
+                                    strategy="SPOT_DCA_STAGED_50", local_regime="SPOT", btc_regime="SPOT",
+                                    margin_used=round(cost_sold, 2), portfolio_balance=round(free_usdt, 2)
+                                )
+                            except Exception as ge:
+                                print(f"[GOOGLE SHEETS LOG ERROR] {ge}", flush=True)
+
+                    if not staged_done:
+                        with main_mod.state_lock:
+                            pos["infinity_active"] = True
+                            pos["highest_price"] = current_price
+                        msg = (f"🚀 [INFINITY RUN ACTIVATED]\n\nเหรียญ: {symbol}\nทุนเฉลี่ยรวม: {weighted_avg:.4f}\n"
+                               f"ราคาปัจจุบัน: {current_price:.4f} (+{gain_pct:.2f}%)\n"
+                               f"🟢 กำไรแตะเป้า! เริ่มลาก Trailing SL ล็อกกำไรอัตโนมัติ (ขั้นต่ำ +{lock_pct*100:.1f}%)")
+                        main_mod.send_telegram(msg)
+                        print(msg, flush=True)
 
                 if current_price > pos.get("highest_price", 0.0):
                     with main_mod.state_lock:
                         pos["highest_price"] = current_price
 
                 highest = pos["highest_price"]
+                peak_gain = (highest - weighted_avg) / weighted_avg
+                atr_pct_now = _get_symbol_atr_pct(symbol, pos)
                 calc_floor, tier_name, trail_pct = calculate_tier_trailing_floor(
-                    (highest - weighted_avg) / weighted_avg, highest, weighted_avg, entries_count)
+                    peak_gain, highest, weighted_avg, entries_count, atr_pct=atr_pct_now)
+
+                # ตรวจสอบการเลื่อนขั้น Tier (Tier 1 ➔ Tier 2 ➔ Tier 3) เพื่อส่งแจ้งเตือนแบบ Futures
+                curr_tier_num = 3 if tier_name.startswith("Tier 3") else (2 if tier_name.startswith("Tier 2") else 1)
+                prev_tier_num = int(pos.get("trailing_tier_num", 1) or 1)
 
                 # Floor ขึ้นอย่างเดียว ไม่ลดลงแม้เปลี่ยน Tier
                 trailing_floor = max(calc_floor, float(pos.get("trailing_floor", 0.0) or 0.0))
                 with main_mod.state_lock:
                     pos["trailing_floor"] = trailing_floor
                     pos["sl"] = f"{trailing_floor:.4f} ({tier_name})"
+                    pos["trailing_tier_num"] = max(curr_tier_num, prev_tier_num)
+
+                if curr_tier_num > prev_tier_num:
+                    lock_gain_pct = ((trailing_floor - weighted_avg) / weighted_avg) * 100 if weighted_avg > 0 else 0.0
+                    tier_msg = (
+                        f"🚀 [TRAILING UPDATED - TIER {curr_tier_num}]\n\n"
+                        f"Symbol: {symbol} (🟩 LONG)\n"
+                        f"Floor ล็อกกำไร: {trailing_floor:.4f} (+{lock_gain_pct:.2f}% จากทุน)\n"
+                        f"ราคาสูงสุด: {highest:.4f} (+{peak_gain*100:.2f}%)\n"
+                        f"🟢 {tier_name} — บีบระยะล็อกกำไรชิดยอดดอยอัตโนมัติ!"
+                    )
+                    main_mod.send_telegram(tier_msg)
+                    print(tier_msg, flush=True)
 
                 # 1) ออเดอร์ SL บนกระดานถูก fill ไปแล้วหรือยัง
                 if _sync_stop_status(exchange, symbol, pos):
