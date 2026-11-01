@@ -2235,7 +2235,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 ราคาเข้า: {entry}
 เริ่ม Trailing: ≥ {entry * (1 + _act_pct):.4f} (+{_act_pct * 100:.1f}%)
 ล็อกกำไรขั้นต่ำ: {entry * (1 + _lock_pct):.4f} (+{_lock_pct * 100:.1f}%)
-Trail: {config.TRAILING_PCT_TIER1 * 100:.1f}% / {config.TRAILING_PCT_TIER2 * 100:.1f}% / {config.TRAILING_PCT_TIER3 * 100:.1f}% (ตามกำไร)
+Trail: {getattr(config, 'TRAILING_ATR_MULT_TIER1', 1.2):.1f}x / {getattr(config, 'TRAILING_ATR_MULT_TIER2', 0.8):.1f}x / {getattr(config, 'TRAILING_ATR_MULT_TIER3', 0.5):.1f}x ATR (ยิ่งกำไรสูง ยิ่งบีบชิดราคา)
 ไม่มี Stop Loss
 """
         print(message, flush=True)
@@ -4459,9 +4459,8 @@ def heartbeat_thread():
 
                 if pos.get("infinity_active"):
                     _sp = float(pos.get("stop_price") or 0.0)
-                    _fl = float(pos.get("trailing_floor") or 0.0)
-                    _sl_state = f"SL บนกระดาน: ✅ {_sp:.4f}" if pos.get("stop_order_id") else "SL บนกระดาน: ⚠️ รอตั้ง"
-                    target_line = f"🚀 รันกำไรอยู่ (Floor: {_fl:.4f} | {_sl_state} | ขยับตามทุก 0.2%)"
+                    _sl_state = f"SL กระดาน ✅ {_sp:.4f}" if pos.get("stop_order_id") else "SL กระดาน ⚠️ ยังไม่ได้ตั้ง"
+                    target_line = f"🚀 Infinity Run ทำงานอยู่ (Floor: {pos.get('sl', 'N/A')} | {_sl_state})"
                 else:
                     _act, _ = config.get_activation_params(pos.get("entry_count", 1))
                     target_line = f"🚀 {avg * (1.0 + _act):.4f} (+{_act*100:.1f}%)"

@@ -191,6 +191,24 @@ STAGED_EXIT_MIN_ENTRIES = 2             # แบ่งขายเฉพาะ�
 STAGED_EXIT_RATIO = 0.50                # สัดส่วนแบ่งขายก้อนแรก (0.50 = ขาย 50% ดึงเงินสด / 50% รัน Trailing ต่อ)
 STAGED_EXIT_MIN_NOTIONAL_USDT = 5.0     # มูลค่าขั้นต่ำต่อก้อน (USDT) ป้องกันติดกฎ Minimum Notional บนกระดาน
 
+# =====================================================================
+# 3-TIER ATR TIGHTENING INFINITY RUN (ยิ่งกำไรสูง ยิ่งบีบ SL ชิดราคาตาม ATR)
+# =====================================================================
+TRAILING_USE_ATR_TIGHTENING = True      # เปิดใช้ Logic บีบระยะ SL แคบลงตาม ATR (1.2x ➔ 0.8x ➔ 0.5x ATR)
+TRAILING_ATR_MULT_TIER1 = 1.2           # Tier 1 (Normal): เว้นระยะ 1.2x ATR
+TRAILING_ATR_MULT_TIER2 = 0.8           # Tier 2 (Tight): บีบระยะแคบลงเหลือ 0.8x ATR
+TRAILING_ATR_MULT_TIER3 = 0.5           # Tier 3 (Locked Tight): ล็อกแน่นชิดราคา 0.5x ATR
+
+TIER2_PROFIT_THRESHOLD_SINGLE = 0.040   # ถือ 1 ไม้: กำไรแตะ +4.0% ขยับเข้า Tier 2 (0.8x ATR)
+TIER3_PROFIT_THRESHOLD_SINGLE = 0.055   # ถือ 1 ไม้: กำไรแตะ +5.5% ขยับเข้า Tier 3 (0.5x ATR)
+TIER2_PROFIT_THRESHOLD_MULTI = 0.030    # สะสม >= 2 ไม้: กำไรแตะ +3.0% ขยับเข้า Tier 2 (0.8x ATR)
+TIER3_PROFIT_THRESHOLD_MULTI = 0.045    # สะสม >= 2 ไม้: กำไรแตะ +4.5% ขยับเข้า Tier 3 (0.5x ATR)
+
+TRAILING_MIN_DISTANCE_PCT = 0.0035      # ระยะห่าง Trailing ขั้นต่ำสุด (0.35%) ป้องกันโดน Spread สะบัดเร็วเกินไป
+TRAILING_MAX_CAP_TIER1 = 0.018          # เพดานระยะห่างสูงสุดใน Tier 1 (1.8%)
+TRAILING_MAX_CAP_TIER2 = 0.014          # เพดานระยะห่างสูงสุดใน Tier 2 (1.4%)
+TRAILING_MAX_CAP_TIER3 = 0.010          # เพดานระยะห่างสูงสุดใน Tier 3 (1.0%)
+
 def get_dynamic_dca_step(atr_pct=0.0):
     """คำนวณระยะย่อตัวขั้นต่ำ (%) สำหรับช้อนไม้ถัดไป ตามความผันผวน ATR ปัจจุบัน"""
     base_step = float(MIN_DCA_DRAWDOWN_PCT)

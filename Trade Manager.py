@@ -153,34 +153,84 @@ def reconcile_closed_trades_on_restart(pre_restart_snapshot):
         print("[RECONCILE] ยอดเหรียญจริงตรงกับไฟล์พอร์ต", flush=True)
 
 # =====================================================================
-# 3-TIER INFINITY RUN ENGINE
+# 3-TIER INFINITY RUN ENGINE (ATR TIGHTENING: 1.2x ➔ 0.8x ➔ 0.5x ATR)
 # =====================================================================
-def calculate_tier_trailing_floor(gain, highest_price, weighted_avg, entry_count=1):
-    """คำนวณ Trailing Floor โดยลดเป้าอัตโนมัติเมื่อสะสมหลายไม้ (Scaled-Down TP)"""
-    act_pct, lock_pct = config.get_activation_params(entry_count)
-    if act_pct != INFINITY_ACTIVATION_PCT:
-        tier1_prefix = f"Fast Recycle (+{act_pct*100:.1f}% ถึง +5%)"
-    else:
-        tier1_prefix = f"Tier 1 (+{act_pct*100:.1f}% ถึง +5%)"
+_atr_cache = {}  # symbol -> (atr_pct, ts)
 
+def _get_symbol_atr_pct(symbol, pos=None):
+    """ดึงค่า 15m ATR% ล่าสุดของเหรียญจากผลการสแกน หรือคำนวณใหม่พร้อม Cache 5 นาที"""
+    now = time.time()
+    try:
+        if hasattr(main_mod, "scan_results") and isinstance(main_mod.scan_results.get(symbol), dict):
+            scan_atr = float(main_mod.scan_results[symbol].get("atr") or 0.0)
+            if scan_atr > 0:
+                _atr_cache[symbol] = (scan_atr, now)
+                if isinstance(pos, dict):
+                    pos["last_atr_pct"] = scan_atr
+                return scan_atr
+    except Exception:
+        pass
+
+    if symbol in _atr_cache and (now - _atr_cache[symbol][1]) < 300:
+        return _atr_cache[symbol][0]
+
+    if isinstance(pos, dict) and float(pos.get("last_atr_pct") or 0.0) > 0:
+        return float(pos["last_atr_pct"])
+
+    try:
+        from indicators import get_dataframe
+        df_15m = get_dataframe(symbol, "15m")
+        if df_15m is not None and len(df_15m) >= 2:
+            m15 = df_15m.iloc[-2]
+            calc_atr = round((float(m15["atr"]) / float(m15["close"])) * 100.0, 2)
+            if calc_atr > 0:
+                _atr_cache[symbol] = (calc_atr, now)
+                if isinstance(pos, dict):
+                    pos["last_atr_pct"] = calc_atr
+                return calc_atr
+    except Exception:
+        pass
+
+    return 0.80
+
+
+def calculate_tier_trailing_floor(gain, highest_price, weighted_avg, entry_count=1, atr_pct=0.80):
+    """คำนวณ Trailing Floor แบบบีบระยะแคบลงตาม ATR เมื่อกำไรสูงขึ้น (Choke Lock: 1.2x ➔ 0.8x ➔ 0.5x ATR)"""
+    entries = int(entry_count or 1)
+    act_pct, lock_pct = config.get_activation_params(entries)
     if gain < act_pct:
         return 0.0, "None", 0.0
 
     min_lock_price = weighted_avg * (1.0 + lock_pct)
+    use_atr = getattr(config, "TRAILING_USE_ATR_TIGHTENING", True)
 
-    if gain < 0.05:
-        floor = highest_price * (1.0 - TRAILING_PCT_TIER1)
-        tier_name = f"{tier1_prefix} | Trail {TRAILING_PCT_TIER1*100:.1f}%"
-        trail_pct = TRAILING_PCT_TIER1
-    elif gain < 0.15:
-        floor = highest_price * (1.0 - TRAILING_PCT_TIER2)
-        tier_name = "Tier 2 (+5% ถึง +15% | Trail 2.5%)"
-        trail_pct = TRAILING_PCT_TIER2
+    if entries >= 2:
+        t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_MULTI", 0.030))
+        t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_MULTI", 0.045))
     else:
-        floor = highest_price * (1.0 - TRAILING_PCT_TIER3)
-        tier_name = "Tier 3 (> +15% | Trail 4.0%)"
-        trail_pct = TRAILING_PCT_TIER3
+        t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_SINGLE", 0.040))
+        t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_SINGLE", 0.055))
 
+    atr_dec = max(0.002, float(atr_pct or 0.80) / 100.0)
+    min_dist = float(getattr(config, "TRAILING_MIN_DISTANCE_PCT", 0.0035))
+
+    if gain < t2_thresh:
+        mult = float(getattr(config, "TRAILING_ATR_MULT_TIER1", 1.2))
+        cap = float(getattr(config, "TRAILING_MAX_CAP_TIER1", 0.018))
+        trail_pct = min(cap, max(min_dist, atr_dec * mult)) if use_atr else TRAILING_PCT_TIER1
+        tier_name = f"Tier 1 (Normal | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+    elif gain < t3_thresh:
+        mult = float(getattr(config, "TRAILING_ATR_MULT_TIER2", 0.8))
+        cap = float(getattr(config, "TRAILING_MAX_CAP_TIER2", 0.014))
+        trail_pct = min(cap, max(min_dist, atr_dec * mult)) if use_atr else TRAILING_PCT_TIER2
+        tier_name = f"Tier 2 (Tight | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+    else:
+        mult = float(getattr(config, "TRAILING_ATR_MULT_TIER3", 0.5))
+        cap = float(getattr(config, "TRAILING_MAX_CAP_TIER3", 0.010))
+        trail_pct = min(cap, max(min_dist, atr_dec * mult)) if use_atr else TRAILING_PCT_TIER3
+        tier_name = f"Tier 3 (Locked Tight | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+
+    floor = highest_price * (1.0 - trail_pct)
     final_floor = max(floor, min_lock_price)
     return final_floor, tier_name, trail_pct
 
@@ -256,7 +306,9 @@ def _tier_name_for(pos):
     highest = float(pos.get("highest_price", 0.0) or 0.0)
     if avg <= 0:
         return "N/A"
-    return calculate_tier_trailing_floor((highest - avg) / avg, highest, avg, int(pos.get('entry_count', 1)))[1]
+    sym = pos.get("symbol", "")
+    atr_p = _get_symbol_atr_pct(sym, pos) if sym else float(pos.get("last_atr_pct") or 0.80)
+    return calculate_tier_trailing_floor((highest - avg) / avg, highest, avg, int(pos.get('entry_count', 1)), atr_pct=atr_p)[1]
 
 def _finalize_exchange_sell(symbol, pos, order, downtime=False):
     """ออเดอร์ SL บนกระดานถูก fill แล้ว ➔ ปิดรอบ"""
@@ -518,14 +570,33 @@ def check_trades():
                         pos["highest_price"] = current_price
 
                 highest = pos["highest_price"]
+                peak_gain = (highest - weighted_avg) / weighted_avg
+                atr_pct_now = _get_symbol_atr_pct(symbol, pos)
                 calc_floor, tier_name, trail_pct = calculate_tier_trailing_floor(
-                    (highest - weighted_avg) / weighted_avg, highest, weighted_avg, entries_count)
+                    peak_gain, highest, weighted_avg, entries_count, atr_pct=atr_pct_now)
+
+                # ตรวจสอบการเลื่อนขั้น Tier (Tier 1 ➔ Tier 2 ➔ Tier 3) เพื่อส่งแจ้งเตือนแบบ Futures
+                curr_tier_num = 3 if tier_name.startswith("Tier 3") else (2 if tier_name.startswith("Tier 2") else 1)
+                prev_tier_num = int(pos.get("trailing_tier_num", 1) or 1)
 
                 # Floor ขึ้นอย่างเดียว ไม่ลดลงแม้เปลี่ยน Tier
                 trailing_floor = max(calc_floor, float(pos.get("trailing_floor", 0.0) or 0.0))
                 with main_mod.state_lock:
                     pos["trailing_floor"] = trailing_floor
                     pos["sl"] = f"{trailing_floor:.4f} ({tier_name})"
+                    pos["trailing_tier_num"] = max(curr_tier_num, prev_tier_num)
+
+                if curr_tier_num > prev_tier_num:
+                    lock_gain_pct = ((trailing_floor - weighted_avg) / weighted_avg) * 100 if weighted_avg > 0 else 0.0
+                    tier_msg = (
+                        f"🚀 [TRAILING UPDATED - TIER {curr_tier_num}]\n\n"
+                        f"Symbol: {symbol} (🟩 LONG)\n"
+                        f"Floor ล็อกกำไร: {trailing_floor:.4f} (+{lock_gain_pct:.2f}% จากทุน)\n"
+                        f"ราคาสูงสุด: {highest:.4f} (+{peak_gain*100:.2f}%)\n"
+                        f"🟢 {tier_name} — บีบระยะล็อกกำไรชิดยอดดอยอัตโนมัติ!"
+                    )
+                    main_mod.send_telegram(tier_msg)
+                    print(tier_msg, flush=True)
 
                 # 1) ออเดอร์ SL บนกระดานถูก fill ไปแล้วหรือยัง
                 if _sync_stop_status(exchange, symbol, pos):
