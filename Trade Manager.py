@@ -354,6 +354,14 @@ def _ensure_exchange_stop(exchange, symbol, pos, floor, current_price):
                 f"ตั้ง Stop Loss บน BingX แล้วที่ {res['stop_price']:.4f} ({pct:+.2f}% จากทุนเฉลี่ย)\n"
                 f"ถ้าบอท/เซิร์ฟเวอร์ล่ม ออเดอร์นี้ยังทำงานเอง และบอทจะขยับตามราคาที่ขึ้นอัตโนมัติ"
             )
+        elif abs(res["stop_price"] - placed) >= (placed * 0.003):  # ขยับขึ้นอย่างน้อย 0.3% แจ้งเตือนสั้นๆ
+            avg = float(pos.get("weighted_avg_price", 0.0))
+            pct = (res["stop_price"] - avg) / avg * 100 if avg > 0 else 0.0
+            main_mod.send_telegram(
+                f"🛡️ [SL ขยับตามราคา] {symbol}\n\n"
+                f"ขยับ Stop Loss บน BingX ขึ้นเป็น {res['stop_price']:.4f} ({pct:+.2f}% จากทุนเฉลี่ย)\n"
+                f"เพื่อล็อกกำไรเพิ่มขึ้นตาม Trailing Floor"
+            )
     else:
         if now - _stop_fail_alert_ts.get(symbol, 0) > 3600:
             _stop_fail_alert_ts[symbol] = now

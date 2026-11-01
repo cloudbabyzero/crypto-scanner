@@ -4459,8 +4459,9 @@ def heartbeat_thread():
 
                 if pos.get("infinity_active"):
                     _sp = float(pos.get("stop_price") or 0.0)
-                    _sl_state = f"SL กระดาน ✅ {_sp:.4f}" if pos.get("stop_order_id") else "SL กระดาน ⚠️ ยังไม่ได้ตั้ง"
-                    target_line = f"🚀 Infinity Run ทำงานอยู่ (Floor: {pos.get('sl', 'N/A')} | {_sl_state})"
+                    _fl = float(pos.get("trailing_floor") or 0.0)
+                    _sl_state = f"SL บนกระดาน: ✅ {_sp:.4f}" if pos.get("stop_order_id") else "SL บนกระดาน: ⚠️ รอตั้ง"
+                    target_line = f"🚀 รันกำไรอยู่ (Floor: {_fl:.4f} | {_sl_state} | ขยับตามทุก 0.2%)"
                 else:
                     _act, _ = config.get_activation_params(pos.get("entry_count", 1))
                     target_line = f"🚀 {avg * (1.0 + _act):.4f} (+{_act*100:.1f}%)"

@@ -1379,7 +1379,14 @@ def cmd_portfolio(message):
                     scout_info = f"\n   - 📡 Scout Radar: กำลังเฝ้าจังหวะลั่นไก ({', '.join(sw.get('reasons', []))})"
 
             if pos.get("infinity_active"):
-                status_line = f"🚀 รันกำไรอยู่{staged_tag} (Floor: {pos.get('sl', 'N/A')})"
+                _sp = float(pos.get("stop_price") or 0.0)
+                _fl = float(pos.get("trailing_floor") or 0.0)
+                _sl_board = f"{_sp:.4f}" if _sp > 0 else "กำลังตั้ง..."
+                status_line = (
+                    f"🚀 รันกำไรอยู่{staged_tag}\n"
+                    f"   - เส้น Trailing ในระบบ (Floor): {_fl:.4f}\n"
+                    f"   - SL บนกระดาน BingX: {_sl_board} (🛡️ ตั้งบนกระดานแล้ว | บอทจะขยับตามเมื่อ Floor ขึ้นทุก 0.2%)"
+                )
             else:
                 staged_plan = " (แตะเป้าแบ่งขาย 50% + รันต่อ 50%)" if entries >= getattr(cfg_mod, "STAGED_EXIT_MIN_ENTRIES", 2) else ""
                 status_line = f"🎯 เป้า TP: {tp_target:.4f}{tp_note}{staged_plan} | เกณฑ์ช้อนไม้ถัดไป: -{dyn_step:.2f}%"
