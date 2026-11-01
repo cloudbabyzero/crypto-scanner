@@ -1234,37 +1234,92 @@ Auto Trade: {"ON" if main_mod.config.AUTO_TRADE else "OFF"}
 # SET MARGIN COMMAND
 # =========================
 
-@bot.message_handler(commands=['set_margin'])
+def _apply_spot_margin(new_amount: float):
+    old_val = float(getattr(main_mod, "ORDER_AMOUNT_USDT", 6.0))
+    main_mod.ORDER_AMOUNT_USDT = float(new_amount)
+    main_mod.config.ORDER_AMOUNT_USDT = float(new_amount)
+    main_mod.config.MIN_USDT_BALANCE = float(new_amount)
+    # ปรับเพดานขั้นต่ำต่อเหรียญให้รองรับอย่างน้อย 2 ไม้เสมอ
+    main_mod.config.MIN_PORTFOLIO_ALLOC_FLOOR_USDT = max(12.0, round(float(new_amount) * 2.0, 2))
+    return old_val, float(new_amount)
+
+
+def _build_margin_status_text():
+    curr_margin = float(getattr(main_mod, "ORDER_AMOUNT_USDT", 6.0))
+    free_usdt = bingx_client.get_spot_free_balance('USDT')
+    bullets = int(free_usdt // curr_margin) if curr_margin > 0 else 0
+    floor_cap = getattr(main_mod.config, "MIN_PORTFOLIO_ALLOC_FLOOR_USDT", max(12.0, curr_margin * 2))
+    return (
+        f"💵 [SPOT DCA MARGIN / ขนาดเงินซื้อต่อไม้]\n\n"
+        f"• ขนาดซื้อต่อไม้ปัจจุบัน: {curr_margin:.1f} USDT\n"
+        f"• เงินสดว่างในพอร์ต: {free_usdt:.2f} USDT (พร้อมยิง ~{bullets} ไม้)\n"
+        f"• เพดานขั้นต่ำต่อเหรียญ (2 ไม้): {floor_cap:.1f} USDT\n\n"
+        f"👇 กดปุ่มเลือกขนาดไม้ด้านล่าง หรือพิมพ์ `/set_margin <จำนวน USDT>` (เช่น `/set_margin 10`):"
+    )
+
+
+def _build_margin_markup():
+    curr = float(getattr(main_mod, "ORDER_AMOUNT_USDT", 6.0))
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    presets = [6.0, 8.0, 10.0, 12.0, 15.0, 20.0]
+    btns = [
+        types.InlineKeyboardButton(
+            f"{'✅ ' if abs(curr - val) < 0.05 else ''}{val:.0f} USDT",
+            callback_data=f"spot_margin_{val}"
+        )
+        for val in presets
+    ]
+    markup.add(*btns)
+    return markup
+
+
+@bot.message_handler(commands=['set_margin', 'margin'])
 def set_margin(message):
+    if not _is_owner(message):
+        return
     try:
-        value = parse_command_value(message.text, float)
-        if value < 0.5:
-            bot.reply_to(message, "❌ Minimum margin is 0.5 USDT (exchange minimum)")
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, _build_margin_status_text(), reply_markup=_build_margin_markup())
             return
-        if value > 50:
-            bot.reply_to(message, "❌ Maximum margin is 50 USDT (safety limit)")
+
+        value = float(parts[1])
+        if value < 5.5:
+            bot.reply_to(message, "❌ ขนาดไม้ขั้นต่ำสำหรับ Spot คือ 5.5 USDT (เพื่อให้เกินเกณฑ์ขั้นต่ำ 5 USDT ของกระดาน BingX)")
             return
-        
-        old_margin = STRATEGY_CONFIG['SCALPING']['MARGIN_PER_TRADE']
-        main_mod.config.STRATEGY_CONFIG['SCALPING']['MARGIN_PER_TRADE'] = value
-        
-        bot.reply_to(message, 
-            f"✅ SCALPING Margin Updated\n\n"
-            f"Old: {old_margin} USDT\n"
-            f"New: {value} USDT\n\n"
-            f"💡 Leverage: x{STRATEGY_CONFIG['SCALPING']['LEVERAGE']}\n"
-            f"Position Size: {value * STRATEGY_CONFIG['SCALPING']['LEVERAGE']:.1f} USDT"
+        if value > 500:
+            bot.reply_to(message, "❌ ขนาดไม้สูงสุดไม่เกิน 500 USDT เพื่อความปลอดภัย")
+            return
+
+        old_margin, new_margin = _apply_spot_margin(value)
+        bot.reply_to(
+            message,
+            f"✅ ปรับขนาดซื้อต่อไม้ (Spot Margin) สำเร็จ!\n\n"
+            f"• เดิม: {old_margin:.1f} USDT ➔ ใหม่: {new_margin:.1f} USDT\n\n"
+            + _build_margin_status_text(),
+            reply_markup=_build_margin_markup()
         )
-    except Exception:
-        bot.reply_to(message, 
-            f"Usage: /set_margin 0.8\n\n"
-            f"Current: {STRATEGY_CONFIG['SCALPING']['MARGIN_PER_TRADE']} USDT\n\n"
-            f"📊 Recommended Margin by Balance:\n"
-            f"10 USDT → 0.5\n"
-            f"20 USDT → 0.8\n"
-            f"40 USDT → 1.2\n"
-            f"80 USDT → 2.0"
+    except ValueError:
+        bot.reply_to(message, "⚠️ กรุณาระบุเป็นตัวเลข เช่น `/set_margin 6` หรือ `/set_margin 10`")
+    except Exception as e:
+        bot.reply_to(message, f"❌ เกิดข้อผิดพลาดในการปรับขนาดไม้: {e}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("spot_margin_"))
+def callback_spot_margin(call):
+    try:
+        val = float(call.data.replace("spot_margin_", ""))
+        old_m, new_m = _apply_spot_margin(val)
+        bot.answer_callback_query(call.id, f"✅ ตั้งขนาดไม้เป็น {new_m:.1f} USDT แล้ว")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=_build_margin_status_text(),
+            reply_markup=_build_margin_markup()
         )
+        main_mod.send_telegram(f"💵 [SPOT MARGIN UPDATED]\n\nเปลี่ยนขนาดเงินซื้อต่อไม้: {old_m:.1f} USDT ➔ {new_m:.1f} USDT")
+    except Exception as e:
+        print(f"[MARGIN CALLBACK ERROR] {e}", flush=True)
 
 
 # =========================
@@ -1332,18 +1387,28 @@ def cmd_portfolio(message):
         with m.state_lock:
             trades_snap = {k: dict(v) for k, v in m.active_trades.items()}
 
+        trail_mode_str = "🔒 Choke Lock (บีบชิดตาม ATR)" if getattr(cfg_mod, "TRAILING_USE_ATR_TIGHTENING", True) else "🌊 Wide Trailing (ถอยกว้างลุ้นคำโต)"
+        curr_order_size = float(getattr(m, "ORDER_AMOUNT_USDT", getattr(cfg_mod, "ORDER_AMOUNT_USDT", 6.0)))
+        bullets_left = int(free_usdt // curr_order_size) if curr_order_size > 0 else 0
         lines = [
             "📊 [ACTIVE INDEX PORTFOLIO]",
-            f"💰 เงินสดว่าง: {free_usdt:.2f} USDT",
+            f"💰 เงินสดว่าง: {free_usdt:.2f} USDT (~{bullets_left} ไม้)",
+            f"💵 ขนาดซื้อต่อไม้: {curr_order_size:.1f} USDT (ปรับกด /set_margin)",
             f"📈 มูลค่าพอร์ตรวม: {total_equity:.2f} USDT",
             f"🛡️ เพดานต่อเหรียญ ({alloc_pct*100:.0f}%): {max_cap:.2f} USDT",
+            f"🎯 โหมด Trailing: {trail_mode_str} (สลับกด /trailing)",
             "───────────────────",
         ]
 
         for sym in cfg_mod.symbols:
             pos = trades_snap.get(sym)
             if not pos or float(pos.get("total_qty", 0.0)) <= 0:
-                lines.append(f"• {sym}: ⚪ ว่าง (รอจังหวะสะสมไม้ 1)")
+                scout_empty = ""
+                if hasattr(m, "hot_watchlist") and sym in m.hot_watchlist:
+                    sw = m.hot_watchlist[sym]
+                    if m.time.time() <= sw.get("expires_at", 0):
+                        scout_empty = f" 👀 [Scout เล็งเป้า: {', '.join(sw.get('reasons', []))}]"
+                lines.append(f"• {sym}: ⚪ ว่าง (รอจังหวะสะสมไม้ 1){scout_empty}")
                 continue
 
             avg = float(pos.get("weighted_avg_price", 0.0))
@@ -1361,15 +1426,28 @@ def cmd_portfolio(message):
             tp_target = avg * (1.0 + tp_pct)
             cap_usage = (cost / max_cap) * 100 if max_cap > 0 else 0
 
+            staged_tag = " [แบ่งขาย 50% แล้ว]" if pos.get("staged_exit_done") else ""
+            atr_scan = 0.0
+            if hasattr(m, "scan_results") and isinstance(m.scan_results.get(sym), dict):
+                atr_scan = float(m.scan_results[sym].get("atr") or 0.0)
+            dyn_step = cfg_mod.get_dynamic_dca_step(atr_scan) if hasattr(cfg_mod, "get_dynamic_dca_step") else getattr(cfg_mod, "MIN_DCA_DRAWDOWN_PCT", 3.0)
+
+            scout_info = ""
+            if hasattr(m, "hot_watchlist") and sym in m.hot_watchlist:
+                sw = m.hot_watchlist[sym]
+                if m.time.time() <= sw.get("expires_at", 0):
+                    scout_info = f"\n   - 📡 Scout Radar: กำลังเฝ้าจังหวะลั่นไก ({', '.join(sw.get('reasons', []))})"
+
             if pos.get("infinity_active"):
-                status_line = f"🚀 รันกำไรอยู่ (Floor: {pos.get('sl', 'N/A')})"
+                status_line = f"🚀 รันกำไรอยู่{staged_tag} (Floor: {pos.get('sl', 'N/A')})"
             else:
-                status_line = f"🎯 เป้า TP: {tp_target:.4f}{tp_note}"
+                staged_plan = " (แตะเป้าแบ่งขาย 50% + รันต่อ 50%)" if entries >= getattr(cfg_mod, "STAGED_EXIT_MIN_ENTRIES", 2) else ""
+                status_line = f"🎯 เป้า TP: {tp_target:.4f}{tp_note}{staged_plan} | เกณฑ์ช้อนไม้ถัดไป: -{dyn_step:.2f}%"
 
             lines.append(
-                f"• {sym} ({entries} ไม้ | ทุนรวม {cost:.1f} USDT — ใช้โควตา {cap_usage:.0f}%):\n"
+                f"• {sym} ({entries} ไม้{staged_tag} | ทุนรวม {cost:.1f} USDT — ใช้โควตา {cap_usage:.0f}%):\n"
                 f"   - ทุนเฉลี่ย: {avg:.4f} | ปัจจุบัน: {px_line}\n"
-                f"   - สถานะ: {status_line}"
+                f"   - สถานะ: {status_line}{scout_info}"
             )
 
         bot.reply_to(message, "\n".join(lines))
@@ -1433,171 +1511,144 @@ def cmd_panic_sell(message):
         bot.reply_to(message, f"❌ เกิดข้อผิดพลาดในการ Panic Sell: {e}")
 
 
+def _build_trailing_status_text():
+    is_choke = getattr(cfg_mod, "TRAILING_USE_ATR_TIGHTENING", True)
+    if is_choke:
+        active_title = "🔒 โหมดปัจจุบัน: CHOKE LOCK (บีบชิดตาม ATR — Default)"
+        detail = (
+            "• Tier 1 (+3.0% / หลายไม้ +2.0%): เว้นระยะ 1.2x ATR\n"
+            "• Tier 2 (+4.0% / หลายไม้ +3.0%): บีบชิดเหลือ 0.8x ATR\n"
+            "• Tier 3 (+5.5% / หลายไม้ +4.5%): ล็อกแน่นติดยอด 0.5x ATR\n"
+            "💡 จุดเด่น: ล็อกกำไรชัวร์ ไม่คืนกำไรให้ตลาด หมุน Cashflow ไว"
+        )
+    else:
+        active_title = "🌊 โหมดปัจจุบัน: WIDE TRAILING (ถอยกว้างลุ้นเทรนด์ใหญ่)"
+        detail = (
+            f"• Tier 1 (+3.0% ถึง +5.0%): ถอยระยะห่าง {cfg_mod.TRAILING_PCT_TIER1*100:.1f}%\n"
+            f"• Tier 2 (+5.0% ถึง +15.0%): ถอยระยะห่าง {cfg_mod.TRAILING_PCT_TIER2*100:.1f}%\n"
+            f"• Tier 3 (> +15.0%): ถอยระยะห่าง {cfg_mod.TRAILING_PCT_TIER3*100:.1f}%\n"
+            "💡 จุดเด่น: ให้พื้นที่ราคาสะบัดตัวเพื่อลุ้นกินคำโต +10% ถึง +15%"
+        )
+    return (
+        f"🎯 [TRAILING PROFIT MODE]\n\n"
+        f"{active_title}\n\n"
+        f"📋 รายละเอียดการทำงาน:\n{detail}\n\n"
+        f"👇 กดปุ่มด้านล่างเพื่อสลับโหมดได้ทันที (หรือพิมพ์ /trailing choke | /trailing wide):"
+    )
+
+
+def _build_trailing_markup():
+    is_choke = getattr(cfg_mod, "TRAILING_USE_ATR_TIGHTENING", True)
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn_choke = types.InlineKeyboardButton(
+        f"{'✅ ' if is_choke else ''}🔒 ใช้โหมด Choke Lock (บีบชิดตาม ATR)",
+        callback_data="trail_mode_choke"
+    )
+    btn_wide = types.InlineKeyboardButton(
+        f"{'✅ ' if not is_choke else ''}🌊 ใช้โหมด Wide Trailing (ถอยกว้างลุ้น 10-15%)",
+        callback_data="trail_mode_wide"
+    )
+    markup.add(btn_choke, btn_wide)
+    return markup
+
+
+def _apply_trailing_mode(use_choke: bool):
+    cfg_mod.TRAILING_USE_ATR_TIGHTENING = bool(use_choke)
+    # หากสลับเป็น Wide Trailing ระหว่างที่มีเหรียญกำลังรัน Infinity Run อยู่ ให้ปลดล็อกค่า Floor เดิมที่บีบแคบไว้เพื่อคำนวณใหม่ตามระยะ Wide (แต่ยังคงล็อกขั้นต่ำ +1.8% / +1.2% เสมอ)
+    if not use_choke:
+        with main_mod.state_lock:
+            for _sym, _pos in main_mod.active_trades.items():
+                if isinstance(_pos, dict) and _pos.get("infinity_active"):
+                    _pos["trailing_floor"] = 0.0
+                    _pos["trailing_tier_num"] = 1
+
+
+@bot.message_handler(commands=['trailing', 'trail'])
+def cmd_trailing_mode(message):
+    if not _is_owner(message):
+        return
+    try:
+        parts = message.text.split()
+        if len(parts) >= 2:
+            arg = parts[1].lower()
+            if arg in ("choke", "atr", "tight", "on", "1"):
+                _apply_trailing_mode(True)
+                bot.reply_to(message, "✅ เปลี่ยนเป็นโหมด 🔒 Choke Lock (บีบชิดตาม ATR) เรียบร้อยแล้ว!\n\n" + _build_trailing_status_text(), reply_markup=_build_trailing_markup())
+                return
+            elif arg in ("wide", "normal", "off", "0"):
+                _apply_trailing_mode(False)
+                bot.reply_to(message, "✅ เปลี่ยนเป็นโหมด 🌊 Wide Trailing (ถอยกว้างลุ้นคำโต) เรียบร้อยแล้ว!\n\n" + _build_trailing_status_text(), reply_markup=_build_trailing_markup())
+                return
+
+        bot.reply_to(message, _build_trailing_status_text(), reply_markup=_build_trailing_markup())
+    except Exception as e:
+        bot.reply_to(message, f"❌ เกิดข้อผิดพลาดในคำสั่ง /trailing: {e}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data in ("trail_mode_choke", "trail_mode_wide"))
+def callback_trailing_mode(call):
+    try:
+        use_choke = (call.data == "trail_mode_choke")
+        _apply_trailing_mode(use_choke)
+        mode_label = "🔒 Choke Lock (บีบชิดตาม ATR)" if use_choke else "🌊 Wide Trailing (ถอยกว้างลุ้นคำโต)"
+        bot.answer_callback_query(call.id, f"✅ สลับเป็น {mode_label} แล้ว")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=_build_trailing_status_text(),
+            reply_markup=_build_trailing_markup()
+        )
+        main_mod.send_telegram(f"🔄 [TRAILING MODE UPDATED]\n\nเปลี่ยนโหมดการลากกำไรเป็น: {mode_label}")
+    except Exception as e:
+        print(f"[TRAILING CALLBACK ERROR] {e}", flush=True)
+
+
 # =========================
 # HELP COMMAND
 # =========================
 
 @bot.message_handler(commands=['help'])
 def help_command(message):
-    text = """
-🤖 AVAILABLE COMMANDS
+    curr_size = float(getattr(main_mod, "ORDER_AMOUNT_USDT", 6.0))
+    trail_mode_str = "🔒 Choke Lock" if getattr(cfg_mod, "TRAILING_USE_ATR_TIGHTENING", True) else "🌊 Wide Trailing"
+    text = f"""🤖 [SPOT DCA BOT — คำสั่งใช้งานทั้งหมด]
 
-📊 Market
+💼 จัดการพอร์ต Spot Portfolio
 
-/market
-ดู market regime และเลือกโหมด
+/p (หรือ /portfolio)
+ดูแดชบอร์ดพอร์ต (เงินสด, ขนาดไม้, เพดาน 20%, เป้า TP, เรดาร์ Scout)
 
-/modes
-ดึงรายงานจำนวนเหรียญในแต่ละ Mode
+/trailing (หรือ /trail)
+สลับโหมดล็อกกำไรระหว่าง 🔒 Choke Lock (Default) กับ 🌊 Wide Trailing
+(ปัจจุบัน: {trail_mode_str})
 
-/cleartrades
-ล้างออเดอร์ค้างในหน่วยความจำของบอท
+/set_margin <จำนวน USDT> (หรือ /margin)
+ปรับขนาดเงินซื้อต่อไม้ (ปัจจุบัน: {curr_size:.1f} USDT)
+เช่น `/set_margin 6` หรือพิมพ์ `/set_margin` เพื่อกดปุ่มเลือก
 
-/cleardebug
-ล้างข้อมูลใน Google Sheets (Debug) โดยคงแถว Header ไว้
+/panic_sell <ชื่อเหรียญ>
+ขายเหรียญนั้นเกลี้ยงพอร์ตทันที (ยกเลิก SL บนกระดานให้อัตโนมัติ)
+เช่น `/panic_sell AAVE` หรือ `/panic_sell SOL`
 
-/config
-ดู config ปัจจุบัน
-
-/strategy
-ดู TREND/SIDEWAYS strategy settings
-
-🎮 Control Mode (Feature 8)
-
-/setauto
-ดู control mode ปัจจุบัน
-
-/setauto auto
-เปิด AUTO mode (bot ควบคุมอัตโนมัติ)
-
-/setauto trend
-บังคับ TREND mode ตลอด
-
-/setauto sideways
-บังคับ SIDEWAYS mode ตลอด
-
-/setauto scalping
-บังคับ SCALPING mode ตลอด
-
-/setauto scalpside
-สลับ SCALPING คู่ SIDEWAYS อัตโนมัติ (ปิดโหมดเทรน)
-
-📈 Trend Strategy
-
-/trendadx <value>
-เปลี่ยน TREND MIN ADX
-
-Example: /trendadx 25
-
-/trendatr <value>
-เปลี่ยน TREND MIN ATR
-
-Example: /trendatr 0.50
-
-📉 Sideways Strategy
-
-/sideadx <value>
-เปลี่ยน SIDEWAYS MAX ADX
-
-Example: /sideadx 18
-
-/sideatr <value>
-เปลี่ยน SIDEWAYS MIN ATR
-
-Example: /sideatr 0.20
-
-🤖 Auto Trade
-
-/autoon
-เปิด AUTO TRADE
-
-/autooff
-ปิด AUTO TRADE
-
-/autostatus
-ดู status AUTO TRADE
-
-/grade A
-เปลี่ยน grade filter (A+, A, B, C)
-
-📋 Reports
+───────────────────
+📡 ตรวจสอบสัญญาณ & ระบบ
 
 /scanreport
-ดูผลสแกนล่าสุด
-
-/status
-ดูสถานะบอท
-
-/heartbeat
-ดูสถานะแบบละเอียด
-
-💼 Spot Portfolio
-
-/p
-ดูแดชบอร์ดพอร์ต (เงินสด, เพดาน 20%, เป้า TP)
-
-/panic_sell AAVE
-ขายเหรียญนั้นเกลี้ยงทันที (ยกเลิก SL บนกระดานก่อน)
-
-📊 Other
-
-/ping
-เช็คว่าบอทยังออนไลน์ไหม
-
-/stats
-ดู winrate
-
-/trades
-ดู active trades
-
-/coins
-ดูเหรียญที่สแกน
-
-/modes
-ดู Market Regime (สภาพตลาด) ของแต่ละเหรียญ
+ดูผลสแกนล่าสุดและสถานะ Scout Radar ของทั้ง 5 เหรียญ
 
 /forcecheck
-บังคับสแกนทันที
+บังคับสแกนตลาดทั้ง 5 เหรียญทันทีโดยไม่รอ Cooldown
 
-/cleartrades
-ล้าง active trades ที่ค้างในระบบ
+/cleardebug
+ล้างข้อมูลหน้า Debug ใน Google Sheets
 
-/long xrp
-เปิด LONG
+/autoon | /autooff
+เปิด หรือ ปิด การยิงซื้ออัตโนมัติ
 
-/short xrp
-เปิด SHORT
-
-/csv
-ดาวน์โหลด signals.csv
-
-/dashboard
-ดู dashboard สถิติทั้งหมด
-
-💰 Risk Management
-
-/set_margin <value>
-เปลี่ยน margin ต่อไม้ (USDT)
-
-Example: /set_margin 0.8
-
-/set_max_trades <value>
-เปลี่ยนจำนวนไม้สูงสุด
-
-Example: /set_max_trades 2
-
-📊 Recommended Margin:
-10 USDT → 0.5
-20 USDT → 0.8
-40 USDT → 1.2
-80 USDT → 2.0
-
----
-
-/help
-ดูคำสั่งทั้งหมด
+/ping | /heartbeat
+เช็กสถานะบอทออนไลน์และเวลาทำงาน (Uptime)
 """
-    bot.reply_to(message, text)
+    bot.reply_to(message, text.strip())
 
 
 # =========================

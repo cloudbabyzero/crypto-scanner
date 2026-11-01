@@ -115,6 +115,71 @@ def spot_sell_all(symbol):
         return None
 
 
+def spot_sell_partial(symbol, ratio=0.50, min_notional=5.0):
+    """
+    สั่งขายเหรียญบางส่วน (เช่น 50% สำหรับ Staged Exit) ในกระเป๋า Spot คืนเป็น USDT
+    พร้อมตรวจสอบว่าทั้งส่วนที่ขายและส่วนที่เหลือรันต่อ มีมูลค่า >= min_notional (5.0 USDT)
+    ถ้าไม่ผ่านเกณฑ์ขั้นต่ำของกระดาน จะคืนค่า None เพื่อให้ระบบรัน Trailing 100% ตามปกติโดยไม่แครช
+    """
+    exchange = get_exchange()
+    base_coin = symbol.split('/')[0]
+
+    try:
+        actual_qty = get_spot_free_balance(base_coin)
+        if actual_qty <= 0:
+            print(f"[SPOT PARTIAL SELL] {symbol} ไม่มียอดเหรียญ {base_coin} คงเหลือให้ขาย", flush=True)
+            return None
+
+        ticker = exchange.fetch_ticker(symbol)
+        last_px = float(ticker['last'])
+        if last_px <= 0:
+            return None
+
+        raw_sell_qty = actual_qty * float(ratio)
+        sell_qty = float(exchange.amount_to_precision(symbol, raw_sell_qty))
+        remain_qty = float(exchange.amount_to_precision(symbol, max(0.0, actual_qty - sell_qty)))
+
+        sell_val = sell_qty * last_px
+        remain_val = remain_qty * last_px
+
+        if sell_qty <= 0 or sell_val < min_notional or remain_val < (min_notional * 0.96):
+            print(
+                f"[SPOT PARTIAL SELL] {symbol} มูลค่าแบ่งขาย ({sell_val:.2f} USDT) "
+                f"หรือส่วนที่เหลือ ({remain_val:.2f} USDT) ต่ำกว่าเกณฑ์ขั้นต่ำ {min_notional} USDT "
+                f"➔ ข้ามการแบ่งขาย (ปล่อยรันเต็ม 100%)",
+                flush=True
+            )
+            return None
+
+        print(f"[BINGX SPOT] สั่งแบ่งขาย Staged Exit ({ratio*100:.0f}%): {symbol} จำนวน {sell_qty} {base_coin} (~{sell_val:.2f} USDT)", flush=True)
+        order = exchange.create_order(
+            symbol=symbol,
+            type='market',
+            side='sell',
+            amount=sell_qty
+        )
+
+        filled_qty = float(order.get('filled') or order.get('amount') or sell_qty)
+        cost = float(order.get('cost') or (filled_qty * last_px))
+        avg_price = cost / filled_qty if filled_qty > 0 else last_px
+
+        return {
+            "order": order,
+            "sold_qty": filled_qty,
+            "remain_qty": max(0.0, actual_qty - filled_qty),
+            "avg_price": avg_price,
+            "revenue": cost
+        }
+
+    except Exception as e:
+        err_msg = f"🚨 [SPOT PARTIAL SELL ERROR] แบ่งขาย {symbol} ล้มเหลว: {e}"
+        if hasattr(main_mod, 'send_telegram'):
+            main_mod.send_telegram(err_msg)
+        print(err_msg, flush=True)
+        traceback.print_exc()
+        return None
+
+
 # =====================================================================
 # EXCHANGE-SIDE STOP LOSS (TAKE_STOP_MARKET) — ส่งคำสั่งตรงเข้า BingX Spot API
 # ไม่ผ่าน create_order ของ ccxt เพราะถ้า ccxt ไม่รู้จักพารามิเตอร์ SL มันจะกลายเป็น Market Sell ขายทิ้งทันที
