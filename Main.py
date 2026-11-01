@@ -2228,6 +2228,10 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         # ---------- Spot signal message ----------
         _act_pct = config.INFINITY_ACTIVATION_PCT
         _lock_pct = config.INFINITY_MIN_LOCK_PCT
+        if getattr(config, 'TRAILING_USE_ATR_TIGHTENING', True):
+            _trail_desc = f"🔒 Choke Lock ({getattr(config, 'TRAILING_ATR_MULT_TIER1', 1.2):.1f}x / {getattr(config, 'TRAILING_ATR_MULT_TIER2', 0.8):.1f}x / {getattr(config, 'TRAILING_ATR_MULT_TIER3', 0.5):.1f}x ATR)"
+        else:
+            _trail_desc = f"🌊 Wide Trailing ({config.TRAILING_PCT_TIER1 * 100:.1f}% / {config.TRAILING_PCT_TIER2 * 100:.1f}% / {config.TRAILING_PCT_TIER3 * 100:.1f}%)"
 
         message = f"""⚡ BUY SIGNAL — {symbol} ({side_icon} {side})
 🎯 โหมดลั่นไก: {trigger_mode_label}
@@ -2235,7 +2239,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
 ราคาเข้า: {entry}
 เริ่ม Trailing: ≥ {entry * (1 + _act_pct):.4f} (+{_act_pct * 100:.1f}%)
 ล็อกกำไรขั้นต่ำ: {entry * (1 + _lock_pct):.4f} (+{_lock_pct * 100:.1f}%)
-Trail: {getattr(config, 'TRAILING_ATR_MULT_TIER1', 1.2):.1f}x / {getattr(config, 'TRAILING_ATR_MULT_TIER2', 0.8):.1f}x / {getattr(config, 'TRAILING_ATR_MULT_TIER3', 0.5):.1f}x ATR (ยิ่งกำไรสูง ยิ่งบีบชิดราคา)
+Trail: {_trail_desc}
 ไม่มี Stop Loss
 """
         print(message, flush=True)
@@ -4643,12 +4647,16 @@ def main():
         except Exception:
             price_lines += f"• {_sym.split('/')[0]}: N/A\n"
 
+    # บังคับค่าเริ่มต้นทุกครั้งที่เปิดบอทให้เป็นโหมด Choke Lock (บีบชิดตาม ATR) เสมอ
+    config.TRAILING_USE_ATR_TIGHTENING = True
+
     send_telegram(
         f"🚀 [BOT STARTED]\n\n"
         f"เวลา: {startup_time}\n"
         f"BTC เทรนด์: {btc_trend_line}\n"
         f"Market Regime: {CURRENT_REGIME}\n"
-        f"โหมด: {market_mode_text} | Auto Trade: {auto_status}\n\n"
+        f"โหมด: {market_mode_text} | Auto Trade: {auto_status}\n"
+        f"🎯 โหมดขายทำกำไร: 🔒 Choke Lock (Default — สลับได้ด้วย /trailing)\n\n"
         f"💲 ราคาตอนนี้:\n{price_lines}\n"
         f"💰 เงินสดคงเหลือ: {cash_su:.2f} USDT\n"
         f"📦 เหรียญที่ถืออยู่: {restored_trades}/{len(symbols)}"

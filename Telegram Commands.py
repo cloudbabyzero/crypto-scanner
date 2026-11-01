@@ -1332,11 +1332,13 @@ def cmd_portfolio(message):
         with m.state_lock:
             trades_snap = {k: dict(v) for k, v in m.active_trades.items()}
 
+        trail_mode_str = "🔒 Choke Lock (บีบชิดตาม ATR)" if getattr(cfg_mod, "TRAILING_USE_ATR_TIGHTENING", True) else "🌊 Wide Trailing (ถอยกว้างลุ้นคำโต)"
         lines = [
             "📊 [ACTIVE INDEX PORTFOLIO]",
             f"💰 เงินสดว่าง: {free_usdt:.2f} USDT",
             f"📈 มูลค่าพอร์ตรวม: {total_equity:.2f} USDT",
             f"🛡️ เพดานต่อเหรียญ ({alloc_pct*100:.0f}%): {max_cap:.2f} USDT",
+            f"🎯 โหมด Trailing: {trail_mode_str} (สลับกด /trailing)",
             "───────────────────",
         ]
 
@@ -1379,14 +1381,7 @@ def cmd_portfolio(message):
                     scout_info = f"\n   - 📡 Scout Radar: กำลังเฝ้าจังหวะลั่นไก ({', '.join(sw.get('reasons', []))})"
 
             if pos.get("infinity_active"):
-                _sp = float(pos.get("stop_price") or 0.0)
-                _fl = float(pos.get("trailing_floor") or 0.0)
-                _sl_board = f"{_sp:.4f}" if _sp > 0 else "กำลังตั้ง..."
-                status_line = (
-                    f"🚀 รันกำไรอยู่{staged_tag}\n"
-                    f"   - เส้น Trailing ในระบบ (Floor): {_fl:.4f}\n"
-                    f"   - SL บนกระดาน BingX: {_sl_board} (🛡️ ตั้งบนกระดานแล้ว | บอทจะขยับตามเมื่อ Floor ขึ้นทุก 0.2%)"
-                )
+                status_line = f"🚀 รันกำไรอยู่{staged_tag} (Floor: {pos.get('sl', 'N/A')})"
             else:
                 staged_plan = " (แตะเป้าแบ่งขาย 50% + รันต่อ 50%)" if entries >= getattr(cfg_mod, "STAGED_EXIT_MIN_ENTRIES", 2) else ""
                 status_line = f"🎯 เป้า TP: {tp_target:.4f}{tp_note}{staged_plan} | เกณฑ์ช้อนไม้ถัดไป: -{dyn_step:.2f}%"
@@ -1456,6 +1451,98 @@ def cmd_panic_sell(message):
 
     except Exception as e:
         bot.reply_to(message, f"❌ เกิดข้อผิดพลาดในการ Panic Sell: {e}")
+
+
+def _build_trailing_status_text():
+    is_choke = getattr(cfg_mod, "TRAILING_USE_ATR_TIGHTENING", True)
+    if is_choke:
+        active_title = "🔒 โหมดปัจจุบัน: CHOKE LOCK (บีบชิดตาม ATR — Default)"
+        detail = (
+            "• Tier 1 (+3.0% / หลายไม้ +2.0%): เว้นระยะ 1.2x ATR\n"
+            "• Tier 2 (+4.0% / หลายไม้ +3.0%): บีบชิดเหลือ 0.8x ATR\n"
+            "• Tier 3 (+5.5% / หลายไม้ +4.5%): ล็อกแน่นติดยอด 0.5x ATR\n"
+            "💡 จุดเด่น: ล็อกกำไรชัวร์ ไม่คืนกำไรให้ตลาด หมุน Cashflow ไว"
+        )
+    else:
+        active_title = "🌊 โหมดปัจจุบัน: WIDE TRAILING (ถอยกว้างลุ้นเทรนด์ใหญ่)"
+        detail = (
+            f"• Tier 1 (+3.0% ถึง +5.0%): ถอยระยะห่าง {cfg_mod.TRAILING_PCT_TIER1*100:.1f}%\n"
+            f"• Tier 2 (+5.0% ถึง +15.0%): ถอยระยะห่าง {cfg_mod.TRAILING_PCT_TIER2*100:.1f}%\n"
+            f"• Tier 3 (> +15.0%): ถอยระยะห่าง {cfg_mod.TRAILING_PCT_TIER3*100:.1f}%\n"
+            "💡 จุดเด่น: ให้พื้นที่ราคาสะบัดตัวเพื่อลุ้นกินคำโต +10% ถึง +15%"
+        )
+    return (
+        f"🎯 [TRAILING PROFIT MODE]\n\n"
+        f"{active_title}\n\n"
+        f"📋 รายละเอียดการทำงาน:\n{detail}\n\n"
+        f"👇 กดปุ่มด้านล่างเพื่อสลับโหมดได้ทันที (หรือพิมพ์ /trailing choke | /trailing wide):"
+    )
+
+
+def _build_trailing_markup():
+    is_choke = getattr(cfg_mod, "TRAILING_USE_ATR_TIGHTENING", True)
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn_choke = types.InlineKeyboardButton(
+        f"{'✅ ' if is_choke else ''}🔒 ใช้โหมด Choke Lock (บีบชิดตาม ATR)",
+        callback_data="trail_mode_choke"
+    )
+    btn_wide = types.InlineKeyboardButton(
+        f"{'✅ ' if not is_choke else ''}🌊 ใช้โหมด Wide Trailing (ถอยกว้างลุ้น 10-15%)",
+        callback_data="trail_mode_wide"
+    )
+    markup.add(btn_choke, btn_wide)
+    return markup
+
+
+def _apply_trailing_mode(use_choke: bool):
+    cfg_mod.TRAILING_USE_ATR_TIGHTENING = bool(use_choke)
+    # หากสลับเป็น Wide Trailing ระหว่างที่มีเหรียญกำลังรัน Infinity Run อยู่ ให้ปลดล็อกค่า Floor เดิมที่บีบแคบไว้เพื่อคำนวณใหม่ตามระยะ Wide (แต่ยังคงล็อกขั้นต่ำ +1.8% / +1.2% เสมอ)
+    if not use_choke:
+        with main_mod.state_lock:
+            for _sym, _pos in main_mod.active_trades.items():
+                if isinstance(_pos, dict) and _pos.get("infinity_active"):
+                    _pos["trailing_floor"] = 0.0
+                    _pos["trailing_tier_num"] = 1
+
+
+@bot.message_handler(commands=['trailing', 'trail'])
+def cmd_trailing_mode(message):
+    if not _is_owner(message):
+        return
+    try:
+        parts = message.text.split()
+        if len(parts) >= 2:
+            arg = parts[1].lower()
+            if arg in ("choke", "atr", "tight", "on", "1"):
+                _apply_trailing_mode(True)
+                bot.reply_to(message, "✅ เปลี่ยนเป็นโหมด 🔒 Choke Lock (บีบชิดตาม ATR) เรียบร้อยแล้ว!\n\n" + _build_trailing_status_text(), reply_markup=_build_trailing_markup())
+                return
+            elif arg in ("wide", "normal", "off", "0"):
+                _apply_trailing_mode(False)
+                bot.reply_to(message, "✅ เปลี่ยนเป็นโหมด 🌊 Wide Trailing (ถอยกว้างลุ้นคำโต) เรียบร้อยแล้ว!\n\n" + _build_trailing_status_text(), reply_markup=_build_trailing_markup())
+                return
+
+        bot.reply_to(message, _build_trailing_status_text(), reply_markup=_build_trailing_markup())
+    except Exception as e:
+        bot.reply_to(message, f"❌ เกิดข้อผิดพลาดในคำสั่ง /trailing: {e}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data in ("trail_mode_choke", "trail_mode_wide"))
+def callback_trailing_mode(call):
+    try:
+        use_choke = (call.data == "trail_mode_choke")
+        _apply_trailing_mode(use_choke)
+        mode_label = "🔒 Choke Lock (บีบชิดตาม ATR)" if use_choke else "🌊 Wide Trailing (ถอยกว้างลุ้นคำโต)"
+        bot.answer_callback_query(call.id, f"✅ สลับเป็น {mode_label} แล้ว")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=_build_trailing_status_text(),
+            reply_markup=_build_trailing_markup()
+        )
+        main_mod.send_telegram(f"🔄 [TRAILING MODE UPDATED]\n\nเปลี่ยนโหมดการลากกำไรเป็น: {mode_label}")
+    except Exception as e:
+        print(f"[TRAILING CALLBACK ERROR] {e}", flush=True)
 
 
 # =========================
@@ -1559,7 +1646,10 @@ Example: /sideatr 0.20
 💼 Spot Portfolio
 
 /p
-ดูแดชบอร์ดพอร์ต (เงินสด, เพดาน 20%, เป้า TP)
+ดูแดชบอร์ดพอร์ต (เงินสด, เพดาน 20%, เป้า TP, โหมด Trailing)
+
+/trailing (หรือ /trail)
+เปิดเมนูสลับโหมดขายทำกำไรระหว่าง 🔒 Choke Lock (Default) กับ 🌊 Wide Trailing
 
 /panic_sell AAVE
 ขายเหรียญนั้นเกลี้ยงทันที (ยกเลิก SL บนกระดานก่อน)

@@ -204,31 +204,49 @@ def calculate_tier_trailing_floor(gain, highest_price, weighted_avg, entry_count
     min_lock_price = weighted_avg * (1.0 + lock_pct)
     use_atr = getattr(config, "TRAILING_USE_ATR_TIGHTENING", True)
 
-    if entries >= 2:
-        t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_MULTI", 0.030))
-        t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_MULTI", 0.045))
-    else:
-        t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_SINGLE", 0.040))
-        t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_SINGLE", 0.055))
+    if use_atr:
+        # โหมด Choke Lock (Default): ยิ่งกำไรสูง ยิ่งบีบระยะตาม ATR (1.2x ➔ 0.8x ➔ 0.5x ATR)
+        if entries >= 2:
+            t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_MULTI", 0.030))
+            t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_MULTI", 0.045))
+        else:
+            t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_SINGLE", 0.040))
+            t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_SINGLE", 0.055))
 
-    atr_dec = max(0.002, float(atr_pct or 0.80) / 100.0)
-    min_dist = float(getattr(config, "TRAILING_MIN_DISTANCE_PCT", 0.0035))
+        atr_dec = max(0.002, float(atr_pct or 0.80) / 100.0)
+        min_dist = float(getattr(config, "TRAILING_MIN_DISTANCE_PCT", 0.0035))
 
-    if gain < t2_thresh:
-        mult = float(getattr(config, "TRAILING_ATR_MULT_TIER1", 1.2))
-        cap = float(getattr(config, "TRAILING_MAX_CAP_TIER1", 0.018))
-        trail_pct = min(cap, max(min_dist, atr_dec * mult)) if use_atr else TRAILING_PCT_TIER1
-        tier_name = f"Tier 1 (Normal | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
-    elif gain < t3_thresh:
-        mult = float(getattr(config, "TRAILING_ATR_MULT_TIER2", 0.8))
-        cap = float(getattr(config, "TRAILING_MAX_CAP_TIER2", 0.014))
-        trail_pct = min(cap, max(min_dist, atr_dec * mult)) if use_atr else TRAILING_PCT_TIER2
-        tier_name = f"Tier 2 (Tight | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+        if gain < t2_thresh:
+            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER1", 1.2))
+            cap = float(getattr(config, "TRAILING_MAX_CAP_TIER1", 0.018))
+            trail_pct = min(cap, max(min_dist, atr_dec * mult))
+            tier_name = f"Tier 1 [Choke Lock] (Normal | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+        elif gain < t3_thresh:
+            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER2", 0.8))
+            cap = float(getattr(config, "TRAILING_MAX_CAP_TIER2", 0.014))
+            trail_pct = min(cap, max(min_dist, atr_dec * mult))
+            tier_name = f"Tier 2 [Choke Lock] (Tight | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+        else:
+            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER3", 0.5))
+            cap = float(getattr(config, "TRAILING_MAX_CAP_TIER3", 0.010))
+            trail_pct = min(cap, max(min_dist, atr_dec * mult))
+            tier_name = f"Tier 3 [Choke Lock] (Locked Tight | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
     else:
-        mult = float(getattr(config, "TRAILING_ATR_MULT_TIER3", 0.5))
-        cap = float(getattr(config, "TRAILING_MAX_CAP_TIER3", 0.010))
-        trail_pct = min(cap, max(min_dist, atr_dec * mult)) if use_atr else TRAILING_PCT_TIER3
-        tier_name = f"Tier 3 (Locked Tight | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+        # โหมด Wide Trailing: ถอยระยะห่างเพื่อลุ้นรันเทรนด์ใหญ่ (+10% ถึง +15%)
+        if act_pct != INFINITY_ACTIVATION_PCT:
+            tier1_prefix = f"Fast Recycle (+{act_pct*100:.1f}% ถึง +5%)"
+        else:
+            tier1_prefix = f"Tier 1 [Wide] (+{act_pct*100:.1f}% ถึง +5%)"
+
+        if gain < 0.05:
+            trail_pct = TRAILING_PCT_TIER1
+            tier_name = f"{tier1_prefix} | Trail {TRAILING_PCT_TIER1*100:.1f}%"
+        elif gain < 0.15:
+            trail_pct = TRAILING_PCT_TIER2
+            tier_name = f"Tier 2 [Wide] (+5% ถึง +15% | Trail {TRAILING_PCT_TIER2*100:.1f}%)"
+        else:
+            trail_pct = TRAILING_PCT_TIER3
+            tier_name = f"Tier 3 [Wide] (> +15% | Trail {TRAILING_PCT_TIER3*100:.1f}%)"
 
     floor = highest_price * (1.0 - trail_pct)
     final_floor = max(floor, min_lock_price)
