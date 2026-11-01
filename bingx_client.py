@@ -1,3 +1,4 @@
+__version__ = "2.5.0"
 """
 BingX Spot Client Module.
 Handles Spot Market Buy (quoteOrderQty) and Full Market Sell with precision formatting.

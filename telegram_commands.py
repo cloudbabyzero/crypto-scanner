@@ -1,3 +1,4 @@
+__version__ = "2.5.0"
 """Telegram command handlers module.
 
 All handlers are registered here and access shared state/functions from main.py
@@ -35,7 +36,7 @@ def parse_command_value(message_text, cast_fn):
 
 @bot.message_handler(commands=['ping'])
 def ping(message):
-    bot.reply_to(message, "✅ Bot Online")
+    bot.reply_to(message, f"✅ Bot Online (v{getattr(main_mod.config, 'BOT_VERSION', '2.5.0')})")
 
 
 # =========================
@@ -1647,6 +1648,9 @@ def help_command(message):
 
 /ping | /heartbeat
 เช็กสถานะบอทออนไลน์และเวลาทำงาน (Uptime)
+
+/version (หรือ /v)
+เช็กเวอร์ชันของไฟล์โมดูลทั้งหมด ป้องกันไฟล์ไม่ซิงค์
 """
     bot.reply_to(message, text.strip())
 
@@ -1790,3 +1794,27 @@ def set_grade(message):
         )
     except Exception as e:
         bot.reply_to(message, f"ERROR: {str(e)}")
+
+
+# =========================
+# VERSION COMMAND
+# =========================
+
+@bot.message_handler(commands=['version', 'v'])
+def cmd_version(message):
+    v_main = getattr(main_mod, '__version__', 'N/A')
+    v_cfg = getattr(cfg_mod, 'BOT_VERSION', 'N/A')
+    v_tm = getattr(main_mod.trade_manager, '__version__', 'N/A')
+    v_bingx = getattr(bingx_client, '__version__', 'N/A')
+    v_tg = __version__
+    text = (
+        "🏷️ [BOT SYSTEM VERSIONS]\n\n"
+        f"• Core Build: v{v_cfg}\n"
+        f"• main.py: v{v_main}\n"
+        f"• config.py: v{v_cfg}\n"
+        f"• trade_manager.py: v{v_tm}\n"
+        f"• bingx_client.py: v{v_bingx}\n"
+        f"• telegram_commands.py: v{v_tg}\n\n"
+        f"📅 Release Date: {getattr(cfg_mod, 'BOT_BUILD_DATE', '2026-11-01')}"
+    )
+    bot.reply_to(message, text)

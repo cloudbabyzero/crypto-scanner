@@ -1,3 +1,4 @@
+__version__ = "2.5.0"
 """
 Trade Manager Module (Spot DCA & 3-Tier Infinity Run).
 Monitors position state, weighted average cost, and executes Trailing profit exits.

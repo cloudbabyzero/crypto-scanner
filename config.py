@@ -1,3 +1,6 @@
+BOT_VERSION = "2.5.0-spot-dca"
+BOT_BUILD_DATE = "2026-11-01"
+__version__ = "2.5.0"
 """
 Configuration file for Crypto Scanner Bot.
 Architecture: Spot Signal-Driven DCA + 3-Tier Infinity Run (The Core 5)
