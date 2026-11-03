@@ -1,4 +1,4 @@
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 import os
 import shutil
 
@@ -346,7 +346,7 @@ def build_recovery_message(trades):
     if not trades:
         return "🔄 [SYSTEM RECOVERY]\n\nบอทรีสตาร์ตสำเร็จ! พอร์ตว่างเปล่า (เงินสด 100% พร้อมช้อนไม้ 1)"
 
-    lines = [f"🔄 [SYSTEM RECOVERY — v{getattr(config, 'BOT_VERSION', '2.5.0')}]", "", "บอทรีสตาร์ตสำเร็จ! กู้คืนพอร์ตสะสมเหรียญได้ครบถ้วน:", ""]
+    lines = [f"🔄 [SYSTEM RECOVERY — v{getattr(config, 'BOT_VERSION', '2.6.0')}]", "", "บอทรีสตาร์ตสำเร็จ! กู้คืนพอร์ตสะสมเหรียญได้ครบถ้วน:", ""]
     total_cost_all = 0.0
     for sym, pos in trades.items():
         base = sym.split("/")[0]
@@ -703,24 +703,36 @@ def run_priority_dca_engine():
                     f"ติดเพดาน {alloc_pct*100:.0f}% ของพอร์ต (ถืออยู่ {current_cost:.1f}/{max_cap_per_coin:.1f} USDT) รอเงินเติม"))
                 continue
 
-            # ด่าน 3: Dynamic ATR Drawdown Step (ขยายระยะช้อนอัตโนมัติเมื่อตลาดผันผวนสูง)
+            # ด่าน 3: Real-time Adaptive DCA Step (คำนวณทุกไม้ตั้งแต่ไม้ 2 เป็นต้นไป: Progressive + ATR Expansion - Reversal Discount)
             avg = float(pos.get("weighted_avg_price", 0.0) or 0.0)
             if avg > 0:
                 drawdown_pct = ((sig["entry"] - avg) / avg) * 100
-                atr_pct = float(sig.get("atr_pct") or scan_results.get(sym, {}).get("atr") or 0.0)
-                if hasattr(config, "get_dynamic_dca_step"):
-                    req_dca_step = config.get_dynamic_dca_step(atr_pct)
+                entries_held = int(pos.get("entry_count", 1) or 1)
+                next_entry_num = entries_held + 1
+                scan_info = scan_results.get(sym, {}) if isinstance(scan_results.get(sym), dict) else {}
+                atr_pct = float(sig.get("atr_pct") or scan_info.get("atr") or 0.0)
+                if sig.get("req_dca_step") is not None:
+                    req_dca_step = float(sig["req_dca_step"])
+                elif scan_info.get("req_dca_step") is not None:
+                    req_dca_step = float(scan_info["req_dca_step"])
+                elif hasattr(config, "get_dynamic_dca_step"):
+                    req_dca_step = config.get_dynamic_dca_step(
+                        atr_pct=atr_pct,
+                        entry_count=entries_held,
+                        rsi_val=float(sig.get("rsi") or scan_info.get("rsi") or 50.0),
+                        stoch_val=float(sig.get("stoch_rsi") or scan_info.get("stoch_rsi") or 50.0),
+                        is_reversal=bool(sig.get("is_reversal", False)),
+                        has_absorption=bool(sig.get("has_absorption", False))
+                    )
                 else:
                     req_dca_step = min_dca_step
 
                 if drawdown_pct > -req_dca_step:
-                    print(f"[PRIORITY DCA] {sym} ย่อตัวเพียง {drawdown_pct:+.2f}% (ยังไม่ถึงเกณฑ์ -{req_dca_step:.2f}% | ATR {atr_pct:.2f}%) ➔ ข้าม", flush=True)
+                    print(f"[PRIORITY DCA] {sym} (รอช้อนไม้ {next_entry_num}) ย่อตัวเพียง {drawdown_pct:+.2f}% (เกณฑ์ Real-time -{req_dca_step:.2f}% | ATR {atr_pct:.2f}%) ➔ ข้าม", flush=True)
                     if drawdown_pct >= 0:
                         reason = f"ราคาสูงกว่าทุนเฉลี่ย {avg:.4f} (DCA เฉพาะตอนราคาต่ำกว่าทุน)"
-                    elif req_dca_step > min_dca_step:
-                        reason = f"ย่อตัวเพียง {drawdown_pct:+.2f}% จากทุนเฉลี่ย {avg:.4f} (ต้องลึกถึง -{req_dca_step:.2f}% ตาม Dynamic ATR {atr_pct:.2f}%)"
                     else:
-                        reason = f"ย่อตัวเพียง {drawdown_pct:+.2f}% จากทุนเฉลี่ย {avg:.4f} (ต้องลึกถึง -{req_dca_step:.1f}%)"
+                        reason = f"รอช้อนไม้ {next_entry_num}: ย่อตัว {drawdown_pct:+.2f}% จากทุน {avg:.4f} (เกณฑ์ Real-time ตอนนี้ต้องลึกถึง -{req_dca_step:.2f}%)"
                     skipped.append((sym, sig["entry"], reason))
                     continue
             else:
@@ -1934,24 +1946,13 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         scout_reasons = []
         scout_mode = None
 
-        # เช็กสถานะพอร์ตปัจจุบันของเหรียญนี้ (ว่าถืออยู่และย่อลึกเข้าโซน DCA หรือยัง)
-        with state_lock:
-            held_pos = active_trades.get(symbol)
-        held_drawdown_pct = 0.0
-        req_dca_step = config.get_dynamic_dca_step(atr_val) if hasattr(config, 'get_dynamic_dca_step') else getattr(config, 'MIN_DCA_DRAWDOWN_PCT', 3.0)
-        if held_pos and float(held_pos.get("total_qty", 0.0)) > 0:
-            avg_px = float(held_pos.get("weighted_avg_price", 0.0) or 0.0)
-            if avg_px > 0:
-                held_drawdown_pct = ((m3['close'] - avg_px) / avg_px) * 100
-                if held_drawdown_pct <= -req_dca_step:
-                    scout_reasons.append(f"โซนช้อน DCA ({held_drawdown_pct:+.2f}% <= -{req_dca_step:.2f}%)")
-                    scout_mode = "REVERSAL"
-
         # เกณฑ์ Scout 1: โซน Oversold / พักฐานยก Low (Oversold Base)
         oversold_rsi_lim = scalp_filters.get('SCOUT_OVERSOLD_RSI', 45)
         oversold_stoch_lim = scalp_filters.get('SCOUT_OVERSOLD_STOCH', 35)
+        is_oversold_base = False
         if (rsi_val <= oversold_rsi_lim or stoch_rsi <= oversold_stoch_lim or prev_stoch_rsi <= oversold_stoch_lim):
             if m3['low'] >= prev1['low'] or m5['close'] >= m5['ema7']:
+                is_oversold_base = True
                 scout_reasons.append(f"สร้างฐานโซนล่าง (RSI {rsi_val:.1f} | Stoch {stoch_rsi:.1f})")
                 scout_mode = scout_mode or "REVERSAL"
 
@@ -1960,9 +1961,35 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         range_m3_all = m3['high'] - m3['low']
         lower_wick_m3 = min(m3['close'], m3['open']) - m3['low']
         has_lower_pin = (range_m3_all > 0) and ((lower_wick_m3 / range_m3_all) >= 0.35)
-        if (m3['volume'] >= m3['vol_avg'] * vol_spike_mult) and (has_lower_pin or is_green):
+        has_vol_absorption = (m3['volume'] >= m3['vol_avg'] * vol_spike_mult) and (has_lower_pin or is_green)
+        if has_vol_absorption:
             scout_reasons.append("Volume รับของ/ไส้ล่างดูดซับแรงขาย")
             scout_mode = scout_mode or "REVERSAL"
+
+        # เช็กสถานะพอร์ตปัจจุบันของเหรียญนี้และคำนวณเกณฑ์ช้อน Real-time Adaptive DCA (ตั้งแต่ไม้ 2 เป็นต้นไป)
+        with state_lock:
+            held_pos = active_trades.get(symbol)
+        held_drawdown_pct = 0.0
+        held_entries = int(held_pos.get("entry_count", 1) or 1) if held_pos else 1
+        req_dca_step = (
+            config.get_dynamic_dca_step(
+                atr_pct=atr_val,
+                entry_count=held_entries,
+                rsi_val=rsi_val,
+                stoch_val=stoch_rsi,
+                is_reversal=bool(is_oversold_base or scout_mode == "REVERSAL"),
+                has_absorption=has_vol_absorption
+            )
+            if hasattr(config, 'get_dynamic_dca_step')
+            else getattr(config, 'MIN_DCA_DRAWDOWN_PCT', 3.0)
+        )
+        if held_pos and float(held_pos.get("total_qty", 0.0)) > 0:
+            avg_px = float(held_pos.get("weighted_avg_price", 0.0) or 0.0)
+            if avg_px > 0:
+                held_drawdown_pct = ((m3['close'] - avg_px) / avg_px) * 100
+                if held_drawdown_pct <= -req_dca_step:
+                    scout_reasons.insert(0, f"โซนช้อนไม้ {held_entries + 1} ({held_drawdown_pct:+.2f}% <= -{req_dca_step:.2f}%)")
+                    scout_mode = "REVERSAL"
 
         # เกณฑ์ Scout 3: โครงสร้างขาขึ้นพร้อมยิง (Trend Ignition)
         if (m3['ema7'] > m3['ema25']) and is_above_vwap:
@@ -1981,6 +2008,7 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 "rsi": rsi_val,
                 "stoch": round(stoch_rsi, 2),
                 "drawdown_pct": round(held_drawdown_pct, 2),
+                "req_dca_step": req_dca_step,
             }
             # แจ้งเตือน Telegram เฉพาะตอนเข้าโซน REVERSAL ใหม่ (มี Cooldown กันสแปม)
             if (
@@ -2003,7 +2031,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             set_scan_result(symbol, {
                 "status": f"{watch_prefix}Red Candle (Wait Green Trigger)",
                 "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status,
-                "timestamp": now_ts, "scout": active_scout
+                "timestamp": now_ts, "scout": active_scout,
+                "rsi": rsi_val, "stoch_rsi": round(stoch_rsi, 2), "req_dca_step": req_dca_step
             })
             return {"symbol": symbol, "result": "skipped"}
 
@@ -2012,7 +2041,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             full_reason = f"{reason}{watch_tag}"
             set_scan_result(symbol, {
                 "status": full_reason, "score": 0, "adx": adx_val, "atr": atr_val,
-                "volume": vol_status, "timestamp": now_ts, "scout": active_scout
+                "volume": vol_status, "timestamp": now_ts, "scout": active_scout,
+                "rsi": rsi_val, "stoch_rsi": round(stoch_rsi, 2), "req_dca_step": req_dca_step
             })
             google_sheet.log_debug(
                 symbol, full_reason, strategy="SCALPING", score=100, adx=adx_val, atr=atr_val,
@@ -2305,6 +2335,20 @@ Trail: {_trail_desc}
                 candle_color="GREEN" if is_green else "RED"
             )
 
+        # คำนวณเกณฑ์ช้อน Real-time ณ จังหวะลั่นไก
+        final_req_dca_step = (
+            config.get_dynamic_dca_step(
+                atr_pct=atr_val,
+                entry_count=held_entries,
+                rsi_val=rsi_val,
+                stoch_val=stoch_rsi,
+                is_reversal=bool(sniper_fast_reversal or is_oversold_base),
+                has_absorption=has_vol_absorption
+            )
+            if hasattr(config, 'get_dynamic_dca_step')
+            else req_dca_step
+        )
+
         set_scan_result(symbol, {
             "status": "Signal Generated",
             "score": score,
@@ -2314,6 +2358,9 @@ Trail: {_trail_desc}
             "timestamp": now_ts,
             "strategy": "SCALPING",
             "trigger_mode": trigger_mode_label,
+            "rsi": rsi_val,
+            "stoch_rsi": round(stoch_rsi, 2),
+            "req_dca_step": final_req_dca_step,
         })
 
         candidate_signals[symbol] = {
@@ -2324,6 +2371,11 @@ Trail: {_trail_desc}
             "strategy": "SCALPING",
             "entry": entry,
             "atr_pct": atr_val,
+            "rsi": rsi_val,
+            "stoch_rsi": round(stoch_rsi, 2),
+            "is_reversal": bool(sniper_fast_reversal or is_oversold_base),
+            "has_absorption": has_vol_absorption,
+            "req_dca_step": final_req_dca_step,
             "trigger_mode": trigger_mode_label,
         }
 
@@ -4462,7 +4514,7 @@ def heartbeat_thread():
                 trades_snapshot = {k: dict(v) for k, v in active_trades.items()}
 
             lines = [
-                f"💓 [HEARTBEAT - SPOT DCA v{getattr(config, 'BOT_VERSION', '2.5.0')}]",
+                f"💓 [HEARTBEAT - SPOT DCA v{getattr(config, 'BOT_VERSION', '2.6.0')}]",
                 "",
                 f"สถานะ: ออนไลน์ปกติ (Uptime: {uptime_hours}h)",
                 f"ยอดเงินสดคงเหลือ: {cash:.2f} USDT",
@@ -4487,24 +4539,46 @@ def heartbeat_thread():
                 except Exception:
                     price_line = "N/A"
 
+                entries_cnt = int(pos.get("entry_count", 1) or 1)
+                scout_w = hot_watchlist.get(sym)
+                scout_active = scout_w if (scout_w and time.time() <= scout_w.get("expires_at", 0)) else None
+                scout_tag = f" 👀 [Scout: {scout_active['mode']}]" if scout_active else ""
+
                 if pos.get("infinity_active"):
                     _sp = float(pos.get("stop_price") or 0.0)
                     _sl_state = f"SL กระดาน ✅ {_sp:.4f}" if pos.get("stop_order_id") else "SL กระดาน ⚠️ ยังไม่ได้ตั้ง"
                     target_line = f"🚀 Infinity Run ทำงานอยู่ (Floor: {pos.get('sl', 'N/A')} | {_sl_state})"
+                    dca_line = None
                 else:
-                    _act, _ = config.get_activation_params(pos.get("entry_count", 1))
+                    _act, _ = config.get_activation_params(entries_cnt)
                     target_line = f"🚀 {avg * (1.0 + _act):.4f} (+{_act*100:.1f}%)"
+                    _sc_res = scan_results.get(sym, {}) if isinstance(scan_results.get(sym), dict) else {}
+                    if _sc_res.get("req_dca_step") is not None:
+                        _rt_step = float(_sc_res["req_dca_step"])
+                    elif hasattr(config, "get_dynamic_dca_step"):
+                        _rt_step = config.get_dynamic_dca_step(
+                            atr_pct=float(_sc_res.get("atr") or 0.0),
+                            entry_count=entries_cnt,
+                            rsi_val=float(_sc_res.get("rsi") or (scout_active.get("rsi") if scout_active else 50.0)),
+                            stoch_val=float(_sc_res.get("stoch_rsi") or (scout_active.get("stoch") if scout_active else 50.0)),
+                            is_reversal=bool(scout_active and scout_active.get("mode") == "REVERSAL"),
+                            has_absorption=False
+                        )
+                    else:
+                        _rt_step = getattr(config, "MIN_DCA_DRAWDOWN_PCT", 3.0)
+                    _dca_px = avg * (1.0 - (_rt_step / 100.0))
+                    dca_line = f"   - เกณฑ์ช้อนไม้ {entries_cnt + 1} (Real-time): -{_rt_step:.2f}% (≤ {_dca_px:.4f})"
 
                 staged_note = " [แบ่งขาย 50% แล้ว]" if pos.get("staged_exit_done") else ""
-                scout_w = hot_watchlist.get(sym)
-                scout_tag = f" 👀 [Scout: {scout_w['mode']}]" if scout_w and time.time() <= scout_w.get("expires_at", 0) else ""
                 lines += [
-                    f"• {sym} ({int(pos.get('entry_count', 1))} ไม้{staged_note}){scout_tag}:",
+                    f"• {sym} ({entries_cnt} ไม้{staged_note}){scout_tag}:",
                     f"   - ทุนเฉลี่ย: {avg:.4f}",
                     f"   - ราคาปัจจุบัน: {price_line}",
                     f"   - เป้า Infinity Run: {target_line}",
-                    "",
                 ]
+                if dca_line:
+                    lines.append(dca_line)
+                lines.append("")
 
             send_telegram("\n".join(lines).rstrip())
 
@@ -4677,7 +4751,7 @@ def main():
     config.TRAILING_USE_ATR_TIGHTENING = True
 
     send_telegram(
-        f"🚀 [BOT STARTED — v{getattr(config, 'BOT_VERSION', '2.5.0')}]\n\n"
+        f"🚀 [BOT STARTED — v{getattr(config, 'BOT_VERSION', '2.6.0')}]\n\n"
         f"เวลา: {startup_time}\n"
         f"BTC เทรนด์: {btc_trend_line}\n"
         f"Market Regime: {CURRENT_REGIME}\n"

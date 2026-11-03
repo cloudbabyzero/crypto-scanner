@@ -1,4 +1,4 @@
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 """Telegram command handlers module.
 
 All handlers are registered here and access shared state/functions from main.py
@@ -36,7 +36,7 @@ def parse_command_value(message_text, cast_fn):
 
 @bot.message_handler(commands=['ping'])
 def ping(message):
-    bot.reply_to(message, f"✅ Bot Online (v{getattr(main_mod.config, 'BOT_VERSION', '2.5.0')})")
+    bot.reply_to(message, f"✅ Bot Online (v{getattr(main_mod.config, 'BOT_VERSION', '2.6.0')})")
 
 
 # =========================
@@ -1392,7 +1392,7 @@ def cmd_portfolio(message):
         curr_order_size = float(getattr(m, "ORDER_AMOUNT_USDT", getattr(cfg_mod, "ORDER_AMOUNT_USDT", 6.0)))
         bullets_left = int(free_usdt // curr_order_size) if curr_order_size > 0 else 0
         lines = [
-            f"📊 [ACTIVE INDEX PORTFOLIO — v{getattr(cfg_mod, 'BOT_VERSION', '2.5.0')}]",
+            f"📊 [ACTIVE INDEX PORTFOLIO — v{getattr(cfg_mod, 'BOT_VERSION', '2.6.0')}]",
             f"💰 เงินสดว่าง: {free_usdt:.2f} USDT (~{bullets_left} ไม้)",
             f"💵 ขนาดซื้อต่อไม้: {curr_order_size:.1f} USDT (ปรับกด /set_margin)",
             f"📈 มูลค่าพอร์ตรวม: {total_equity:.2f} USDT",
@@ -1428,23 +1428,38 @@ def cmd_portfolio(message):
             cap_usage = (cost / max_cap) * 100 if max_cap > 0 else 0
 
             staged_tag = " [แบ่งขาย 50% แล้ว]" if pos.get("staged_exit_done") else ""
-            atr_scan = 0.0
-            if hasattr(m, "scan_results") and isinstance(m.scan_results.get(sym), dict):
-                atr_scan = float(m.scan_results[sym].get("atr") or 0.0)
-            dyn_step = cfg_mod.get_dynamic_dca_step(atr_scan) if hasattr(cfg_mod, "get_dynamic_dca_step") else getattr(cfg_mod, "MIN_DCA_DRAWDOWN_PCT", 3.0)
+            sc_data = m.scan_results.get(sym, {}) if (hasattr(m, "scan_results") and isinstance(m.scan_results.get(sym), dict)) else {}
+            atr_scan = float(sc_data.get("atr") or 0.0)
 
             scout_info = ""
+            sw_active = None
             if hasattr(m, "hot_watchlist") and sym in m.hot_watchlist:
                 sw = m.hot_watchlist[sym]
                 if m.time.time() <= sw.get("expires_at", 0):
+                    sw_active = sw
                     scout_info = f"\n   - 📡 Scout Radar: กำลังเฝ้าจังหวะลั่นไก ({', '.join(sw.get('reasons', []))})"
+
+            if sc_data.get("req_dca_step") is not None:
+                dyn_step = float(sc_data["req_dca_step"])
+            elif hasattr(cfg_mod, "get_dynamic_dca_step"):
+                dyn_step = cfg_mod.get_dynamic_dca_step(
+                    atr_pct=atr_scan,
+                    entry_count=entries,
+                    rsi_val=float(sc_data.get("rsi") or (sw_active.get("rsi") if sw_active else 50.0)),
+                    stoch_val=float(sc_data.get("stoch_rsi") or (sw_active.get("stoch") if sw_active else 50.0)),
+                    is_reversal=bool(sw_active and sw_active.get("mode") == "REVERSAL"),
+                    has_absorption=False
+                )
+            else:
+                dyn_step = getattr(cfg_mod, "MIN_DCA_DRAWDOWN_PCT", 3.0)
+
+            dca_target_px = avg * (1.0 - (dyn_step / 100.0))
 
             if pos.get("infinity_active"):
                 status_line = f"🚀 รันกำไรอยู่{staged_tag} (Floor: {pos.get('sl', 'N/A')})"
             else:
                 staged_plan = " (แตะเป้าแบ่งขาย 50% + รันต่อ 50%)" if entries >= getattr(cfg_mod, "STAGED_EXIT_MIN_ENTRIES", 2) else ""
-                status_line = f"🎯 เป้า TP: {tp_target:.4f}{tp_note}{staged_plan} | เกณฑ์ช้อนไม้ถัดไป: -{dyn_step:.2f}%"
-
+                status_line = f"🎯 เป้า TP: {tp_target:.4f}{tp_note}{staged_plan}\n   - 📉 เกณฑ์ช้อนไม้ {entries + 1} (Real-time): -{dyn_step:.2f}% (≤ {dca_target_px:.4f})"
             lines.append(
                 f"• {sym} ({entries} ไม้{staged_tag} | ทุนรวม {cost:.1f} USDT — ใช้โควตา {cap_usage:.0f}%):\n"
                 f"   - ทุนเฉลี่ย: {avg:.4f} | ปัจจุบัน: {px_line}\n"
@@ -1612,7 +1627,7 @@ def callback_trailing_mode(call):
 def help_command(message):
     curr_size = float(getattr(main_mod, "ORDER_AMOUNT_USDT", 6.0))
     trail_mode_str = "🔒 Choke Lock" if getattr(cfg_mod, "TRAILING_USE_ATR_TIGHTENING", True) else "🌊 Wide Trailing"
-    text = f"""🤖 [SPOT DCA BOT v{getattr(cfg_mod, 'BOT_VERSION', '2.5.0')}] — คำสั่งใช้งานทั้งหมด
+    text = f"""🤖 [SPOT DCA BOT v{getattr(cfg_mod, 'BOT_VERSION', '2.6.0')}] — คำสั่งใช้งานทั้งหมด
 
 💼 จัดการพอร์ต Spot Portfolio
 
@@ -1815,6 +1830,6 @@ def cmd_version(message):
         f"• trade_manager.py: v{v_tm}\n"
         f"• bingx_client.py: v{v_bingx}\n"
         f"• telegram_commands.py: v{v_tg}\n\n"
-        f"📅 Release Date: {getattr(cfg_mod, 'BOT_BUILD_DATE', '2026-11-01')}"
+        f"📅 Release Date: {getattr(cfg_mod, 'BOT_BUILD_DATE', '2026-11-03')}"
     )
     bot.reply_to(message, text)

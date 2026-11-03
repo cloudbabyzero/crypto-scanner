@@ -1,6 +1,6 @@
-BOT_VERSION = "2.5.0-spot-dca"
-BOT_BUILD_DATE = "2026-11-01"
-__version__ = "2.5.0"
+BOT_VERSION = "2.6.0-spot-dca"
+BOT_BUILD_DATE = "2026-11-03"
+__version__ = "2.6.0"
 """
 Configuration file for Crypto Scanner Bot.
 Architecture: Spot Signal-Driven DCA + 3-Tier Infinity Run (The Core 5)
@@ -185,9 +185,13 @@ def get_activation_params(entry_count):
 SCOUT_NOTIFY_TELEGRAM = True            # แจ้งเตือน Telegram เมื่อหน่วย Scout ล็อกเป้าเหรียญเข้า Watchlist
 SCOUT_ALERT_COOLDOWN = 7200             # Cooldown แจ้งเตือน Scout ต่อเหรียญ (2 ชั่วโมง กันสแปม)
 
-DYNAMIC_DCA_STEP_ENABLED = True         # ขยายระยะช้อนไม้ถัดไปตามความผันผวน (ATR%) อัตโนมัติ
-DYNAMIC_DCA_ATR_MULT = 1.8              # ตัวคูณ ATR: Step = max(MIN_DCA_DRAWDOWN_PCT, ATR% * 1.8)
-DYNAMIC_DCA_MAX_PCT = 8.0               # เพดานระยะย่อตัวสูงสุดไม่เกิน 8.0%
+DYNAMIC_DCA_STEP_ENABLED = True         # ระบบคำนวณระยะช้อนแบบ Real-time Adaptive DCA ทุกไม้ (ตั้งแต่ไม้ 2 เป็นต้นไป)
+DYNAMIC_DCA_ATR_MULT = 2.0              # ตัวคูณขยายระยะตามความผันผวน ATR% ขณะตลาดทุบ (ป้องกันช้อนถี่ตอนกราฟดิ่ง)
+DYNAMIC_DCA_PROGRESSIVE_STEP_PCT = 1.25 # ระยะถ่างเพิ่มขึ้นต่อไม้ที่ถือเพิ่ม (+1.25% ต่อไม้: ไม้ 2 เริ่มฐาน 3.0%, ไม้ 3 ฐาน 4.25%, ไม้ 4 ฐาน 5.5%)
+DYNAMIC_DCA_MAX_DISCOUNT_PCT = 1.20     # ส่วนลดระยะช้อนสูงสุด (1.20%) เมื่อเกิดสัญญาณกลับตัว + สร้างฐาน + Oversold ชัดเจน (ป้องกันตกรถ)
+DYNAMIC_DCA_MIN_FLOOR_ENTRY2 = 2.50     # เพดานขั้นต่ำสุดสำหรับช้อนไม้ที่ 2 เมื่อสัญญาณกลับตัวแน่นมาก (-2.50%)
+DYNAMIC_DCA_FLOOR_INCREMENT = 0.80      # เพดานขั้นต่ำสุดเพิ่มขึ้นไม้ละ +0.80% (ไม้ 2 >= -2.5%, ไม้ 3 >= -3.3%, ไม้ 4 >= -4.1%)
+DYNAMIC_DCA_MAX_PCT = 8.5               # เพดานระยะย่อตัวสูงสุดไม่เกิน 8.5%
 
 STAGED_EXIT_ENABLED = True              # แบ่งขายดึงเงินสดทันทีเมื่อแตะเป้า Infinity Run
 STAGED_EXIT_MIN_ENTRIES = 2             # แบ่งขายเฉพาะเมื่อสะสมตั้งแต่ 2 ไม้ขึ้นไป (1 ไม้ขาย 100% ตามเดิม)
@@ -212,13 +216,68 @@ TRAILING_MAX_CAP_TIER1 = 0.018          # เพดานระยะห่า�
 TRAILING_MAX_CAP_TIER2 = 0.014          # เพดานระยะห่างสูงสุดใน Tier 2 (1.4%)
 TRAILING_MAX_CAP_TIER3 = 0.010          # เพดานระยะห่างสูงสุดใน Tier 3 (1.0%)
 
-def get_dynamic_dca_step(atr_pct=0.0):
-    """คำนวณระยะย่อตัวขั้นต่ำ (%) สำหรับช้อนไม้ถัดไป ตามความผันผวน ATR ปัจจุบัน"""
+def get_dynamic_dca_step(
+    atr_pct=0.0,
+    entry_count=1,
+    rsi_val=50.0,
+    stoch_val=50.0,
+    is_reversal=False,
+    has_absorption=False
+):
+    """คำนวณระยะย่อตัวขั้นต่ำ (%) แบบ Real-time สำหรับช้อนไม้ที่ 2, 3, 4+ ทุกไม้:
+    1) Progressive Base: ถ่างฐานตามจำนวนไม้ที่ถือ (ไม้ 2 = 3.0%, ไม้ 3 = 4.25%, ไม้ 4 = 5.5%)
+    2) Real-time ATR Expansion: บวกเพิ่มตามความผันผวน ATR% ขณะนั้น (ถ้าตลาดกำลังทุบแรง ATR พุ่ง ➔ ถ่างระยะหนีอัตโนมัติ)
+    3) Real-time Reversal Discount: หดระยะลงมารับของอัตโนมัติเมื่อกราฟหยุดไหล (ATR หด + RSI/Stoch Oversold + Volume รับของ) เพื่อไม่ให้ตกรถ"""
     base_step = float(MIN_DCA_DRAWDOWN_PCT)
-    if not DYNAMIC_DCA_STEP_ENABLED or not atr_pct or float(atr_pct) <= 0:
+    entries = max(1, int(entry_count or 1))
+    if not DYNAMIC_DCA_STEP_ENABLED:
         return base_step
-    dyn_step = round(float(atr_pct) * float(DYNAMIC_DCA_ATR_MULT), 2)
-    return min(float(DYNAMIC_DCA_MAX_PCT), max(base_step, dyn_step))
+
+    # 1. ฐานระยะย่อตามลำดับไม้ (เริ่มคำนวณตั้งแต่ไม้ที่ 2 เป็นต้นไป)
+    prog_step = float(DYNAMIC_DCA_PROGRESSIVE_STEP_PCT)
+    progressive_base = base_step + max(0, entries - 1) * prog_step
+
+    # 2. ขยายระยะตามความผันผวน ATR% จริง ณ วินาทีนั้น (ยิ่งทุบแรงยิ่งถ่างออก)
+    atr_v = max(0.0, float(atr_pct or 0.0))
+    atr_Mult = float(DYNAMIC_DCA_ATR_MULT) + max(0, entries - 1) * 0.35
+    atr_expansion = atr_v * atr_Mult
+
+    # 3. ส่วนลดระยะช้อนเมื่อสัญญาณกลับตัวและสร้างฐานชัดเจน (ป้องกันตกรถเมื่อย่อไม่ถึงเป้าแข็ง)
+    discount = 0.0
+    r_val = float(rsi_val if rsi_val is not None else 50.0)
+    s_val = float(stoch_val if stoch_val is not None else 50.0)
+
+    if r_val <= 32.0:
+        discount += 0.45
+    elif r_val <= 38.0:
+        discount += 0.30
+    elif r_val <= 44.0:
+        discount += 0.15
+
+    if s_val <= 20.0:
+        discount += 0.30
+    elif s_val <= 35.0:
+        discount += 0.15
+
+    if is_reversal:
+        discount += 0.30
+    if has_absorption:
+        discount += 0.25
+
+    # หากความผันผวนเริ่มนิ่งลง (ATR <= 0.35%) แปลว่าแรงเทขายชะลอตัวและเริ่มสร้างฐาน
+    if 0 < atr_v <= 0.35:
+        discount += 0.20
+
+    max_disc = float(DYNAMIC_DCA_MAX_DISCOUNT_PCT)
+    total_discount = min(max_disc, discount)
+
+    raw_step = progressive_base + atr_expansion - total_discount
+
+    # เพดานขั้นต่ำสุดของแต่ละไม้ เพื่อรับประกันว่าการช้อนทุกไม้ดึงทุนเฉลี่ยลงอย่างคุ้มค่าเสมอ
+    min_floor = float(DYNAMIC_DCA_MIN_FLOOR_ENTRY2) + max(0, entries - 1) * float(DYNAMIC_DCA_FLOOR_INCREMENT)
+    max_cap = float(DYNAMIC_DCA_MAX_PCT)
+
+    return round(min(max_cap, max(min_floor, raw_step)), 2)
 
 def get_dynamic_adx_stoch_bounds(atr_pct=0.0, is_fast_reversal=False):
     """คำนวณ (dynamic_min_adx, dynamic_stoch_max) ผันแปรตามความผันผวน ATR% แบบ Linear Scaling:
