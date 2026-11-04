@@ -1,4 +1,4 @@
-__version__ = "2.6.0"
+__version__ = "2.6.2"
 """
 Trade Manager Module (Spot DCA & 3-Tier Infinity Run).
 Monitors position state, weighted average cost, and executes Trailing profit exits.
@@ -154,49 +154,73 @@ def reconcile_closed_trades_on_restart(pre_restart_snapshot):
         print("[RECONCILE] ยอดเหรียญจริงตรงกับไฟล์พอร์ต", flush=True)
 
 # =====================================================================
-# 3-TIER INFINITY RUN ENGINE (ATR TIGHTENING: 1.2x ➔ 0.8x ➔ 0.5x ATR)
+# 3-TIER INFINITY RUN ENGINE (Auto Per-Coin Native Volatility + Anti-Shakeout Floor)
 # =====================================================================
-_atr_cache = {}  # symbol -> (atr_pct, ts)
+_atr_cache = {}  # symbol -> (native_atr_pct, ts)
 
 def _get_symbol_atr_pct(symbol, pos=None):
-    """ดึงค่า 15m ATR% ล่าสุดของเหรียญจากผลการสแกน หรือคำนวณใหม่พร้อม Cache 5 นาที"""
+    """คำนวณความผันผวนเฉพาะตัวของเหรียญ (Auto Per-Coin Native Volatility) พร้อม Cache 5 นาที:
+    ใช้ค่าสูงสุดระหว่าง 15m ATR ปัจจุบัน, ค่าเฉลี่ย 15m ATR ย้อนหลัง 24 ชม. (96 แท่ง), และ 1H ATR / 1.8
+    ทำให้บอทรู้นิสัยการแกว่งของแต่ละเหรียญเองอัตโนมัติ (รองรับการเพิ่มเหรียญใหม่ในอนาคต 100% โดยไม่ต้องตั้งค่ารายเหรียญ)"""
     now = time.time()
+    if symbol in _atr_cache and (now - _atr_cache[symbol][1]) < 300:
+        cached_val = _atr_cache[symbol][0]
+        if isinstance(pos, dict):
+            pos["last_atr_pct"] = cached_val
+        return cached_val
+
+    candidates = []
     try:
         if hasattr(main_mod, "scan_results") and isinstance(main_mod.scan_results.get(symbol), dict):
             scan_atr = float(main_mod.scan_results[symbol].get("atr") or 0.0)
             if scan_atr > 0:
-                _atr_cache[symbol] = (scan_atr, now)
-                if isinstance(pos, dict):
-                    pos["last_atr_pct"] = scan_atr
-                return scan_atr
+                candidates.append(scan_atr)
     except Exception:
         pass
 
-    if symbol in _atr_cache and (now - _atr_cache[symbol][1]) < 300:
-        return _atr_cache[symbol][0]
+    if getattr(config, "TRAILING_USE_NATIVE_VOLATILITY", True):
+        try:
+            from indicators import get_dataframe
+            df_15m = get_dataframe(symbol, "15m")
+            if df_15m is not None and len(df_15m) >= 10:
+                m15 = df_15m.iloc[-2]
+                cur_15m_atr = (float(m15["atr"]) / float(m15["close"])) * 100.0 if float(m15["close"]) > 0 else 0.0
+                if cur_15m_atr > 0:
+                    candidates.append(cur_15m_atr)
+                # ค่าเฉลี่ย 15m ATR% ย้อนหลัง 24 ชม. (96 แท่ง) เพื่อจับนิสัยเฉพาะตัวของเหรียญ
+                win = df_15m.iloc[-98:-2] if len(df_15m) >= 98 else df_15m.iloc[:-1]
+                atr_series = (win["atr"] / win["close"]) * 100.0
+                med_24h_atr = float(atr_series.median())
+                mean_24h_atr = float(atr_series.mean())
+                if med_24h_atr > 0:
+                    candidates.append(med_24h_atr)
+                if mean_24h_atr > 0:
+                    candidates.append(mean_24h_atr)
+
+            df_1h = get_dataframe(symbol, "1h")
+            if df_1h is not None and len(df_1h) >= 5:
+                h1 = df_1h.iloc[-2]
+                h1_atr_pct = (float(h1["atr"]) / float(h1["close"])) * 100.0 if float(h1["close"]) > 0 else 0.0
+                if h1_atr_pct > 0:
+                    candidates.append(h1_atr_pct / 1.8)
+        except Exception:
+            pass
+
+    if candidates:
+        native_atr = round(max(candidates), 2)
+        _atr_cache[symbol] = (native_atr, now)
+        if isinstance(pos, dict):
+            pos["last_atr_pct"] = native_atr
+        return native_atr
 
     if isinstance(pos, dict) and float(pos.get("last_atr_pct") or 0.0) > 0:
         return float(pos["last_atr_pct"])
 
-    try:
-        from indicators import get_dataframe
-        df_15m = get_dataframe(symbol, "15m")
-        if df_15m is not None and len(df_15m) >= 2:
-            m15 = df_15m.iloc[-2]
-            calc_atr = round((float(m15["atr"]) / float(m15["close"])) * 100.0, 2)
-            if calc_atr > 0:
-                _atr_cache[symbol] = (calc_atr, now)
-                if isinstance(pos, dict):
-                    pos["last_atr_pct"] = calc_atr
-                return calc_atr
-    except Exception:
-        pass
-
-    return 0.80
+    return 0.65
 
 
-def calculate_tier_trailing_floor(gain, highest_price, weighted_avg, entry_count=1, atr_pct=0.80):
-    """คำนวณ Trailing Floor แบบบีบระยะแคบลงตาม ATR เมื่อกำไรสูงขึ้น (Choke Lock: 1.2x ➔ 0.8x ➔ 0.5x ATR)"""
+def calculate_tier_trailing_floor(gain, highest_price, weighted_avg, entry_count=1, atr_pct=0.65):
+    """คำนวณ Trailing Floor แบบ Auto Per-Coin Native ATR พร้อมขั้นต่ำกันขายหมู (Safety Floor แยกตาม Tier)"""
     entries = int(entry_count or 1)
     act_pct, lock_pct = config.get_activation_params(entries)
     if gain < act_pct:
@@ -206,32 +230,35 @@ def calculate_tier_trailing_floor(gain, highest_price, weighted_avg, entry_count
     use_atr = getattr(config, "TRAILING_USE_ATR_TIGHTENING", True)
 
     if use_atr:
-        # โหมด Choke Lock (Default): ยิ่งกำไรสูง ยิ่งบีบระยะตาม ATR (1.2x ➔ 0.8x ➔ 0.5x ATR)
+        # โหมด Choke Lock (Default): ปรับระยะตาม Native ATR รายเหรียญ + มี Safety Floor กันโดนไส้เทียนสะบัดขายหมูต้นเทรนด์
         if entries >= 2:
-            t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_MULTI", 0.030))
-            t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_MULTI", 0.045))
+            t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_MULTI", 0.032))
+            t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_MULTI", 0.048))
         else:
-            t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_SINGLE", 0.040))
-            t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_SINGLE", 0.055))
+            t2_thresh = float(getattr(config, "TIER2_PROFIT_THRESHOLD_SINGLE", 0.042))
+            t3_thresh = float(getattr(config, "TIER3_PROFIT_THRESHOLD_SINGLE", 0.058))
 
-        atr_dec = max(0.002, float(atr_pct or 0.80) / 100.0)
-        min_dist = float(getattr(config, "TRAILING_MIN_DISTANCE_PCT", 0.0035))
+        atr_dec = max(0.003, float(atr_pct or 0.65) / 100.0)
+        global_min = float(getattr(config, "TRAILING_MIN_DISTANCE_PCT", 0.0045))
 
         if gain < t2_thresh:
-            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER1", 1.2))
+            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER1", 1.6))
+            tier_floor = max(global_min, float(getattr(config, "TRAILING_MIN_FLOOR_TIER1", 0.0095)))
             cap = float(getattr(config, "TRAILING_MAX_CAP_TIER1", 0.018))
-            trail_pct = min(cap, max(min_dist, atr_dec * mult))
-            tier_name = f"Tier 1 [Choke Lock] (Normal | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+            trail_pct = min(cap, max(tier_floor, atr_dec * mult))
+            tier_name = f"Tier 1 [Choke Lock] (Normal | {mult:.1f}x Native ATR = {trail_pct*100:.2f}%)"
         elif gain < t3_thresh:
-            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER2", 0.8))
+            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER2", 1.1))
+            tier_floor = max(global_min, float(getattr(config, "TRAILING_MIN_FLOOR_TIER2", 0.0068)))
             cap = float(getattr(config, "TRAILING_MAX_CAP_TIER2", 0.014))
-            trail_pct = min(cap, max(min_dist, atr_dec * mult))
-            tier_name = f"Tier 2 [Choke Lock] (Tight | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+            trail_pct = min(cap, max(tier_floor, atr_dec * mult))
+            tier_name = f"Tier 2 [Choke Lock] (Tight | {mult:.1f}x Native ATR = {trail_pct*100:.2f}%)"
         else:
-            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER3", 0.5))
+            mult = float(getattr(config, "TRAILING_ATR_MULT_TIER3", 0.7))
+            tier_floor = max(global_min, float(getattr(config, "TRAILING_MIN_FLOOR_TIER3", 0.0045)))
             cap = float(getattr(config, "TRAILING_MAX_CAP_TIER3", 0.010))
-            trail_pct = min(cap, max(min_dist, atr_dec * mult))
-            tier_name = f"Tier 3 [Choke Lock] (Locked Tight | {mult:.1f}x ATR = {trail_pct*100:.2f}%)"
+            trail_pct = min(cap, max(tier_floor, atr_dec * mult))
+            tier_name = f"Tier 3 [Choke Lock] (Locked Tight | {mult:.1f}x Native ATR = {trail_pct*100:.2f}%)"
     else:
         # โหมด Wide Trailing: ถอยระยะห่างเพื่อลุ้นรันเทรนด์ใหญ่ (+10% ถึง +15%)
         if act_pct != INFINITY_ACTIVATION_PCT:
@@ -271,15 +298,31 @@ def _report_harvest(symbol, pos, exit_price, revenue, tier_name, via_exchange=Fa
     """ส่ง [PROFIT HARVEST] + บันทึก Google Sheets (ใช้ร่วมกันทั้งขายโดยบอทและขายโดย SL บนกระดาน)"""
     total_cost = float(pos.get("total_cost_usdt", 0.0))
     weighted_avg = float(pos.get("weighted_avg_price", 0.0))
+    total_qty = float(pos.get("total_qty", 0.0))
+
+    # คำนวณต้นทุนตามจำนวนเหรียญที่ถูกขายจริง (ป้องกันกรณีเศษทศนิยม Dust ค้างในกระเป๋าทำให้กำไรติดลบ)
+    sold_qty = (revenue / exit_price) if exit_price > 0 else total_qty
+    if sold_qty > 0 and weighted_avg > 0 and (sold_qty < total_qty * 0.999 or revenue < total_cost * 0.99):
+        cost_basis = round(sold_qty * weighted_avg, 4)
+        dust_qty = max(0.0, total_qty - sold_qty)
+    else:
+        cost_basis = total_cost
+        dust_qty = 0.0
+
     fee_pct = getattr(config, 'SPOT_ROUNDTRIP_FEE_PCT', 0.002)
-    est_fees = (total_cost + revenue) * (fee_pct / 2.0)
-    pnl_usdt = round((revenue - total_cost) - est_fees, 4)
+    est_fees = round((cost_basis + revenue) * (fee_pct / 2.0), 4)
+    pnl_usdt = round((revenue - cost_basis) - est_fees, 4)
     gain_pct = ((exit_price - weighted_avg) / weighted_avg * 100) if weighted_avg > 0 else 0.0
     entries = int(pos.get("entry_count", 1))
+    base_coin = symbol.split('/')[0]
 
     note = ""
     if via_exchange:
         note = "\n🛡️ ขายโดย Stop Loss บนกระดาน BingX" + (" ระหว่างที่บอทออฟไลน์" if downtime else "")
+
+    dust_note = ""
+    if dust_qty > 0 and (dust_qty * exit_price) >= 0.02:
+        dust_note = f"\n💡 เศษเหรียญคงเหลือในกระเป๋า Spot: {dust_qty:.6f} {base_coin} (~{dust_qty * exit_price:.2f} USDT)"
 
     staged_summary = ""
     if pos.get("staged_exit_done"):
@@ -295,9 +338,9 @@ def _report_harvest(symbol, pos, exit_price, revenue, tier_name, via_exchange=Fa
 เหรียญ: {symbol}
 กำไรสุทธิก้อนสุดท้าย (หักค่าคอมฯ): {pnl_usdt:+.4f} USDT ({gain_pct:+.2f}%){staged_summary}
 ค่าคอมมิชชันโดยประมาณ: {est_fees:.4f} USDT
-สะสมมาทั้งหมด: {entries} ไม้ (ทุนก้อนนี้ {total_cost:.2f} USDT)
+สะสมมาทั้งหมด: {entries} ไม้ (ทุนก้อนที่ขาย {cost_basis:.2f} USDT)
 ราคาขายเฉลี่ย: {exit_price:.4f}
-ระดับเทรนด์: {tier_name}{note}
+ระดับเทรนด์: {tier_name}{note}{dust_note}
 
 🟢 กวาดเงินต้น + กำไรคืนกระเป๋า USDT 100% เรียบร้อย!
 รีเซ็ตสถานะเหรียญเพื่อรอสแกนรอบสะสมใหม่"""

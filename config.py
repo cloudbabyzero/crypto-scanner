@@ -1,6 +1,6 @@
-BOT_VERSION = "2.6.0-spot-dca"
-BOT_BUILD_DATE = "2026-11-03"
-__version__ = "2.6.0"
+BOT_VERSION = "2.6.2-spot-dca"
+BOT_BUILD_DATE = "2026-11-04"
+__version__ = "2.6.1"
 """
 Configuration file for Crypto Scanner Bot.
 Architecture: Spot Signal-Driven DCA + 3-Tier Infinity Run (The Core 5)
@@ -199,19 +199,25 @@ STAGED_EXIT_RATIO = 0.50                # สัดส่วนแบ่งข�
 STAGED_EXIT_MIN_NOTIONAL_USDT = 5.0     # มูลค่าขั้นต่ำต่อก้อน (USDT) ป้องกันติดกฎ Minimum Notional บนกระดาน
 
 # =====================================================================
-# 3-TIER ATR TIGHTENING INFINITY RUN (ยิ่งกำไรสูง ยิ่งบีบ SL ชิดราคาตาม ATR)
+# 3-TIER ATR TIGHTENING INFINITY RUN (Auto Per-Coin Native Volatility + Anti-Early-Shakeout Buffer)
 # =====================================================================
-TRAILING_USE_ATR_TIGHTENING = True      # เปิดใช้ Logic บีบระยะ SL แคบลงตาม ATR (1.2x ➔ 0.8x ➔ 0.5x ATR)
-TRAILING_ATR_MULT_TIER1 = 1.2           # Tier 1 (Normal): เว้นระยะ 1.2x ATR
-TRAILING_ATR_MULT_TIER2 = 0.8           # Tier 2 (Tight): บีบระยะแคบลงเหลือ 0.8x ATR
-TRAILING_ATR_MULT_TIER3 = 0.5           # Tier 3 (Locked Tight): ล็อกแน่นชิดราคา 0.5x ATR
+TRAILING_USE_ATR_TIGHTENING = True      # เปิดใช้ Logic บีบระยะ SL ตามนิสัยความผันผวนรายเหรียญ (Native ATR)
+TRAILING_USE_NATIVE_VOLATILITY = True   # คำนวณนิสัยความผันผวนรายเหรียญอัตโนมัติ (max ของ 15m ATR, 24h Rolling ATR, 1H ATR/1.8) รองรับเหรียญใหม่ 100%
+TRAILING_ATR_MULT_TIER1 = 1.6           # Tier 1 (Normal): เว้นระยะ 1.6x Native ATR ให้กราฟย่อพักฐานต้นเทรนด์ได้โดยไม่ขายหมู
+TRAILING_ATR_MULT_TIER2 = 1.1           # Tier 2 (Tight): บีบระยะแคบลงเหลือ 1.1x Native ATR เมื่อกำไรเข้าโซนกลาง
+TRAILING_ATR_MULT_TIER3 = 0.7           # Tier 3 (Locked Tight): ล็อกแน่นชิดราคา 0.7x Native ATR เมื่อกำไรพุ่งเข้าโซนคำโต
 
-TIER2_PROFIT_THRESHOLD_SINGLE = 0.040   # ถือ 1 ไม้: กำไรแตะ +4.0% ขยับเข้า Tier 2 (0.8x ATR)
-TIER3_PROFIT_THRESHOLD_SINGLE = 0.055   # ถือ 1 ไม้: กำไรแตะ +5.5% ขยับเข้า Tier 3 (0.5x ATR)
-TIER2_PROFIT_THRESHOLD_MULTI = 0.030    # สะสม >= 2 ไม้: กำไรแตะ +3.0% ขยับเข้า Tier 2 (0.8x ATR)
-TIER3_PROFIT_THRESHOLD_MULTI = 0.045    # สะสม >= 2 ไม้: กำไรแตะ +4.5% ขยับเข้า Tier 3 (0.5x ATR)
+TIER2_PROFIT_THRESHOLD_SINGLE = 0.042   # ถือ 1 ไม้: กำไรแตะ +4.2% ขยับเข้า Tier 2
+TIER3_PROFIT_THRESHOLD_SINGLE = 0.058   # ถือ 1 ไม้: กำไรแตะ +5.8% ขยับเข้า Tier 3
+TIER2_PROFIT_THRESHOLD_MULTI = 0.032    # สะสม >= 2 ไม้: กำไรแตะ +3.2% ขยับเข้า Tier 2
+TIER3_PROFIT_THRESHOLD_MULTI = 0.048    # สะสม >= 2 ไม้: กำไรแตะ +4.8% ขยับเข้า Tier 3
 
-TRAILING_MIN_DISTANCE_PCT = 0.0035      # ระยะห่าง Trailing ขั้นต่ำสุด (0.35%) ป้องกันโดน Spread สะบัดเร็วเกินไป
+# เพดานขั้นต่ำแยกตาม Tier (Safety Floor กันขายหมูในเหรียญที่ ATR ต่ำอย่าง BTC/ETH)
+TRAILING_MIN_FLOOR_TIER1 = 0.0095       # Tier 1: ห่างจากยอดสูงสุดอย่างน้อย 0.95% เสมอ (ทนแรงสะบัดแท่ง 15m ได้สบาย)
+TRAILING_MIN_FLOOR_TIER2 = 0.0068       # Tier 2: ห่างจากยอดสูงสุดอย่างน้อย 0.68%
+TRAILING_MIN_FLOOR_TIER3 = 0.0045       # Tier 3: ห่างจากยอดสูงสุดอย่างน้อย 0.45% (ล็อกกำไรก้อนใหญ่ติดตูดราคา)
+TRAILING_MIN_DISTANCE_PCT = 0.0045      # ระยะห่าง Trailing ขั้นต่ำสุดรวม (0.45%)
+
 TRAILING_MAX_CAP_TIER1 = 0.018          # เพดานระยะห่างสูงสุดใน Tier 1 (1.8%)
 TRAILING_MAX_CAP_TIER2 = 0.014          # เพดานระยะห่างสูงสุดใน Tier 2 (1.4%)
 TRAILING_MAX_CAP_TIER3 = 0.010          # เพดานระยะห่างสูงสุดใน Tier 3 (1.0%)
