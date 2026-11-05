@@ -1,4 +1,4 @@
-__version__ = "2.6.2"
+__version__ = "2.6.3"
 """
 Trade Manager Module (Spot DCA & 3-Tier Infinity Run).
 Monitors position state, weighted average cost, and executes Trailing profit exits.
@@ -345,11 +345,14 @@ def _report_harvest(symbol, pos, exit_price, revenue, tier_name, via_exchange=Fa
 🟢 กวาดเงินต้น + กำไรคืนกระเป๋า USDT 100% เรียบร้อย!
 รีเซ็ตสถานะเหรียญเพื่อรอสแกนรอบสะสมใหม่"""
     main_mod.send_telegram(exit_msg)
-    # กันระบบตรวจเงินเติมเข้าใจผิดว่าเงินที่ได้จากการขายคือเงินเติม
+    # กันระบบตรวจเงินเติมเข้าใจผิดว่าเงินที่ได้จากการขายคือเงินเติม + บันทึกราคาขายเพื่อป้องกันการกลับไปซื้อดอย (Post-Harvest Guard)
     try:
         main_mod.last_recorded_usdt_balance = None
-    except Exception:
-        pass
+        if hasattr(main_mod, "record_harvest_guard"):
+            peak_px = float(pos.get("highest_price") or exit_price)
+            main_mod.record_harvest_guard(symbol, exit_price=exit_price, peak_price=max(peak_px, exit_price))
+    except Exception as hg_err:
+        print(f"[HARVEST GUARD RECORD ERROR] {hg_err}", flush=True)
 
     try:
         import google_sheet

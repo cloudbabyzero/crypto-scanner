@@ -1,6 +1,6 @@
-BOT_VERSION = "2.6.2-spot-dca"
-BOT_BUILD_DATE = "2026-11-04"
-__version__ = "2.6.1"
+BOT_VERSION = "2.6.3-spot-dca"
+BOT_BUILD_DATE = "2026-11-06"
+__version__ = "2.6.3"
 """
 Configuration file for Crypto Scanner Bot.
 Architecture: Spot Signal-Driven DCA + 3-Tier Infinity Run (The Core 5)
@@ -221,6 +221,19 @@ TRAILING_MIN_DISTANCE_PCT = 0.0045      # ระยะห่าง Trailing ข�
 TRAILING_MAX_CAP_TIER1 = 0.018          # เพดานระยะห่างสูงสุดใน Tier 1 (1.8%)
 TRAILING_MAX_CAP_TIER2 = 0.014          # เพดานระยะห่างสูงสุดใน Tier 2 (1.4%)
 TRAILING_MAX_CAP_TIER3 = 0.010          # เพดานระยะห่างสูงสุดใน Tier 3 (1.0%)
+
+# =====================================================================
+# ANTI-BULL-TRAP & POST-HARVEST GUARD (คุมเฉพาะการเปิดไม้ที่ 1 ใหม่ — ไม่กระทบการถัวไม้ 2+)
+# =====================================================================
+POST_HARVEST_GUARD_ENABLED = True       # ป้องกันบอทขายทำกำไรแล้วรีบกลับไปซื้อไม้ 1 ใหม่ที่ราคาแพงกว่าเดิมบนยอดดอย
+POST_HARVEST_WINDOW_HOURS = 12.0        # จำราคาที่เพิ่งขายทำกำไรไว้ 12 ชั่วโมง
+POST_HARVEST_MIN_COOLOFF_MINUTES = 45   # พักรอดูทิศทางอย่างน้อย 45 นาทีหลังขายปิดรอบเหรียญนั้น (กันรับมีดแท่งถัดไปทันที)
+POST_HARVEST_MIN_PULLBACK_PCT = 1.20    # ในช่วง 12 ชม. หลังขาย จะเปิดไม้ 1 ใหม่ได้เมื่อราคาย่อต่ำกว่าราคาขายอย่างน้อย -1.20%
+
+TOP_EXHAUSTION_GUARD_ENABLED = True     # ป้องกันการเปิดไม้ 1 ตรงยอดดอย 24 ชม. (24h High Exhaustion Guard)
+TOP_EXHAUSTION_MAX_DIST_PCT = 1.20      # ถ้าราคาอยู่ห่างจากยอดสูงสุด 24h High ไม่ถึง 1.20%
+TOP_EXHAUSTION_MIN_1H_RSI = 68.0        # ร่วมกับ 1H RSI >= 68.0 (หรือ 15m RSI >= 66.0) ➔ บล็อกการเปิดไม้ 1 รอให้ย่อพักตัวก่อน
+TOP_EXHAUSTION_MIN_15M_RSI = 66.0
 
 def get_dynamic_dca_step(
     atr_pct=0.0,

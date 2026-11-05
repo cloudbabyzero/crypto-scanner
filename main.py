@@ -1,4 +1,4 @@
-__version__ = "2.6.0"
+__version__ = "2.6.3"
 import os
 import shutil
 
@@ -346,7 +346,7 @@ def build_recovery_message(trades):
     if not trades:
         return "🔄 [SYSTEM RECOVERY]\n\nบอทรีสตาร์ตสำเร็จ! พอร์ตว่างเปล่า (เงินสด 100% พร้อมช้อนไม้ 1)"
 
-    lines = [f"🔄 [SYSTEM RECOVERY — v{getattr(config, 'BOT_VERSION', '2.6.0')}]", "", "บอทรีสตาร์ตสำเร็จ! กู้คืนพอร์ตสะสมเหรียญได้ครบถ้วน:", ""]
+    lines = [f"🔄 [SYSTEM RECOVERY — v{getattr(config, 'BOT_VERSION', '2.6.3')}]", "", "บอทรีสตาร์ตสำเร็จ! กู้คืนพอร์ตสะสมเหรียญได้ครบถ้วน:", ""]
     total_cost_all = 0.0
     for sym, pos in trades.items():
         base = sym.split("/")[0]
@@ -364,6 +364,129 @@ def build_recovery_message(trades):
 
 
 STATE_BACKUP_FILE = STATE_STORAGE_FILE + ".bak"
+
+if os.path.isdir(DATA_DIR):
+    HARVEST_GUARD_FILE = os.path.join(DATA_DIR, "harvest_guard.json")
+else:
+    HARVEST_GUARD_FILE = "harvest_guard.json"
+
+last_harvest_guard = {}  # symbol -> {"exit_price": float, "peak_price": float, "closed_at": float}
+
+
+def load_harvest_guard():
+    """โหลดประวัติราคาขายทำกำไรล่าสุด (Post-Harvest Guard) เพื่อให้จำข้ามการรีสตาร์ตบอทได้"""
+    global last_harvest_guard
+    try:
+        if os.path.exists(HARVEST_GUARD_FILE):
+            with open(HARVEST_GUARD_FILE, "r") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                now_ts = time.time()
+                win_sec = float(getattr(config, "POST_HARVEST_WINDOW_HOURS", 12.0)) * 3600.0
+                clean_hg = {}
+                for k, v in data.items():
+                    if isinstance(v, dict) and (now_ts - float(v.get("closed_at", 0))) < win_sec:
+                        clean_hg[k] = v
+                with state_lock:
+                    last_harvest_guard = clean_hg
+                print(f"[HARVEST GUARD] โหลดข้อมูลป้องกันซื้อดอยซ้ำ {len(clean_hg)} เหรียญ", flush=True)
+    except Exception as e:
+        print(f"[HARVEST GUARD] load error: {e}", flush=True)
+
+
+def save_harvest_guard():
+    """บันทึกสถานะ Post-Harvest Guard ลงดิสก์"""
+    try:
+        with state_lock:
+            payload = dict(last_harvest_guard)
+        with open(HARVEST_GUARD_FILE, "w") as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        print(f"[HARVEST GUARD] save error: {e}", flush=True)
+
+
+def record_harvest_guard(symbol, exit_price, peak_price=0.0):
+    """บันทึกจุดขายทำกำไรล่าสุดของเหรียญ เพื่อกั้นไม่ให้เปิดไม้ 1 ใหม่แพงกว่าจุดที่เพิ่งขาย"""
+    try:
+        ex_px = float(exit_price or 0.0)
+        pk_px = max(ex_px, float(peak_price or 0.0))
+        if ex_px <= 0:
+            return
+        with state_lock:
+            last_harvest_guard[symbol] = {
+                "exit_price": round(ex_px, 6),
+                "peak_price": round(pk_px, 6),
+                "closed_at": time.time()
+            }
+        save_harvest_guard()
+        pullback_pct = float(getattr(config, "POST_HARVEST_MIN_PULLBACK_PCT", 1.20))
+        safe_reentry = ex_px * (1.0 - (pullback_pct / 100.0))
+        print(
+            f"[HARVEST GUARD] บันทึก {symbol} ขายที่ {ex_px:.4f} (Peak {pk_px:.4f}) "
+            f"➔ บล็อกไม้ 1 จนกว่าจะย่อ ≤ {safe_reentry:.4f} (-{pullback_pct:.2f}%)",
+            flush=True
+        )
+    except Exception as e:
+        print(f"[HARVEST GUARD] record error: {e}", flush=True)
+
+
+def check_entry1_bull_trap_guard(symbol, current_price, h1_rsi=None, m15_rsi=None, high_24h=None):
+    """ตรวจสอบด่าน Anti-Bull-Trap & Post-Harvest Guard สำหรับการเปิด 'ไม้ที่ 1 (New Entry)' เท่านั้น:
+    1) Post-Harvest Cool-off & Price Ceiling: ห้ามซื้อคืนแพงกว่าราคาที่เพิ่งขายทำกำไรไปใน 12 ชม. ล่าสุด (ต้องย่อต่ำกว่าจุดขาย >= 1.2%)
+    2) 24h High Top Exhaustion Guard: ห้ามเปิดไม้ 1 ติดยอดดอย 24 ชม. (ห่าง 24h High < 1.2% ขณะ RSI ตึงตัว)
+    คืนค่า (passes: bool, reason: str or None)"""
+    now_ts = time.time()
+    px = float(current_price or 0.0)
+    if px <= 0:
+        return True, None
+
+    # --- ด่านที่ 1: Post-Harvest Guard (ป้องกันขายหมูแล้วรีบไปซื้อคืนแพงกว่าเดิมบนยอดดอย) ---
+    if getattr(config, "POST_HARVEST_GUARD_ENABLED", True):
+        with state_lock:
+            hg = last_harvest_guard.get(symbol)
+        if isinstance(hg, dict):
+            closed_at = float(hg.get("closed_at", 0.0))
+            win_hours = float(getattr(config, "POST_HARVEST_WINDOW_HOURS", 12.0))
+            elapsed_sec = now_ts - closed_at
+            if elapsed_sec < (win_hours * 3600.0):
+                cooloff_min = float(getattr(config, "POST_HARVEST_MIN_COOLOFF_MINUTES", 45.0))
+                if elapsed_sec < (cooloff_min * 60.0):
+                    rem_min = int(((cooloff_min * 60.0) - elapsed_sec) / 60) + 1
+                    return False, f"Post-Harvest Cool-off (เพิ่งขายทำกำไรไป รอดูทิศทางอีก {rem_min} นาที)"
+
+                exit_px = float(hg.get("exit_price", 0.0))
+                pullback_req = float(getattr(config, "POST_HARVEST_MIN_PULLBACK_PCT", 1.20))
+                max_allowed_px = exit_px * (1.0 - (pullback_req / 100.0))
+                if exit_px > 0 and px > max_allowed_px:
+                    diff_vs_exit = ((px - exit_px) / exit_px) * 100.0
+                    rem_hrs = max(0.1, ((win_hours * 3600.0) - elapsed_sec) / 3600.0)
+                    return False, (
+                        f"Anti-Bull-Trap (เพิ่งขายที่ {exit_px:.4f} | ราคาตอนนี้ {px:.4f} ({diff_vs_exit:+.2f}%) "
+                        f"ต้องรอย่อ ≤ {max_allowed_px:.4f} [-{pullback_req:.1f}%] หรือรออีก {rem_hrs:.1f} ชม.)"
+                    )
+            else:
+                with state_lock:
+                    last_harvest_guard.pop(symbol, None)
+
+    # --- ด่านที่ 2: 24h High Top Exhaustion Guard (ป้องกันเปิดไม้ 1 ติดยอดดอย 24 ชม.) ---
+    if getattr(config, "TOP_EXHAUSTION_GUARD_ENABLED", True):
+        if high_24h is not None and float(high_24h) > 0:
+            h24 = float(high_24h)
+            dist_from_high_pct = ((h24 - px) / h24) * 100.0 if h24 > px else 0.0
+            max_dist = float(getattr(config, "TOP_EXHAUSTION_MAX_DIST_PCT", 1.20))
+            min_h1_rsi = float(getattr(config, "TOP_EXHAUSTION_MIN_1H_RSI", 68.0))
+            min_m15_rsi = float(getattr(config, "TOP_EXHAUSTION_MIN_15M_RSI", 66.0))
+
+            r1h = float(h1_rsi) if h1_rsi is not None else 50.0
+            rm15 = float(m15_rsi) if m15_rsi is not None else 50.0
+
+            if dist_from_high_pct < max_dist and (r1h >= min_h1_rsi or rm15 >= min_m15_rsi):
+                return False, (
+                    f"24h Top Exhaustion Guard (ราคาห่างยอด 24h High {h24:.4f} เพียง -{dist_from_high_pct:.2f}% "
+                    f"ขณะ RSI ตึงตัว [1H:{r1h:.1f}, 15m:{rm15:.1f}] ➔ รอย่อพักฐานก่อนเปิดไม้ 1)"
+                )
+
+    return True, None
 
 
 def _read_state_file(path):
@@ -411,6 +534,7 @@ def load_active_trades():
             send_telegram(alert)
         send_telegram(build_recovery_message(clean))
         print(f"[STATE] Loaded {len(clean)} coin positions from {STATE_STORAGE_FILE}", flush=True)
+        load_harvest_guard()
     except Exception as e:
         print(f"[STATE] Error loading {STATE_STORAGE_FILE}: {e}", flush=True)
 
@@ -518,6 +642,8 @@ def execute_spot_dca(symbol, price):
     qty = float(result.get("filled_qty") or cost / fill_price)
 
     with state_lock:
+        if symbol in last_harvest_guard:
+            last_harvest_guard.pop(symbol, None)
         prev = active_trades.get(symbol) or {}
         prev_avg = float(prev.get("weighted_avg_price", 0.0) or 0.0)
         new_qty = prev.get("total_qty", 0.0) + qty
@@ -738,9 +864,20 @@ def run_priority_dca_engine():
             else:
                 drawdown_pct = 0.0
         else:
-            # ไม้ที่ 1
+            # ไม้ที่ 1: ตรวจสอบเพดานพอร์ต + ด่าน Anti-Bull-Trap / Post-Harvest Guard
             if ORDER_AMOUNT_USDT > max_cap_per_coin:
                 skipped.append((sym, sig["entry"], "มูลค่าไม้สูงกว่าเพดานพอร์ต"))
+                continue
+            e1_ok, e1_reason = check_entry1_bull_trap_guard(
+                sym,
+                sig["entry"],
+                h1_rsi=sig.get("h1_rsi"),
+                m15_rsi=sig.get("rsi"),
+                high_24h=sig.get("high_24h")
+            )
+            if not e1_ok:
+                print(f"[PRIORITY DCA] {sym} บล็อกไม้ 1: {e1_reason}", flush=True)
+                skipped.append((sym, sig["entry"], e1_reason))
                 continue
             drawdown_pct = 0.0
 
@@ -2228,6 +2365,20 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             # 11. RSI Momentum Bound (เพดาน 68)
             if m3['rsi'] > scalp_filters.get('RSI_SAFE_LONG_MAX', 68):
                 return f"Blocked: RSI Overbought ({rsi_val} > {scalp_filters.get('RSI_SAFE_LONG_MAX', 68)})"
+
+            # 12. Anti-Bull-Trap & Post-Harvest Guard (คุมเฉพาะการเปิด 'ไม้ที่ 1 ใหม่' เท่านั้น ไม่กระทบการถัวไม้ 2+)
+            if not (held_pos and float(held_pos.get("total_qty", 0.0)) > 0):
+                _h24_win = df_1h.iloc[-25:-1] if len(df_1h) >= 25 else df_1h.iloc[:-1]
+                _high_24h = float(_h24_win['high'].max()) if len(_h24_win) > 0 else float(h1['high'])
+                _e1_pass, _e1_block_reason = check_entry1_bull_trap_guard(
+                    symbol,
+                    m3['close'],
+                    h1_rsi=float(h1.get('rsi', 50.0)),
+                    m15_rsi=rsi_val,
+                    high_24h=_high_24h
+                )
+                if not _e1_pass:
+                    return f"Blocked: {_e1_block_reason}"
 
             return None
 
@@ -4514,7 +4665,7 @@ def heartbeat_thread():
                 trades_snapshot = {k: dict(v) for k, v in active_trades.items()}
 
             lines = [
-                f"💓 [HEARTBEAT - SPOT DCA v{getattr(config, 'BOT_VERSION', '2.6.0')}]",
+                f"💓 [HEARTBEAT - SPOT DCA v{getattr(config, 'BOT_VERSION', '2.6.3')}]",
                 "",
                 f"สถานะ: ออนไลน์ปกติ (Uptime: {uptime_hours}h)",
                 f"ยอดเงินสดคงเหลือ: {cash:.2f} USDT",
@@ -4528,7 +4679,18 @@ def heartbeat_thread():
             for sym in symbols:
                 pos = trades_snapshot.get(sym)
                 if not pos or float(pos.get("total_qty", 0.0)) <= 0:
-                    lines.append(f"• {sym}: ⚪ ยังไม่มีออเดอร์ (รอสัญญาณไม้ 1)")
+                    hg_note = ""
+                    with state_lock:
+                        hg_info = last_harvest_guard.get(sym)
+                    if isinstance(hg_info, dict):
+                        _win_h = float(getattr(config, "POST_HARVEST_WINDOW_HOURS", 12.0))
+                        _el = time.time() - float(hg_info.get("closed_at", 0.0))
+                        if _el < (_win_h * 3600.0):
+                            _ex_p = float(hg_info.get("exit_price", 0.0))
+                            _pb = float(getattr(config, "POST_HARVEST_MIN_PULLBACK_PCT", 1.20))
+                            _max_p = _ex_p * (1.0 - (_pb / 100.0))
+                            hg_note = f" 🛡️ [กันดอยหลังขาย: รอย่อ ≤ {_max_p:.4f}]"
+                    lines.append(f"• {sym}: ⚪ ยังไม่มีออเดอร์ (รอสัญญาณไม้ 1){hg_note}")
                     lines.append("")
                     continue
 
@@ -4751,7 +4913,7 @@ def main():
     config.TRAILING_USE_ATR_TIGHTENING = True
 
     send_telegram(
-        f"🚀 [BOT STARTED — v{getattr(config, 'BOT_VERSION', '2.6.0')}]\n\n"
+        f"🚀 [BOT STARTED — v{getattr(config, 'BOT_VERSION', '2.6.3')}]\n\n"
         f"เวลา: {startup_time}\n"
         f"BTC เทรนด์: {btc_trend_line}\n"
         f"Market Regime: {CURRENT_REGIME}\n"
