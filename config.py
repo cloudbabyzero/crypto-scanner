@@ -1,6 +1,6 @@
-BOT_VERSION = "2.6.3-spot-dca"
-BOT_BUILD_DATE = "2026-11-06"
-__version__ = "2.6.3"
+BOT_VERSION = "2.6.5-spot-dca"
+BOT_BUILD_DATE = "2026-11-20"
+__version__ = "2.6.5"
 """
 Configuration file for Crypto Scanner Bot.
 Architecture: Spot Signal-Driven DCA + 3-Tier Infinity Run (The Core 5)
@@ -235,13 +235,30 @@ TOP_EXHAUSTION_MAX_DIST_PCT = 1.20      # ถ้าราคาอยู่ห�
 TOP_EXHAUSTION_MIN_1H_RSI = 68.0        # ร่วมกับ 1H RSI >= 68.0 (หรือ 15m RSI >= 66.0) ➔ บล็อกการเปิดไม้ 1 รอให้ย่อพักตัวก่อน
 TOP_EXHAUSTION_MIN_15M_RSI = 66.0
 
+# =====================================================================
+# BEAR MARKET SHIELD (4H) + 1H HIGHER LOW & EMA25 RECLAIM + STOCH CAP
+# =====================================================================
+BEAR_SHIELD_ENABLED = True                  # เปิดระบบเกราะป้องกันตลาดหมีอัตโนมัติ (อ้างอิงเทรนด์ 4H)
+BEAR_SHIELD_4H_EMA_SLOPE_MAX = -0.05        # ความชัน 4H EMA25 (%) ที่ยืนยันว่าเป็นขาลง
+BEAR_SHIELD_REQUIRE_1H_EMA25_RECLAIM = True # ในโหมด Bear Shield: ห้ามช้อนใต้ 1H EMA25 (กันเด้งชนเส้นแล้วร่วงต่อ)
+BEAR_SHIELD_REQUIRE_1H_HIGHER_LOW = True    # ในโหมด Bear Shield: ต้องผ่านการยกโลว์ (1H Higher Low) หยุดทำ Low ใหม่ก่อน
+BEAR_SHIELD_HL_TOLERANCE_PCT = 0.15         # เผื่อระยะ Double Bottom ได้ 0.15%
+BEAR_SHIELD_STEP_SCALE = 1.35               # ในโหมด Bear Shield: ขยายฐานระยะช้อน 1.35x ตามนิสัยความผันผวนจริง
+BEAR_SHIELD_ATR_MULT_SCALE = 1.80           # ในโหมด Bear Shield: ขยายตัวคูณ ATR 1.80x ให้ถ่างหนีอัตโนมัติตามแรงทุบของแต่ละเหรียญ
+BEAR_SHIELD_MIN_DCA_STEP_PCT = 5.0          # เพดานขั้นต่ำสุด (Soft Floor) ในโหมด Bear Shield ไม้ 2 = -5.0% (+1.5% ต่อไม้)
+BEAR_SHIELD_DCA_MAX_CAP_PCT = 15.0          # เพดานระยะช้อนสูงสุดในโหมด Bear Shield (15.0%)
+BEAR_SHIELD_DCA_COOLDOWN_HOURS = 12.0       # ในโหมด Bear Shield: พักอย่างน้อย 12 ชม. ระหว่างไม้ถัวแต่ละเหรียญ (กันยิงรัวหมดกระสุน)
+
+SNIPER_REVERSAL_STOCH_MAX = 75.0            # ปิดช่องโหว่ StochRSI=100 ในโหมด Sniper Reversal (ห้ามซื้อปลายคลื่นเด้ง 15m)
+
 def get_dynamic_dca_step(
     atr_pct=0.0,
     entry_count=1,
     rsi_val=50.0,
     stoch_val=50.0,
     is_reversal=False,
-    has_absorption=False
+    has_absorption=False,
+    bear_shield=False
 ):
     """คำนวณระยะย่อตัวขั้นต่ำ (%) แบบ Real-time สำหรับช้อนไม้ที่ 2, 3, 4+ ทุกไม้:
     1) Progressive Base: ถ่างฐานตามจำนวนไม้ที่ถือ (ไม้ 2 = 3.0%, ไม้ 3 = 4.25%, ไม้ 4 = 5.5%)
@@ -295,6 +312,15 @@ def get_dynamic_dca_step(
     # เพดานขั้นต่ำสุดของแต่ละไม้ เพื่อรับประกันว่าการช้อนทุกไม้ดึงทุนเฉลี่ยลงอย่างคุ้มค่าเสมอ
     min_floor = float(DYNAMIC_DCA_MIN_FLOOR_ENTRY2) + max(0, entries - 1) * float(DYNAMIC_DCA_FLOOR_INCREMENT)
     max_cap = float(DYNAMIC_DCA_MAX_PCT)
+
+    # โหมด Bear Shield (4H ขาลงเต็มตัว): คำนวณแบบ Dynamic ATR จริงตามความผันผวนรายเหรียญ (ไม่ล็อกขั้นต่ำแข็งเท่ากันหมด)
+    if bear_shield and BEAR_SHIELD_ENABLED:
+        bear_base = progressive_base * float(BEAR_SHIELD_STEP_SCALE)
+        bear_atr_exp = atr_expansion * float(BEAR_SHIELD_ATR_MULT_SCALE)
+        raw_step = bear_base + bear_atr_exp - total_discount
+        bear_min_floor = float(BEAR_SHIELD_MIN_DCA_STEP_PCT) + max(0, entries - 1) * 1.5
+        min_floor = max(min_floor, bear_min_floor)
+        max_cap = float(BEAR_SHIELD_DCA_MAX_CAP_PCT)
 
     return round(min(max_cap, max(min_floor, raw_step)), 2)
 

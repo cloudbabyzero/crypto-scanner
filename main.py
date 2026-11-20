@@ -1,4 +1,4 @@
-__version__ = "2.6.3"
+__version__ = "2.6.4"
 import os
 import shutil
 
@@ -346,7 +346,7 @@ def build_recovery_message(trades):
     if not trades:
         return "🔄 [SYSTEM RECOVERY]\n\nบอทรีสตาร์ตสำเร็จ! พอร์ตว่างเปล่า (เงินสด 100% พร้อมช้อนไม้ 1)"
 
-    lines = [f"🔄 [SYSTEM RECOVERY — v{getattr(config, 'BOT_VERSION', '2.6.3')}]", "", "บอทรีสตาร์ตสำเร็จ! กู้คืนพอร์ตสะสมเหรียญได้ครบถ้วน:", ""]
+    lines = [f"🔄 [SYSTEM RECOVERY — v{getattr(config, 'BOT_VERSION', '2.6.4')}]", "", "บอทรีสตาร์ตสำเร็จ! กู้คืนพอร์ตสะสมเหรียญได้ครบถ้วน:", ""]
     total_cost_all = 0.0
     for sym, pos in trades.items():
         base = sym.split("/")[0]
@@ -428,6 +428,72 @@ def record_harvest_guard(symbol, exit_price, peak_price=0.0):
         )
     except Exception as e:
         print(f"[HARVEST GUARD] record error: {e}", flush=True)
+
+
+# =====================================================================
+# BEAR MARKET SHIELD (4H) & 1H HIGHER LOW CONFIRMATION (v2.6.4)
+# =====================================================================
+_bear_shield_cache = {}
+_BEAR_SHIELD_CACHE_TTL = 300  # แคชผล 4H ไว้ 5 นาที ลดภาระการยิง API
+
+
+def check_bear_shield_4h(symbol):
+    """ตรวจสอบภาวะตลาดหมีระดับ 4H:
+    คืนค่า (is_bear: bool, info: dict)
+    เข้าโหมด Bear Shield เมื่อแท่ง 4H ปิดต่ำกว่า 4H EMA25 ร่วมกับ (EMA25 ชี้ลง <= -0.05% หรือ EMA7 < EMA25)"""
+    if not getattr(config, "BEAR_SHIELD_ENABLED", True):
+        return False, {}
+
+    now = time.time()
+    cached = _bear_shield_cache.get(symbol)
+    if cached and (now - cached.get("ts", 0)) < _BEAR_SHIELD_CACHE_TTL:
+        return cached["is_bear"], cached["info"]
+
+    try:
+        df_4h = get_dataframe(symbol, '4h')
+        if df_4h is None or len(df_4h) < 30:
+            return False, {}
+        h4 = df_4h.iloc[-2]
+        h4_prev2 = df_4h.iloc[-4]
+        ema25_now = float(h4.get('ema25', 0) or 0)
+        ema25_prev = float(h4_prev2.get('ema25', 0) or 0)
+        ema7_now = float(h4.get('ema7', 0) or 0)
+        close_4h = float(h4.get('close', 0) or 0)
+        if ema25_now <= 0 or ema25_prev <= 0:
+            return False, {}
+
+        slope_4h = ((ema25_now - ema25_prev) / ema25_prev) * 100.0
+        slope_limit = float(getattr(config, "BEAR_SHIELD_4H_EMA_SLOPE_MAX", -0.05))
+        is_bear = (close_4h < ema25_now) and (slope_4h <= slope_limit or ema7_now < ema25_now)
+        info = {
+            "close_4h": close_4h,
+            "ema25_4h": ema25_now,
+            "ema7_4h": ema7_now,
+            "slope_4h": round(slope_4h, 3),
+        }
+        _bear_shield_cache[symbol] = {"ts": now, "is_bear": is_bear, "info": info}
+        return is_bear, info
+    except Exception as e:
+        print(f"[BEAR SHIELD] 4H check error for {symbol}: {e}", flush=True)
+        return False, {}
+
+
+def check_1h_higher_low(df_1h):
+    """ตรวจสอบโครงสร้างการยกโลว์ (1H Higher Low / Double Bottom) บนแท่ง 1H ที่ปิดแล้ว:
+    เปรียบเทียบจุดต่ำสุดช่วง 5 ชม. ล่าสุด (retest) กับจุดต่ำสุดช่วง 8 ชม. ก่อนหน้า
+    คืนค่า (is_hl: bool, recent_low: float, prior_low: float)"""
+    try:
+        if df_1h is None or len(df_1h) < 16:
+            return True, 0.0, 0.0
+        prior_win = df_1h.iloc[-14:-6]
+        recent_win = df_1h.iloc[-6:-1]
+        prior_low = float(prior_win['low'].min())
+        recent_low = float(recent_win['low'].min())
+        tol_pct = float(getattr(config, "BEAR_SHIELD_HL_TOLERANCE_PCT", 0.15)) / 100.0
+        is_hl = recent_low >= (prior_low * (1.0 - tol_pct))
+        return is_hl, recent_low, prior_low
+    except Exception:
+        return True, 0.0, 0.0
 
 
 def check_entry1_bull_trap_guard(symbol, current_price, h1_rsi=None, m15_rsi=None, high_24h=None):
@@ -829,13 +895,25 @@ def run_priority_dca_engine():
                     f"ติดเพดาน {alloc_pct*100:.0f}% ของพอร์ต (ถืออยู่ {current_cost:.1f}/{max_cap_per_coin:.1f} USDT) รอเงินเติม"))
                 continue
 
+            # ด่าน 2.5: Bear Shield DCA Cooldown (ในตลาดหมี 4H พักอย่างน้อย 12 ชม. ระหว่างไม้ถัวของเหรียญเดียวกัน)
+            scan_info = scan_results.get(sym, {}) if isinstance(scan_results.get(sym), dict) else {}
+            bear_shield_on = bool(sig.get("bear_shield", scan_info.get("bear_shield", False)))
+            if bear_shield_on and getattr(config, "BEAR_SHIELD_ENABLED", True):
+                _dca_cd_h = float(getattr(config, "BEAR_SHIELD_DCA_COOLDOWN_HOURS", 12.0))
+                _last_buy_ts = float(pos.get("updated_at", 0.0) or 0.0)
+                if _last_buy_ts > 0 and (time.time() - _last_buy_ts) < (_dca_cd_h * 3600.0):
+                    _rem_h = ((_dca_cd_h * 3600.0) - (time.time() - _last_buy_ts)) / 3600.0
+                    reason = f"🛡️ Bear Shield 4H: พักช้อนไม้ถัว (เหลืออีก {_rem_h:.1f} ชม.)"
+                    print(f"[PRIORITY DCA] {sym} {reason}", flush=True)
+                    skipped.append((sym, sig["entry"], reason))
+                    continue
+
             # ด่าน 3: Real-time Adaptive DCA Step (คำนวณทุกไม้ตั้งแต่ไม้ 2 เป็นต้นไป: Progressive + ATR Expansion - Reversal Discount)
             avg = float(pos.get("weighted_avg_price", 0.0) or 0.0)
             if avg > 0:
                 drawdown_pct = ((sig["entry"] - avg) / avg) * 100
                 entries_held = int(pos.get("entry_count", 1) or 1)
                 next_entry_num = entries_held + 1
-                scan_info = scan_results.get(sym, {}) if isinstance(scan_results.get(sym), dict) else {}
                 atr_pct = float(sig.get("atr_pct") or scan_info.get("atr") or 0.0)
                 if sig.get("req_dca_step") is not None:
                     req_dca_step = float(sig["req_dca_step"])
@@ -848,7 +926,8 @@ def run_priority_dca_engine():
                         rsi_val=float(sig.get("rsi") or scan_info.get("rsi") or 50.0),
                         stoch_val=float(sig.get("stoch_rsi") or scan_info.get("stoch_rsi") or 50.0),
                         is_reversal=bool(sig.get("is_reversal", False)),
-                        has_absorption=bool(sig.get("has_absorption", False))
+                        has_absorption=bool(sig.get("has_absorption", False)),
+                        bear_shield=bear_shield_on
                     )
                 else:
                     req_dca_step = min_dca_step
@@ -2103,6 +2182,9 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             scout_reasons.append("Volume รับของ/ไส้ล่างดูดซับแรงขาย")
             scout_mode = scout_mode or "REVERSAL"
 
+        # เช็กภาวะตลาดหมี 4H (Bear Market Shield)
+        bear_shield_active, bear_shield_info = check_bear_shield_4h(symbol)
+
         # เช็กสถานะพอร์ตปัจจุบันของเหรียญนี้และคำนวณเกณฑ์ช้อน Real-time Adaptive DCA (ตั้งแต่ไม้ 2 เป็นต้นไป)
         with state_lock:
             held_pos = active_trades.get(symbol)
@@ -2115,7 +2197,8 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 rsi_val=rsi_val,
                 stoch_val=stoch_rsi,
                 is_reversal=bool(is_oversold_base or scout_mode == "REVERSAL"),
-                has_absorption=has_vol_absorption
+                has_absorption=has_vol_absorption,
+                bear_shield=bear_shield_active
             )
             if hasattr(config, 'get_dynamic_dca_step')
             else getattr(config, 'MIN_DCA_DRAWDOWN_PCT', 3.0)
@@ -2169,17 +2252,20 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 "status": f"{watch_prefix}Red Candle (Wait Green Trigger)",
                 "score": 0, "adx": adx_val, "atr": atr_val, "volume": vol_status,
                 "timestamp": now_ts, "scout": active_scout,
-                "rsi": rsi_val, "stoch_rsi": round(stoch_rsi, 2), "req_dca_step": req_dca_step
+                "rsi": rsi_val, "stoch_rsi": round(stoch_rsi, 2), "req_dca_step": req_dca_step,
+                "bear_shield": bear_shield_active
             })
             return {"symbol": symbol, "result": "skipped"}
 
         def _reject(reason):
             watch_tag = f" [Scout:{active_scout['mode']}]" if is_watched else ""
-            full_reason = f"{reason}{watch_tag}"
+            bear_tag = " [BearShield]" if bear_shield_active else ""
+            full_reason = f"{reason}{watch_tag}{bear_tag}"
             set_scan_result(symbol, {
                 "status": full_reason, "score": 0, "adx": adx_val, "atr": atr_val,
                 "volume": vol_status, "timestamp": now_ts, "scout": active_scout,
-                "rsi": rsi_val, "stoch_rsi": round(stoch_rsi, 2), "req_dca_step": req_dca_step
+                "rsi": rsi_val, "stoch_rsi": round(stoch_rsi, 2), "req_dca_step": req_dca_step,
+                "bear_shield": bear_shield_active
             })
             google_sheet.log_debug(
                 symbol, full_reason, strategy="SCALPING", score=100, adx=adx_val, atr=atr_val,
@@ -2350,8 +2436,12 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
             if ema7_dist_pct > anti_chase_threshold:
                 return f"Blocked: Anti-Chase LONG (Stretch {round(ema7_dist_pct, 2)}% > Limit {round(anti_chase_threshold, 2)}% | Slope {round(ema25_slope, 3)}%)"
 
-            # 9. Dynamic 15m StochRSI Ceiling (ขยายเพดานตาม ATR% อัตโนมัติ + อนุโลมเมื่อเป็น Grinding Uptrend / Fast Reversal)
-            if not (strong_trend or uptrend_stoch_bypass or sniper_fast_reversal) and stoch_rsi > dyn_stoch_max:
+            # 9. Dynamic 15m StochRSI Ceiling + ปิดช่องโหว่ StochRSI=100 ในโหมด Sniper Reversal
+            if sniper_fast_reversal:
+                rev_stoch_max = float(getattr(config, "SNIPER_REVERSAL_STOCH_MAX", 75.0))
+                if stoch_rsi > rev_stoch_max:
+                    return f"Blocked: Sniper Reversal StochRSI Exhausted ({round(stoch_rsi, 1)} > {rev_stoch_max})"
+            elif not (strong_trend or uptrend_stoch_bypass) and stoch_rsi > dyn_stoch_max:
                 return f"Blocked: StochRSI Overbought Ceiling ({round(stoch_rsi, 1)} > Dynamic {dyn_stoch_max} | ATR {atr_val}% | Slope {round(ema25_slope, 3)}%)"
 
             # 10. Dynamic 1H StochRSI Guard
@@ -2379,6 +2469,18 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
                 )
                 if not _e1_pass:
                     return f"Blocked: {_e1_block_reason}"
+
+            # 13. Bear Market Shield (4H ขาลงเต็มตัว): ห้ามรับมีดเด้งแรกใต้ 1H EMA25 และต้องยืนยัน 1H Higher Low ก่อน
+            if bear_shield_active and getattr(config, "BEAR_SHIELD_ENABLED", True):
+                if getattr(config, "BEAR_SHIELD_REQUIRE_1H_EMA25_RECLAIM", True):
+                    h1_close = float(h1.get('close', 0) or 0)
+                    h1_ema25 = float(h1.get('ema25', 0) or 0)
+                    if h1_ema25 > 0 and h1_close < h1_ema25:
+                        return f"Blocked: Bear Shield 4H (1H Close {h1_close:.4f} < 1H EMA25 {h1_ema25:.4f})"
+                if getattr(config, "BEAR_SHIELD_REQUIRE_1H_HIGHER_LOW", True):
+                    hl_ok, r_low, p_low = check_1h_higher_low(df_1h)
+                    if not hl_ok:
+                        return f"Blocked: Bear Shield 4H (No 1H Higher Low: {r_low:.4f} < {p_low:.4f})"
 
             return None
 
@@ -2440,10 +2542,11 @@ def analyze_scalping(symbol, bypass_cooldown=False, silent_mode=False, signal_on
         else:
             _trail_desc = f"🌊 Wide Trailing ({config.TRAILING_PCT_TIER1 * 100:.1f}% / {config.TRAILING_PCT_TIER2 * 100:.1f}% / {config.TRAILING_PCT_TIER3 * 100:.1f}%)"
 
+        _bear_note = "🛡️ Bear Shield (4H): ผ่านด่าน 1H Higher Low + ยืนเหนือ 1H EMA25\n" if bear_shield_active else ""
         message = f"""⚡ BUY SIGNAL — {symbol} ({side_icon} {side})
 🎯 โหมดลั่นไก: {trigger_mode_label}
 {scout_info_line}
-ราคาเข้า: {entry}
+{_bear_note}ราคาเข้า: {entry}
 เริ่ม Trailing: ≥ {entry * (1 + _act_pct):.4f} (+{_act_pct * 100:.1f}%)
 ล็อกกำไรขั้นต่ำ: {entry * (1 + _lock_pct):.4f} (+{_lock_pct * 100:.1f}%)
 Trail: {_trail_desc}
@@ -2494,7 +2597,8 @@ Trail: {_trail_desc}
                 rsi_val=rsi_val,
                 stoch_val=stoch_rsi,
                 is_reversal=bool(sniper_fast_reversal or is_oversold_base),
-                has_absorption=has_vol_absorption
+                has_absorption=has_vol_absorption,
+                bear_shield=bear_shield_active
             )
             if hasattr(config, 'get_dynamic_dca_step')
             else req_dca_step
@@ -2512,6 +2616,7 @@ Trail: {_trail_desc}
             "rsi": rsi_val,
             "stoch_rsi": round(stoch_rsi, 2),
             "req_dca_step": final_req_dca_step,
+            "bear_shield": bear_shield_active,
         })
 
         candidate_signals[symbol] = {
@@ -2527,6 +2632,7 @@ Trail: {_trail_desc}
             "is_reversal": bool(sniper_fast_reversal or is_oversold_base),
             "has_absorption": has_vol_absorption,
             "req_dca_step": final_req_dca_step,
+            "bear_shield": bear_shield_active,
             "trigger_mode": trigger_mode_label,
         }
 
@@ -4665,16 +4771,21 @@ def heartbeat_thread():
                 trades_snapshot = {k: dict(v) for k, v in active_trades.items()}
 
             lines = [
-                f"💓 [HEARTBEAT - SPOT DCA v{getattr(config, 'BOT_VERSION', '2.6.3')}]",
+                f"💓 [HEARTBEAT - SPOT DCA v{getattr(config, 'BOT_VERSION', '2.6.4')}]",
                 "",
                 f"สถานะ: ออนไลน์ปกติ (Uptime: {uptime_hours}h)",
                 f"ยอดเงินสดคงเหลือ: {cash:.2f} USDT",
                 (f"🛡️ ระบบเฝ้าราคา: ปกติ (อัปเดตล่าสุด {int(time.time() - trade_manager.last_loop_ts)} วินาทีที่แล้ว)"
                  if time.time() - trade_manager.last_loop_ts <= WATCHDOG_STALE_SECONDS
                  else f"⚠️ ระบบเฝ้าราคาไม่ตอบสนองมา {int(time.time() - trade_manager.last_loop_ts)} วินาที"),
-                "",
-                "📦 สถานะพอร์ตเหรียญทั้งหมด:",
             ]
+            _bear_count = sum(1 for _s in symbols if isinstance(scan_results.get(_s), dict) and scan_results[_s].get("bear_shield"))
+            if getattr(config, "BEAR_SHIELD_ENABLED", True):
+                if _bear_count > 0:
+                    lines.append(f"🐻 Bear Shield (4H): เปิดทำงาน ({_bear_count}/{len(symbols)} เหรียญ — รอ 1H Higher Low + ยืนเหนือ 1H EMA25)")
+                else:
+                    lines.append("🟢 Bear Shield (4H): ปกติ (ตลาดไม่เป็นขาลง 4H)")
+            lines += ["", "📦 สถานะพอร์ตเหรียญทั้งหมด:"]
 
             for sym in symbols:
                 pos = trades_snapshot.get(sym)
@@ -4715,6 +4826,7 @@ def heartbeat_thread():
                     _act, _ = config.get_activation_params(entries_cnt)
                     target_line = f"🚀 {avg * (1.0 + _act):.4f} (+{_act*100:.1f}%)"
                     _sc_res = scan_results.get(sym, {}) if isinstance(scan_results.get(sym), dict) else {}
+                    _is_bear_sym = bool(_sc_res.get("bear_shield", False))
                     if _sc_res.get("req_dca_step") is not None:
                         _rt_step = float(_sc_res["req_dca_step"])
                     elif hasattr(config, "get_dynamic_dca_step"):
@@ -4724,12 +4836,14 @@ def heartbeat_thread():
                             rsi_val=float(_sc_res.get("rsi") or (scout_active.get("rsi") if scout_active else 50.0)),
                             stoch_val=float(_sc_res.get("stoch_rsi") or (scout_active.get("stoch") if scout_active else 50.0)),
                             is_reversal=bool(scout_active and scout_active.get("mode") == "REVERSAL"),
-                            has_absorption=False
+                            has_absorption=False,
+                            bear_shield=_is_bear_sym
                         )
                     else:
                         _rt_step = getattr(config, "MIN_DCA_DRAWDOWN_PCT", 3.0)
                     _dca_px = avg * (1.0 - (_rt_step / 100.0))
-                    dca_line = f"   - เกณฑ์ช้อนไม้ {entries_cnt + 1} (Real-time): -{_rt_step:.2f}% (≤ {_dca_px:.4f})"
+                    _bear_badge = " [Bear Shield]" if _is_bear_sym else ""
+                    dca_line = f"   - เกณฑ์ช้อนไม้ {entries_cnt + 1} (Real-time{_bear_badge}): -{_rt_step:.2f}% (≤ {_dca_px:.4f})"
 
                 staged_note = " [แบ่งขาย 50% แล้ว]" if pos.get("staged_exit_done") else ""
                 lines += [
@@ -4913,7 +5027,7 @@ def main():
     config.TRAILING_USE_ATR_TIGHTENING = True
 
     send_telegram(
-        f"🚀 [BOT STARTED — v{getattr(config, 'BOT_VERSION', '2.6.3')}]\n\n"
+        f"🚀 [BOT STARTED — v{getattr(config, 'BOT_VERSION', '2.6.4')}]\n\n"
         f"เวลา: {startup_time}\n"
         f"BTC เทรนด์: {btc_trend_line}\n"
         f"Market Regime: {CURRENT_REGIME}\n"
